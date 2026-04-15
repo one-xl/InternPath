@@ -14,20 +14,27 @@ class CareerPathAIService:
         self.db = Database()
         self.practice_invoker = PracticeAppInvoker()
     
-    def analyze_jd(self, jd_text: str) -> Tuple[JobAnalysis, List[BilibiliCourse]]:
+    def extract_skills(self, jd_text: str) -> JobAnalysis:
         analysis = self.ai_analyzer.extract_skills(jd_text)
-        
+        return analysis
+    
+    def search_courses(self, skills: List[str]) -> List[BilibiliCourse]:
         all_courses = []
-        for skill in analysis.skills:
+        for skill in skills:
             courses = self.crawler.search_skill(skill)
             all_courses.extend(courses)
         
         ranked_courses = self.ranker.rank_by_skill(all_courses)
+        return ranked_courses
+    
+    def analyze_jd(self, jd_text: str) -> Tuple[JobAnalysis, List[BilibiliCourse]]:
+        analysis = self.extract_skills(jd_text)
+        courses = self.search_courses(analysis.skills)
         
         jd_record_id = self.db.save_jd_record(jd_text, analysis)
-        self.db.save_courses(jd_record_id, ranked_courses)
+        self.db.save_courses(jd_record_id, courses)
         
-        return analysis, ranked_courses
+        return analysis, courses
     
     def sync_to_practice_app(self, skills: List[str]) -> bool:
         return self.practice_invoker.invoke_practice_app(skills)

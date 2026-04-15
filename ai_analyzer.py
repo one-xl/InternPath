@@ -42,8 +42,7 @@ class AIAnalyzer:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.3,
-                response_format={"type": "json_object"}
+                temperature=0.3
             )
             
             result_text = response.choices[0].message.content.strip()

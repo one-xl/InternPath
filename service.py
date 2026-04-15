@@ -1,7 +1,7 @@
 from typing import List, Tuple
 from models import JobAnalysis, BilibiliCourse
 from ai_analyzer import AIAnalyzer
-from crawler import BilibiliCrawler
+from crawler_api import BilibiliAPICrawlerSync
 from ranker import CourseRanker
 from database import Database
 from practice_app import PracticeAppInvoker
@@ -9,7 +9,7 @@ from practice_app import PracticeAppInvoker
 class CareerPathAIService:
     def __init__(self):
         self.ai_analyzer = AIAnalyzer()
-        self.crawler = BilibiliCrawler()
+        self.crawler = BilibiliAPICrawlerSync()
         self.ranker = CourseRanker()
         self.db = Database()
         self.practice_invoker = PracticeAppInvoker()

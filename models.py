@@ -14,10 +14,16 @@ class BilibiliCourse(BaseModel):
     favorite_count: int = Field(..., description="收藏数")
     like_count: int = Field(..., description="点赞数")
     coin_count: int = Field(default=0, description="投币数")
+    danmaku_count: int = Field(default=0, description="弹幕数")
     publish_date: str = Field(..., description="发布日期")
     uploader: str = Field(..., description="UP主")
     skill: str = Field(..., description="对应的技能")
     rank_score: float = Field(default=0.0, description="排序分数")
+    duration: str = Field(default="", description="视频时长")
+    description: str = Field(default="", description="视频描述")
+    thumbnail: str = Field(default="", description="缩略图URL")
+    aid: int = Field(default=0, description="视频AID")
+    bvid: str = Field(default="", description="视频BVID")
 
 class SkillPackage(BaseModel):
     skills: List[str] = Field(..., description="技能列表")

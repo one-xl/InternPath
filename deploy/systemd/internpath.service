@@ -1,0 +1,29 @@
+[Unit]
+Description=InternPath Streamlit Service
+After=network.target
+
+[Service]
+Type=simple
+User=internpath
+Group=internpath
+WorkingDirectory=/opt/internpath
+EnvironmentFile=/opt/internpath/.env
+Environment=HOME=/opt/internpath
+Environment=XDG_CACHE_HOME=/opt/internpath/.cache
+ExecStart=/opt/internpath/.venv/bin/streamlit run /opt/internpath/app.py --server.address 0.0.0.0 --server.port 8502 --browser.gatherUsageStats false
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+LockPersonality=true
+RestrictRealtime=true
+ReadWritePaths=/opt/internpath
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

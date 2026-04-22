@@ -1,202 +1,127 @@
 import asyncio
-import random
-import string
-import time
-from typing import List, Optional, Dict, Any
+import json
+import re
 from datetime import datetime
-from fake_useragent import UserAgent
+from typing import Any, Dict, List, Optional
+from urllib.parse import quote
+
 import httpx
-from config import Config
+
 from models import BilibiliCourse
 
+try:
+    from scrapling.fetchers import Fetcher
+except ImportError:
+    Fetcher = None
 
-class BilibiliAPICrawler:
-    def __init__(self):
-        self.ua = UserAgent()
-        self.client: Optional[httpx.AsyncClient] = None
-        self.cookie = self._generate_buvid3()
 
-    def _generate_buvid3(self) -> Dict[str, str]:
-        return {
-            "innersign": "0",
-            "buvid3": "".join(random.choice(string.hexdigits) for _ in range(16)) + "infoc",
-            "i-wanna-go-back": "-1",
-            "b_ut": "7",
-            "FEED_LIVE_VERSION": "V8",
-            "header_theme_version": "undefined",
-            "home_feed_column": "4",
-            "b_nut": "1",
-            "CURRENT_FNVAL": "4048",
-            "buvid_fp": "".join(random.choice(string.hexdigits) for _ in range(32))
-        }
+class BilibiliScraplingCrawler:
+    """Bilibili course crawler with API-first fetching and optional HTML fallback."""
 
-    def _get_headers(self) -> Dict[str, str]:
-        return {
-            'User-Agent': self.ua.random,
-            'Accept': 'application/json, text/plain, */*',
-            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Referer': 'https://www.bilibili.com/',
-            'Origin': 'https://www.bilibili.com',
-            'Sec-Fetch-Dest': 'empty',
-            'Sec-Fetch-Mode': 'cors',
-            'Sec-Fetch-Site': 'same-site'
-        }
+    SEARCH_API = "https://api.bilibili.com/x/web-interface/search/type"
+    SEARCH_HTML = "https://search.bilibili.com/all"
+    DEFAULT_HEADERS = {
+        "user-agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/123.0.0.0 Safari/537.36"
+        ),
+        "referer": "https://www.bilibili.com/",
+    }
 
-    def _parse_number(self, num: Any) -> int:
-        if num is None:
+    def __init__(self, impersonate: str = "chrome"):
+        self._impersonate = impersonate
+
+    @staticmethod
+    def _parse_number(text: Any) -> int:
+        if text is None:
             return 0
+        if isinstance(text, (int, float)):
+            return int(text)
+
+        value = str(text).strip()
+        if "万" in value:
+            return int(float(value.replace("万", "")) * 10000)
+        if "亿" in value:
+            return int(float(value.replace("亿", "")) * 100000000)
+
+        cleaned = re.sub(r"[^\d.]", "", value)
+        return int(float(cleaned)) if cleaned else 0
+
+    @staticmethod
+    def _format_date(timestamp: int) -> str:
         try:
-            return int(num)
-        except (ValueError, TypeError):
-            return 0
+            return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d")
+        except (ValueError, TypeError, OSError):
+            return datetime.now().strftime("%Y-%m-%d")
 
-    def _format_duration(self, duration: int) -> str:
-        if duration <= 0:
+    @staticmethod
+    def _format_duration(seconds: int) -> str:
+        if seconds <= 0:
             return "00:00"
-        hours = duration // 3600
-        minutes = (duration % 3600) // 60
-        seconds = duration % 60
-        if hours > 0:
-            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-        return f"{minutes:02d}:{seconds:02d}"
+        hours, rem = divmod(seconds, 3600)
+        minutes, secs = divmod(rem, 60)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}" if hours else f"{minutes:02d}:{secs:02d}"
 
-    def _format_date(self, timestamp: int) -> str:
-        try:
-            return datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d')
-        except (ValueError, TypeError):
-            return datetime.now().strftime('%Y-%m-%d')
-
-    async def __aenter__(self):
-        self.client = httpx.AsyncClient(
-            timeout=httpx.Timeout(30.0),
-            follow_redirects=True,
-            cookies=self.cookie
-        )
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        if self.client:
-            await self.client.aclose()
-
-    async def _random_delay(self, min_delay: float = 0.5, max_delay: float = 2.0):
-        delay = random.uniform(min_delay, max_delay)
-        await asyncio.sleep(delay)
-
-    async def _fetch_api(self, url: str, params: Dict[str, Any], max_retries: int = 3) -> Optional[Dict[str, Any]]:
-        for attempt in range(max_retries):
-            try:
-                await self._random_delay()
-
-                headers = self._get_headers()
-
-                response = await self.client.get(
-                    url,
-                    params=params,
-                    headers=headers
-                )
-
-                if response.status_code == 200:
-                    data = response.json()
-                    if data.get('code') == 0:
-                        return data
-                    elif data.get('code') == -412:
-                        wait_time = (attempt + 1) * 3
-                        await asyncio.sleep(wait_time)
-                    else:
-                        await asyncio.sleep(1)
-                elif response.status_code == 429:
-                    wait_time = (attempt + 1) * 2
-                    await asyncio.sleep(wait_time)
-                else:
-                    await asyncio.sleep(1)
-
-            except httpx.HTTPError as e:
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(1)
-                else:
-                    print(f"HTTP Error: {e}")
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(1)
-                else:
-                    print(f"Error fetching API: {e}")
-
-        return None
-
-    async def search_videos(self, keyword: str, page: int = 1, page_size: int = 20) -> List[BilibiliCourse]:
-        courses: List[BilibiliCourse] = []
-
-        search_url = "https://api.bilibili.com/x/web-interface/search/type"
-
+    def _search_via_api(self, skill: str, max_results: int = 20) -> Optional[List[BilibiliCourse]]:
         params = {
             "__refresh__": "true",
-            "page": page,
-            "page_size": page_size,
+            "page": "1",
+            "page_size": str(min(50, max_results)),
             "single_column": "0",
-            "keyword": keyword,
+            "keyword": skill,
             "search_type": "video",
             "order": "totalrank",
             "duration": "0",
-            "tids_1": "0"
+            "tids_1": "0",
         }
+        query = "&".join(f"{key}={quote(str(value))}" for key, value in params.items())
+        url = f"{self.SEARCH_API}?{query}"
 
         try:
-            data = await self._fetch_api(search_url, params)
+            response = httpx.get(url, headers=self.DEFAULT_HEADERS, timeout=20.0)
+            response.raise_for_status()
+            data = response.json()
+        except (httpx.HTTPError, json.JSONDecodeError, ValueError):
+            return None
 
-            if not data:
-                return courses
+        code = data.get("code", -1)
+        if code in {-412, -509}:
+            return None
+        if code != 0:
+            return None
 
-            result_list = data.get('data', {}).get('result', [])
-
-            for item in result_list:
-                try:
-                    course = self._parse_video_item(item, keyword)
-                    if course:
-                        courses.append(course)
-                except Exception as e:
-                    continue
-
-        except Exception as e:
-            print(f"搜索 {keyword} 时出错: {str(e)}")
-
+        courses: List[BilibiliCourse] = []
+        result_list = data.get("data", {}).get("result", [])
+        for item in result_list[:max_results]:
+            course = self._parse_api_item(item, skill)
+            if course is not None:
+                courses.append(course)
         return courses
 
-    def _parse_video_item(self, item: Dict[str, Any], skill: str) -> Optional[BilibiliCourse]:
+    def _parse_api_item(self, item: Dict[str, Any], skill: str) -> Optional[BilibiliCourse]:
         try:
-            title = item.get('title', '')
-            title = title.replace('<em class="keyword">', '').replace('</em>', '')
+            title = re.sub(r"<[^>]+>", "", item.get("title", ""))
+            arcurl = item.get("arcurl", "")
+            url = arcurl if arcurl.startswith("http") else f"https:{arcurl}"
+            author = item.get("author", "未知")
+            publish_date = self._format_date(item.get("pubdate", 0))
+            view_count = self._parse_number(item.get("play", 0))
+            like_count = self._parse_number(item.get("like", 0))
+            favorite_count = self._parse_number(item.get("favorites", 0))
+            coin_count = self._parse_number(item.get("coin", 0))
+            danmaku_count = self._parse_number(item.get("video_review", 0))
+            duration_value = item.get("duration", 0)
+            duration = (
+                self._format_duration(duration_value)
+                if isinstance(duration_value, int) and duration_value > 0
+                else str(duration_value or "")
+            )
+            description = re.sub(r"<[^>]+>", "", item.get("description", ""))
+            pic = item.get("pic", "")
+            thumbnail = pic if pic.startswith("http") else f"https:{pic}"
 
-            arcurl = item.get('arcurl', '')
-            url = arcurl if arcurl.startswith('http') else f"https:{arcurl}"
-
-            author = item.get('author', '未知')
-
-            pubdate = item.get('pubdate', 0)
-            publish_date = self._format_date(pubdate)
-
-            play = item.get('play', 0)
-            view_count = self._parse_number(play)
-
-            like_count = self._parse_number(item.get('like', 0))
-            favorite_count = self._parse_number(item.get('favorites', 0))
-            coin_count = self._parse_number(item.get('coin', 0))
-            danmaku_count = self._parse_number(item.get('video_review', 0))
-
-            duration = item.get('duration', 0)
-            duration_str = self._format_duration(duration) if duration > 0 else ''
-
-            description = item.get('description', '')
-            description = description.replace('<em class="keyword">', '').replace('</em>', '')
-
-            pic = item.get('pic', '')
-            thumbnail = pic if pic.startswith('http') else f"https:{pic}"
-
-            aid = item.get('aid', 0)
-            bvid = item.get('bvid', '')
-
-            course = BilibiliCourse(
+            return BilibiliCourse(
                 title=title,
                 url=url,
                 view_count=view_count,
@@ -207,175 +132,113 @@ class BilibiliAPICrawler:
                 publish_date=publish_date,
                 uploader=author,
                 skill=skill,
-                duration=duration_str,
+                duration=duration,
                 description=description,
                 thumbnail=thumbnail,
-                aid=aid,
-                bvid=bvid
+                aid=self._parse_number(item.get("aid", 0)),
+                bvid=item.get("bvid", ""),
             )
-
-            return course
-
-        except Exception as e:
-            print(f"解析视频项时出错: {e}")
+        except Exception:
             return None
 
-    async def search_skill(self, skill: str, max_results: int = 20) -> List[BilibiliCourse]:
-        all_courses: List[BilibiliCourse] = []
-        page = 1
-        page_size = min(50, max_results)
+    def _search_via_html(self, skill: str, max_results: int = 20) -> List[BilibiliCourse]:
+        if Fetcher is None:
+            return []
 
-        while len(all_courses) < max_results:
-            remaining = max_results - len(all_courses)
-            current_page_size = min(page_size, remaining)
+        url = f"{self.SEARCH_HTML}?keyword={quote(skill)}&order=totalrank"
+        try:
+            page = Fetcher.get(url, impersonate=self._impersonate, timeout=20)
+        except Exception:
+            return []
 
-            courses = await self.search_videos(skill, page, current_page_size)
+        if page.status != 200:
+            return []
 
-            if not courses:
+        cards = page.css("div.bili-video-card")
+        courses: List[BilibiliCourse] = []
+        for idx, card in enumerate(cards):
+            if idx >= max_results:
                 break
+            course = self._parse_html_card(card, skill)
+            if course is not None:
+                courses.append(course)
+        return courses
 
-            all_courses.extend(courses)
+    def _parse_html_card(self, card, skill: str) -> Optional[BilibiliCourse]:
+        try:
+            title = card.css("h3.bili-video-card__info--tit::attr(title)").get() or ""
+            if not title:
+                title = card.css("h3.bili-video-card__info--tit::text").get() or ""
+            title = title.strip()
+            if not title:
+                return None
 
-            if len(courses) < current_page_size:
-                break
+            href = card.css("a::attr(href)").get() or ""
+            url = f"https:{href}" if href and not href.startswith("http") else href
+            bvid_match = re.search(r"(BV[\w]+)", url)
+            bvid = bvid_match.group(1) if bvid_match else ""
 
-            page += 1
+            author = (card.css("span.bili-video-card__info--author::text").get() or "未知").strip()
+            date_raw = (card.css("span.bili-video-card__info--date::text").get() or "").strip()
+            publish_date = date_raw.lstrip("路 ").strip() or datetime.now().strftime("%Y-%m-%d")
 
-            if page > 3:
-                break
+            stats = card.css("span.bili-video-card__stats--item")
+            view_count = 0
+            danmaku_count = 0
+            if len(stats) >= 1:
+                view_text = stats[0].css("span::text").getall()
+                if view_text:
+                    view_count = self._parse_number(view_text[-1])
+            if len(stats) >= 2:
+                dm_text = stats[1].css("span::text").getall()
+                if dm_text:
+                    danmaku_count = self._parse_number(dm_text[-1])
 
-        return all_courses[:max_results]
+            duration = (card.css("span.bili-video-card__stats__duration::text").get() or "").strip()
+            img_src = card.css("img::attr(src)").get() or ""
+            thumbnail = f"https:{img_src}" if img_src and not img_src.startswith("http") else img_src
 
-
-class BilibiliAPICrawlerSync:
-    def __init__(self):
-        self.crawler = BilibiliAPICrawler()
-        self.ua = UserAgent()
-        self.cookie = self.crawler._generate_buvid3()
-
-    def _get_headers(self) -> Dict[str, str]:
-        return {
-            'User-Agent': self.ua.random,
-            'Accept': 'application/json, text/plain, */*',
-            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Referer': 'https://www.bilibili.com/',
-            'Origin': 'https://www.bilibili.com',
-            'Sec-Fetch-Dest': 'empty',
-            'Sec-Fetch-Mode': 'cors',
-            'Sec-Fetch-Site': 'same-site'
-        }
-
-    def _random_delay(self, min_delay: float = 0.5, max_delay: float = 2.0):
-        delay = random.uniform(min_delay, max_delay)
-        time.sleep(delay)
-
-    def _fetch_api_sync(self, url: str, params: Dict[str, Any], max_retries: int = 3) -> Optional[Dict[str, Any]]:
-        for attempt in range(max_retries):
-            try:
-                self._random_delay()
-
-                headers = self._get_headers()
-
-                with httpx.Client(timeout=30.0, follow_redirects=True, cookies=self.cookie) as client:
-                    response = client.get(
-                        url,
-                        params=params,
-                        headers=headers
-                    )
-
-                    if response.status_code == 200:
-                        data = response.json()
-                        if data.get('code') == 0:
-                            return data
-                        elif data.get('code') == -412:
-                            wait_time = (attempt + 1) * 3
-                            time.sleep(wait_time)
-                        else:
-                            time.sleep(1)
-                    elif response.status_code == 429:
-                        wait_time = (attempt + 1) * 2
-                        time.sleep(wait_time)
-                    else:
-                        time.sleep(1)
-
-            except httpx.HTTPError as e:
-                if attempt < max_retries - 1:
-                    time.sleep(1)
-                else:
-                    print(f"HTTP Error: {e}")
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    time.sleep(1)
-                else:
-                    print(f"Error fetching API: {e}")
-
-        return None
+            return BilibiliCourse(
+                title=title,
+                url=url,
+                view_count=view_count,
+                favorite_count=0,
+                like_count=0,
+                coin_count=0,
+                danmaku_count=danmaku_count,
+                publish_date=publish_date,
+                uploader=author,
+                skill=skill,
+                duration=duration,
+                description="",
+                thumbnail=thumbnail,
+                bvid=bvid,
+            )
+        except Exception:
+            return None
 
     def search_skill(self, skill: str, max_results: int = 20) -> List[BilibiliCourse]:
-        courses: List[BilibiliCourse] = []
+        courses = self._search_via_api(skill, max_results)
+        if courses is not None:
+            return courses
+        return self._search_via_html(skill, max_results)
 
-        search_url = "https://api.bilibili.com/x/web-interface/search/type"
 
-        params = {
-            "__refresh__": "true",
-            "page": 1,
-            "page_size": min(50, max_results),
-            "single_column": "0",
-            "keyword": skill,
-            "search_type": "video",
-            "order": "totalrank"
-        }
+BilibiliAPICrawlerSync = BilibiliScraplingCrawler
 
-        try:
-            data = self._fetch_api_sync(search_url, params)
 
-            if not data:
-                return courses
+class BilibiliAPICrawler:
+    def __init__(self):
+        self._sync = BilibiliScraplingCrawler()
 
-            result_list = data.get('data', {}).get('result', [])
+    async def __aenter__(self):
+        return self
 
-            for item in result_list[:max_results]:
-                try:
-                    title = item.get('title', '')
-                    title = title.replace('<em class="keyword">', '').replace('</em>', '')
+    async def __aexit__(self, *args):
+        return None
 
-                    arcurl = item.get('arcurl', '')
-                    url = arcurl if arcurl.startswith('http') else f"https:{arcurl}"
+    def _generate_buvid3(self) -> Dict[str, str]:
+        return {}
 
-                    author = item.get('author', '未知')
-
-                    pubdate = item.get('pubdate', 0)
-                    try:
-                        publish_date = datetime.fromtimestamp(pubdate).strftime('%Y-%m-%d')
-                    except (ValueError, TypeError):
-                        publish_date = datetime.now().strftime('%Y-%m-%d')
-
-                    play = item.get('play', 0)
-                    view_count = int(play) if play else 0
-
-                    like_count = int(item.get('like', 0))
-                    favorite_count = int(item.get('favorites', 0))
-                    coin_count = int(item.get('coin', 0))
-
-                    course = BilibiliCourse(
-                        title=title,
-                        url=url,
-                        view_count=view_count,
-                        favorite_count=favorite_count,
-                        like_count=like_count,
-                        coin_count=coin_count,
-                        publish_date=publish_date,
-                        uploader=author,
-                        skill=skill
-                    )
-                    courses.append(course)
-
-                except Exception as e:
-                    continue
-
-        except Exception as e:
-            print(f"搜索 {skill} 时出错: {str(e)}")
-
-        return courses
+    async def search_skill(self, skill: str, max_results: int = 20) -> List[BilibiliCourse]:
+        return await asyncio.to_thread(self._sync.search_skill, skill, max_results)

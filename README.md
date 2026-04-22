@@ -1,5 +1,7 @@
 # InternPath
 
+[中文说明](README.zh-CN.md)
+
 InternPath is a Streamlit-based JD analysis tool for internship and job preparation. It extracts skills from a job description with an LLM, recommends matching Bilibili courses, stores analysis history, and can generate launch payloads for a local AiSmartDrill client.
 
 ## Features

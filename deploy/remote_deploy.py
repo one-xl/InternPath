@@ -43,11 +43,17 @@ EXCLUDE_FILES = {
     "career_path.db",
 }
 EXCLUDE_SUFFIXES = (".pyc",)
+ALLOWED_ENV_FILES = {
+    Path(".env.example"),
+    Path("deploy/.env.server.example"),
+}
 
 
 def should_skip(rel: Path) -> bool:
     parts = rel.parts
     if any(p in EXCLUDE_NAMES for p in parts):
+        return True
+    if rel.name.startswith(".env") and rel not in ALLOWED_ENV_FILES:
         return True
     if rel.name in EXCLUDE_FILES:
         return True

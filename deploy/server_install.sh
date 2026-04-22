@@ -6,6 +6,9 @@ APP_PORT="${APP_PORT:-8502}"
 SERVICE_NAME="${SERVICE_NAME:-internpath}"
 APP_USER="${APP_USER:-internpath}"
 REQUIREMENTS_FILE="${REQUIREMENTS_FILE:-$APP_DIR/requirements.server.txt}"
+APP_ENV_FILE="${APP_ENV_FILE:-$APP_DIR/.env}"
+PERSISTENT_ENV_DIR="${PERSISTENT_ENV_DIR:-/etc/internpath}"
+PERSISTENT_ENV_FILE="${PERSISTENT_ENV_FILE:-$PERSISTENT_ENV_DIR/app.env}"
 
 if [[ ! -f "$REQUIREMENTS_FILE" ]]; then
   echo "Requirements file not found: $REQUIREMENTS_FILE"
@@ -25,16 +28,24 @@ python3 -m venv "$APP_DIR/.venv"
 "$APP_DIR/.venv/bin/pip" install --upgrade pip
 "$APP_DIR/.venv/bin/pip" install -r "$REQUIREMENTS_FILE"
 
-if [[ ! -f "$APP_DIR/.env" ]]; then
-  cp "$APP_DIR/deploy/.env.server.example" "$APP_DIR/.env"
-  echo "Created $APP_DIR/.env from example. Edit it before using the AI features."
+mkdir -p "$PERSISTENT_ENV_DIR"
+chmod 700 "$PERSISTENT_ENV_DIR"
+
+if [[ ! -f "$PERSISTENT_ENV_FILE" ]]; then
+  if [[ -f "$APP_ENV_FILE" ]]; then
+    cp "$APP_ENV_FILE" "$PERSISTENT_ENV_FILE"
+    echo "Copied runtime environment from $APP_ENV_FILE to $PERSISTENT_ENV_FILE."
+  else
+    cp "$APP_DIR/deploy/.env.server.example" "$PERSISTENT_ENV_FILE"
+    echo "Created $PERSISTENT_ENV_FILE from example. Edit it before using the AI features."
+  fi
 fi
 
 mkdir -p "$APP_DIR/.cache"
 chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 chmod 750 "$APP_DIR"
 chmod 700 "$APP_DIR/.cache"
-chmod 600 "$APP_DIR/.env"
+chmod 600 "$PERSISTENT_ENV_FILE"
 
 cat >/etc/systemd/system/${SERVICE_NAME}.service <<EOF
 [Unit]
@@ -46,7 +57,7 @@ Type=simple
 User=${APP_USER}
 Group=${APP_USER}
 WorkingDirectory=${APP_DIR}
-EnvironmentFile=${APP_DIR}/.env
+EnvironmentFile=${PERSISTENT_ENV_FILE}
 Environment=HOME=${APP_DIR}
 Environment=XDG_CACHE_HOME=${APP_DIR}/.cache
 ExecStart=${APP_DIR}/.venv/bin/streamlit run ${APP_DIR}/app.py --server.address 0.0.0.0 --server.port ${APP_PORT} --browser.gatherUsageStats false

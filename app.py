@@ -21,13 +21,278 @@ LOGIN_MAX_LOCK_SECONDS = 900
 MAX_RECORD_NAME_LENGTH = 60
 IS_WINDOWS_RUNTIME = os.name == "nt"
 DRAFT_RECORD_OPTION = "__draft_record_option__"
-LAUNCH_ACTION_STYLE = """
+APP_STYLE = """
 <style>
+  :root {
+    --app-bg: #f3f0ea;
+    --panel: rgba(255, 255, 255, 0.78);
+    --panel-strong: rgba(255, 255, 255, 0.92);
+    --line: rgba(28, 32, 38, 0.08);
+    --line-strong: rgba(28, 32, 38, 0.14);
+    --text: #171a1f;
+    --muted: #67707c;
+    --accent: #1d4ed8;
+    --accent-soft: rgba(29, 78, 216, 0.10);
+    --green: #0f766e;
+    --green-soft: rgba(15, 118, 110, 0.10);
+    --danger-soft: rgba(153, 27, 27, 0.08);
+    --shadow: 0 20px 50px rgba(26, 32, 44, 0.08);
+    --radius-lg: 24px;
+    --radius-md: 18px;
+    --radius-sm: 12px;
+  }
+
+  .stApp {
+    background:
+      radial-gradient(circle at top left, rgba(29, 78, 216, 0.09), transparent 28%),
+      radial-gradient(circle at top right, rgba(15, 118, 110, 0.07), transparent 22%),
+      linear-gradient(180deg, #f7f5f1 0%, var(--app-bg) 100%);
+    color: var(--text);
+  }
+
+  .stApp [data-testid="stAppViewContainer"] > .main {
+    background: transparent;
+  }
+
+  .stApp [data-testid="stHeader"] {
+    background: rgba(247, 245, 241, 0.7);
+    backdrop-filter: blur(10px);
+  }
+
+  .stApp [data-testid="stSidebar"] {
+    background: rgba(252, 251, 248, 0.84);
+    border-right: 1px solid rgba(28, 32, 38, 0.06);
+  }
+
+  .stApp [data-testid="stSidebar"] > div:first-child {
+    padding-top: 1.25rem;
+  }
+
+  .block-container {
+    max-width: 1200px;
+    padding-top: 2.5rem;
+    padding-bottom: 3rem;
+  }
+
+  h1, h2, h3 {
+    color: var(--text);
+    letter-spacing: -0.02em;
+  }
+
+  h1 {
+    font-size: 2.3rem;
+    font-weight: 700;
+  }
+
+  h2, h3 {
+    font-weight: 650;
+  }
+
+  p, li, label, .stCaption, .stMarkdown, .stText, .stAlert {
+    color: var(--text);
+  }
+
+  .app-shell {
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+    margin-bottom: 1.25rem;
+  }
+
+  .hero-panel,
+  .section-panel,
+  .metric-panel,
+  .summary-panel,
+  .skill-panel,
+  .course-card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(16px);
+  }
+
+  .hero-panel {
+    border-radius: 28px;
+    padding: 1.75rem 1.8rem;
+  }
+
+  .hero-eyebrow,
+  .section-eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.32rem 0.72rem;
+    border-radius: 999px;
+    border: 1px solid var(--line-strong);
+    background: rgba(255, 255, 255, 0.6);
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .hero-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.8fr) minmax(280px, 0.95fr);
+    gap: 1.2rem;
+    margin-top: 1rem;
+  }
+
+  .hero-copy h1 {
+    margin: 0.85rem 0 0.55rem 0;
+  }
+
+  .hero-copy p {
+    margin: 0;
+    max-width: 42rem;
+    line-height: 1.72;
+    color: var(--muted);
+    font-size: 1rem;
+  }
+
+  .hero-aside {
+    border-left: 1px solid var(--line);
+    padding-left: 1.1rem;
+    display: grid;
+    gap: 0.85rem;
+    align-content: start;
+  }
+
+  .hero-note {
+    padding: 0.95rem 1rem;
+    border-radius: var(--radius-md);
+    background: rgba(255, 255, 255, 0.68);
+    border: 1px solid var(--line);
+  }
+
+  .hero-note strong {
+    display: block;
+    margin-bottom: 0.28rem;
+    font-size: 0.95rem;
+  }
+
+  .hero-note span {
+    color: var(--muted);
+    font-size: 0.92rem;
+    line-height: 1.6;
+  }
+
+  .section-panel {
+    border-radius: var(--radius-lg);
+    padding: 1.3rem 1.35rem 1rem 1.35rem;
+    margin: 0.85rem 0 1rem 0;
+  }
+
+  .section-title {
+    margin: 0.8rem 0 0.35rem 0;
+    font-size: 1.34rem;
+    font-weight: 650;
+  }
+
+  .section-description {
+    margin: 0;
+    color: var(--muted);
+    line-height: 1.65;
+    font-size: 0.96rem;
+    max-width: 48rem;
+  }
+
+  .metric-panel,
+  .summary-panel {
+    min-height: 100%;
+    border-radius: var(--radius-md);
+    padding: 1.15rem 1.2rem;
+  }
+
+  .metric-label,
+  .summary-label {
+    display: block;
+    font-size: 0.82rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 0.7rem;
+  }
+
+  .metric-value {
+    font-size: 1.85rem;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+  }
+
+  .summary-value {
+    margin: 0;
+    color: var(--text);
+    line-height: 1.72;
+    font-size: 0.98rem;
+  }
+
+  .skill-panel {
+    border-radius: var(--radius-md);
+    padding: 1rem 1.1rem;
+  }
+
+  .skill-cloud {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.7rem;
+  }
+
+  .skill-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.58rem 0.92rem;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.82);
+    border: 1px solid var(--line);
+    color: #27303b;
+    font-size: 0.92rem;
+    font-weight: 600;
+  }
+
+  .course-card {
+    border-radius: var(--radius-md);
+    padding: 1rem 1.05rem;
+    height: 100%;
+  }
+
+  .course-card h4 {
+    margin: 0 0 0.55rem 0;
+    font-size: 1rem;
+    line-height: 1.5;
+  }
+
+  .course-card h4 a {
+    color: var(--text) !important;
+    text-decoration: none;
+  }
+
+  .course-meta,
+  .course-stats {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.9rem;
+    line-height: 1.65;
+  }
+
+  .course-score {
+    display: inline-flex;
+    align-items: center;
+    margin-top: 0.95rem;
+    padding: 0.34rem 0.7rem;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 0.84rem;
+    font-weight: 700;
+  }
+
   .launch-actions {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.75rem;
-    margin: 0.5rem 0 1rem 0;
+    gap: 0.8rem;
+    margin: 0.6rem 0 0.6rem 0;
   }
   .launch-action,
   .launch-action:link,
@@ -44,18 +309,18 @@ LAUNCH_ACTION_STYLE = """
     display: flex;
     align-items: center;
     justify-content: center;
-    min-height: 2.9rem;
+    min-height: 3rem;
     padding: 0 1rem;
-    border-radius: 0.85rem;
+    border-radius: 14px;
     border: 1px solid transparent;
     color: #ffffff !important;
     -webkit-text-fill-color: #ffffff !important;
     text-decoration: none !important;
-    font-weight: 800;
-    font-size: 1rem;
+    font-weight: 700;
+    font-size: 0.96rem;
     letter-spacing: 0.01em;
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+    text-shadow: none;
+    box-shadow: none;
   }
   .launch-action span,
   a[href^="aismartdrill://"] span {
@@ -70,12 +335,113 @@ LAUNCH_ACTION_STYLE = """
     background: #0f766e;
     border-color: #115e59;
   }
+
+  div[data-testid="stForm"],
+  div[data-testid="stExpander"],
+  .stAlert,
+  div[data-testid="stMetric"],
+  div[data-testid="stTextArea"],
+  div[data-testid="stSelectbox"],
+  div[data-testid="stNumberInput"],
+  div[data-testid="stTextInput"] {
+    border-radius: var(--radius-md);
+  }
+
+  div[data-testid="stForm"] {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    box-shadow: var(--shadow);
+    padding: 1.1rem 1.1rem 0.6rem 1.1rem;
+  }
+
+  div[data-testid="stTextArea"] textarea,
+  div[data-testid="stTextInput"] input {
+    background: rgba(255, 255, 255, 0.88) !important;
+    border-radius: 14px !important;
+    border: 1px solid rgba(28, 32, 38, 0.10) !important;
+    color: var(--text) !important;
+  }
+
+  div[data-testid="stTextArea"] textarea {
+    line-height: 1.7;
+    font-size: 0.98rem;
+    min-height: 17rem;
+  }
+
+  div[data-testid="InputInstructions"] {
+    display: none !important;
+  }
+
+  .stButton > button {
+    border-radius: 14px;
+    min-height: 2.95rem;
+    border: 1px solid rgba(28, 32, 38, 0.10);
+    background: rgba(255, 255, 255, 0.82);
+    color: var(--text);
+    font-weight: 600;
+    box-shadow: none;
+  }
+
+  .stButton > button *,
+  .stButton > button p,
+  .stButton > button span,
+  .stButton > button div {
+    color: inherit !important;
+  }
+
+  .stButton > button[kind="primary"] {
+    background: var(--text);
+    color: #f8f7f3;
+    border-color: var(--text);
+  }
+
+  .stButton > button:hover {
+    border-color: rgba(28, 32, 38, 0.18);
+    background: rgba(255, 255, 255, 0.95);
+  }
+
+  .stButton > button[kind="primary"]:hover {
+    background: #232933;
+    border-color: #232933;
+  }
+
+  .stAlert {
+    border: 1px solid var(--line);
+    box-shadow: none;
+    background: var(--panel-strong);
+  }
+
+  .stAlert[data-baseweb="notification"] {
+    border-radius: var(--radius-md);
+  }
+
+  .stMarkdown hr {
+    margin: 1.2rem 0;
+    border-top: 1px solid rgba(28, 32, 38, 0.08);
+  }
+
+  @media (max-width: 900px) {
+    .hero-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .hero-aside {
+      border-left: none;
+      border-top: 1px solid var(--line);
+      padding-left: 0;
+      padding-top: 1rem;
+    }
+
+    .launch-actions {
+      grid-template-columns: 1fr;
+    }
+  }
 </style>
 """
 
 st.set_page_config(
-    page_title="CareerPath AI - 职业规划助手",
-    page_icon="🎯",
+    page_title="InternPath - 职业规划助手",
+    page_icon="●",
     layout="wide",
 )
 
@@ -135,28 +501,116 @@ def verify_password(password: str) -> bool:
     return hmac.compare_digest(password, APP_PASSWORD)
 
 
-def reset_login_throttle():
+@st.cache_resource
+def get_login_throttle_store():
+    return {}
+
+
+def get_client_signature() -> str:
+    forwarded_for = ""
+    real_ip = ""
+    user_agent = ""
+
+    try:
+        headers = st.context.headers
+        if headers:
+            forwarded_for = headers.get("X-Forwarded-For", "") or headers.get("x-forwarded-for", "")
+            real_ip = headers.get("X-Real-Ip", "") or headers.get("x-real-ip", "")
+            user_agent = headers.get("User-Agent", "") or headers.get("user-agent", "")
+    except Exception:
+        pass
+
+    try:
+        cookies = st.context.cookies
+        session_cookie = cookies.get("_streamlit_session", "") if cookies else ""
+    except Exception:
+        session_cookie = ""
+
+    raw = "|".join(
+        part.strip()
+        for part in (forwarded_for, real_ip, user_agent, session_cookie)
+        if part and part.strip()
+    )
+    if not raw:
+        raw = st.session_state.get("_login_fallback_key", "")
+        if not raw:
+            raw = hashlib.sha256(f"session:{time.time()}".encode("utf-8")).hexdigest()
+            st.session_state["_login_fallback_key"] = raw
+
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def prune_login_throttle_store(now: float):
+    store = get_login_throttle_store()
+    stale_keys = [
+        key
+        for key, entry in store.items()
+        if now - entry.get("last_seen", 0.0) > LOGIN_MAX_LOCK_SECONDS * 4
+    ]
+    for key in stale_keys:
+        store.pop(key, None)
+
+
+def get_login_throttle_state(client_signature: str) -> dict:
+    now = time.time()
+    prune_login_throttle_store(now)
+    store = get_login_throttle_store()
+    entry = store.setdefault(
+        client_signature,
+        {"failed_attempts": 0, "locked_until": 0.0, "last_seen": now},
+    )
+    entry["last_seen"] = now
+    return entry
+
+
+def reset_login_throttle(client_signature: Optional[str] = None):
     st.session_state.login_failed_attempts = 0
     st.session_state.login_locked_until = 0.0
+    if client_signature is None:
+        return
+
+    store = get_login_throttle_store()
+    store.pop(client_signature, None)
 
 
-def register_failed_login():
-    attempts = st.session_state.login_failed_attempts + 1
+def register_failed_login(client_signature: str):
+    entry = get_login_throttle_state(client_signature)
+    attempts = entry.get("failed_attempts", 0) + 1
+    entry["failed_attempts"] = attempts
+    entry["last_seen"] = time.time()
     st.session_state.login_failed_attempts = attempts
     if attempts < LOGIN_MAX_ATTEMPTS:
         return
 
     exponent = attempts - LOGIN_MAX_ATTEMPTS
     lock_seconds = min(LOGIN_MAX_LOCK_SECONDS, LOGIN_BASE_LOCK_SECONDS * (2**exponent))
-    st.session_state.login_locked_until = time.time() + lock_seconds
+    locked_until = time.time() + lock_seconds
+    entry["locked_until"] = locked_until
+    st.session_state.login_locked_until = locked_until
 
 
 def render_login_gate() -> bool:
     if st.session_state.authenticated:
         return True
 
-    st.title("🔐 InternPath 访问验证")
-    st.caption("请输入访问密码后继续。")
+    client_signature = get_client_signature()
+    throttle_state = get_login_throttle_state(client_signature)
+    st.session_state.login_failed_attempts = throttle_state.get("failed_attempts", 0)
+    st.session_state.login_locked_until = throttle_state.get("locked_until", 0.0)
+
+    st.markdown(APP_STYLE, unsafe_allow_html=True)
+    st.markdown(
+        """
+        <section class="section-panel" style="max-width: 44rem; margin: 4rem auto 1rem auto;">
+          <span class="section-eyebrow">Access</span>
+          <h1 class="section-title" style="margin-top: 0.9rem;">进入 InternPath</h1>
+          <p class="section-description">
+            请输入访问密码后继续。界面会保留最少必要信息，避免营销化装饰和过度提示。
+          </p>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
 
     remaining_lock = max(0, int(st.session_state.login_locked_until - time.time()))
     if remaining_lock > 0:
@@ -173,11 +627,11 @@ def render_login_gate() -> bool:
     if submitted and remaining_lock <= 0:
         if verify_password(password):
             st.session_state.authenticated = True
-            reset_login_throttle()
+            reset_login_throttle(client_signature)
             st.rerun()
 
-        register_failed_login()
-        st.error("访问密码错误。")
+        register_failed_login(client_signature)
+        st.error("访问密码错误。多次失败后会触发更长时间的锁定。")
 
     return st.session_state.authenticated
 
@@ -257,6 +711,52 @@ def save_current_analysis(service: CareerPathAIService):
 def show_safe_error(message: str, exc: Exception):
     print(f"{message}: {exc}")
     st.error(message)
+
+
+def render_app_shell():
+    st.markdown(APP_STYLE, unsafe_allow_html=True)
+    st.markdown(
+        """
+        <section class="app-shell">
+          <div class="hero-panel">
+            <span class="hero-eyebrow">InternPath</span>
+            <div class="hero-grid">
+              <div class="hero-copy">
+                <h1>职业信息拆解与学习路线整理</h1>
+                <p>
+                  用更安静、更清晰的界面处理岗位 JD。先提取技能与岗位要求，再整理课程与刷题衔接，
+                  保留一条可回看的分析历史，而不是堆叠夸张提示和“AI 感”装饰。
+                </p>
+              </div>
+              <div class="hero-aside">
+                <div class="hero-note">
+                  <strong>更像专业工具</strong>
+                  <span>克制配色、明确层级、少噪音反馈，优先保证可读性和决策效率。</span>
+                </div>
+                <div class="hero-note">
+                  <strong>同一条工作流</strong>
+                  <span>JD 输入、分析结果、课程筛选和本地刷题衔接保持在同一个视图里完成。</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_section_intro(eyebrow: str, title: str, description: str):
+    st.markdown(
+        f"""
+        <section class="section-panel">
+          <span class="section-eyebrow">{eyebrow}</span>
+          <h2 class="section-title">{title}</h2>
+          <p class="section-description">{description}</p>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 @st.cache_resource
@@ -349,7 +849,11 @@ def render_history_sidebar(service: CareerPathAIService):
 
 
 def render_analysis_input(service: CareerPathAIService):
-    st.subheader("输入岗位 JD")
+    render_section_intro(
+        "Input",
+        "输入岗位 JD",
+        "粘贴岗位职责、任职要求或招聘描述。分析会先生成草稿，确认内容后再保存到历史记录。",
+    )
     jd_text = st.text_area(
         "请粘贴岗位职责或招聘要求：",
         height=220,
@@ -393,8 +897,11 @@ def render_analysis_input(service: CareerPathAIService):
 
 def render_courses(service: CareerPathAIService, analysis):
     if not st.session_state.search_courses:
-        st.markdown("---")
-        st.subheader("课程搜索")
+        render_section_intro(
+            "Courses",
+            "课程搜索",
+            "基于当前技能结果筛选相关课程。只保留最需要的指标，避免把页面做成噪音密集的榜单。",
+        )
         if st.button("开始搜索相关课程", type="primary"):
             st.session_state.search_courses = True
             st.session_state.searching = True
@@ -419,8 +926,11 @@ def render_courses(service: CareerPathAIService, analysis):
     if not st.session_state.courses_result:
         return
 
-    st.markdown("---")
-    st.subheader("推荐课程")
+    render_section_intro(
+        "Courses",
+        "推荐课程",
+        "按技能分组展示课程结果，优先呈现标题、来源、时间和综合评分。",
+    )
 
     skill_courses = defaultdict(list)
     for course in st.session_state.courses_result:
@@ -431,13 +941,17 @@ def render_courses(service: CareerPathAIService, analysis):
         cols = st.columns(3)
         for idx, course in enumerate(course_list[:3]):
             with cols[idx]:
-                with st.container(border=True):
-                    st.markdown(f"**[{course.title}]({course.url})**")
-                    st.caption(f"UP 主：{course.uploader} | 日期：{course.publish_date}")
-                    st.write(
-                        f"播放：{course.view_count:,} | 收藏：{course.favorite_count:,} | 点赞：{course.like_count:,}"
-                    )
-                    st.progress(course.rank_score / 100, text=f"综合评分：{course.rank_score:.1f}")
+                st.markdown(
+                    f"""
+                    <article class="course-card">
+                      <h4><a href="{course.url}" target="_blank">{course.title}</a></h4>
+                      <p class="course-meta">UP 主：{course.uploader} · 发布：{course.publish_date}</p>
+                      <p class="course-stats">播放 {course.view_count:,} · 收藏 {course.favorite_count:,} · 点赞 {course.like_count:,}</p>
+                      <span class="course-score">综合评分 {course.rank_score:.1f}</span>
+                    </article>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
 
 def _sync_practice_exam_state(analysis):
@@ -481,8 +995,11 @@ def _build_exam_options_from_session() -> Optional[ExamOptionsForPractice]:
 
 
 def render_practice_sync(service: CareerPathAIService, analysis):
-    st.markdown("---")
-    st.subheader("刷题软件联动（AiSmartDrill）")
+    render_section_intro(
+        "Practice",
+        "刷题软件联动",
+        "需要时再把分析结果送入本地刷题流程。默认保持轻量，不抢占主界面的阅读节奏。",
+    )
 
     _sync_practice_exam_state(analysis)
 
@@ -537,7 +1054,6 @@ def render_practice_sync(service: CareerPathAIService, analysis):
             auto_proceed=True,
         )
 
-        st.markdown(LAUNCH_ACTION_STYLE, unsafe_allow_html=True)
         st.markdown(
             f"""
             <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0.75rem;margin:0.5rem 0 1rem 0;">
@@ -605,23 +1121,47 @@ def render_analysis_result(service: CareerPathAIService):
     if analysis is None:
         return
 
-    st.markdown("---")
-    st.subheader("分析结果")
+    render_section_intro(
+        "Analysis",
+        "分析结果",
+        "先给出岗位难度和岗位概述，再把技能拆成可快速扫读的标签，减少一屏里过多跳跃信息。",
+    )
 
     if st.session_state.get("jd_record_id") is None:
         st.info("当前分析尚未保存到历史记录。")
 
     col1, col2 = st.columns([1, 2])
     with col1:
-        st.metric("难度评估", analysis.difficulty)
+        st.markdown(
+            f"""
+            <section class="metric-panel">
+              <span class="metric-label">难度评估</span>
+              <div class="metric-value">{analysis.difficulty}</div>
+            </section>
+            """,
+            unsafe_allow_html=True,
+        )
     with col2:
-        st.info(f"**岗位概述：** {analysis.job_summary}")
+        st.markdown(
+            f"""
+            <section class="summary-panel">
+              <span class="summary-label">岗位概述</span>
+              <p class="summary-value">{analysis.job_summary}</p>
+            </section>
+            """,
+            unsafe_allow_html=True,
+        )
 
-    st.subheader("提取的技能")
-    skill_cols = st.columns(4)
-    for idx, skill in enumerate(analysis.skills):
-        with skill_cols[idx % 4]:
-            st.success(f"🔹 {skill}")
+    chips = "".join(f'<span class="skill-chip">{skill}</span>' for skill in analysis.skills)
+    st.markdown(
+        f"""
+        <section class="skill-panel">
+          <span class="summary-label">提取的技能</span>
+          <div class="skill-cloud">{chips}</div>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
 
     render_courses(service, analysis)
     render_practice_sync(service, analysis)
@@ -633,11 +1173,10 @@ if not render_login_gate():
 
 service = get_service()
 
-st.title("🎯 CareerPath AI - 职业规划助手")
-st.markdown("---")
+render_app_shell()
 render_history_sidebar(service)
 render_analysis_input(service)
 render_analysis_result(service)
 
 st.markdown("---")
-st.caption("CareerPath AI © 2026")
+st.caption("InternPath · Focused JD analysis workspace")

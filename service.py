@@ -180,12 +180,12 @@ class CareerPathAIService:
             enable_hallucination_check=bool(active_options.get("enableHallucinationCheck")),
             enable_rewrite=bool(active_options.get("enableRewrite")),
         )
-        db.update_analysis_task_status(task_id, "PROCESSING")
+        db.update_analysis_task_status(user_id, task_id, "PROCESSING")
 
         try:
             analysis = original_analysis or self.extract_skills(jd_text)
         except Exception as exc:
-            db.update_analysis_task_status(task_id, "FAILED", str(exc))
+            db.update_analysis_task_status(user_id, task_id, "FAILED", str(exc))
             raise
 
         try:
@@ -236,7 +236,7 @@ class CareerPathAIService:
                 task_id,
                 data.get("qualityEvaluation") or {},
             )
-            db.update_analysis_task_status(task_id, "SUCCESS")
+            db.update_analysis_task_status(user_id, task_id, "SUCCESS")
             response["taskId"] = task_id
             response["reportId"] = report_id
             response["saved"] = True
@@ -244,7 +244,7 @@ class CareerPathAIService:
             response["selectedDocumentIds"] = selected_document_ids or []
             return response
         except Exception as exc:  # noqa: BLE001
-            db.update_analysis_task_status(task_id, "FAILED", str(exc))
+            db.update_analysis_task_status(user_id, task_id, "FAILED", str(exc))
             return {
                 "taskId": task_id,
                 "status": "failed",
@@ -280,7 +280,7 @@ class CareerPathAIService:
         status: str,
         error_message: Optional[str] = None,
     ) -> None:
-        self.user_db(user_id).update_analysis_task_status(task_id, status, error_message)
+        self.user_db(user_id).update_analysis_task_status(user_id, task_id, status, error_message)
 
     def save_analysis_report(self, user_id: int, **kwargs) -> int:
         return self.user_db(user_id).save_analysis_report(user_id=user_id, **kwargs)
@@ -300,25 +300,25 @@ class CareerPathAIService:
         task_id: Optional[str] = None,
         report_id: Optional[int] = None,
     ) -> Optional[dict]:
-        return self.user_db(user_id).get_analysis_report(task_id=task_id, report_id=report_id)
+        return self.user_db(user_id).get_analysis_report(user_id, task_id=task_id, report_id=report_id)
 
     def list_analysis_reports(self, user_id: int, limit: int = 20) -> List[dict]:
         return self.user_db(user_id).list_analysis_reports(user_id, limit)
 
     def get_claim_check_results(self, user_id: int, task_id: str) -> List[dict]:
-        return self.user_db(user_id).get_claim_check_results(task_id)
+        return self.user_db(user_id).get_claim_check_results(user_id, task_id)
 
     def save_workflow_logs(self, user_id: int, task_id: str, workflow_logs: List[dict]) -> None:
         self.user_db(user_id).save_workflow_logs(user_id, task_id, workflow_logs)
 
     def get_workflow_logs(self, user_id: int, task_id: str) -> List[dict]:
-        return self.user_db(user_id).get_workflow_logs(task_id)
+        return self.user_db(user_id).get_workflow_logs(user_id, task_id)
 
     def save_quality_evaluation(self, user_id: int, task_id: str, quality_evaluation: dict) -> None:
         self.user_db(user_id).save_quality_evaluation(user_id, task_id, quality_evaluation)
 
     def get_quality_evaluation(self, user_id: int, task_id: str) -> Optional[dict]:
-        return self.user_db(user_id).get_quality_evaluation(task_id)
+        return self.user_db(user_id).get_quality_evaluation(user_id, task_id)
 
     def list_low_quality_reports(self, user_id: int, limit: int = 20) -> List[dict]:
         return self.user_db(user_id).list_low_quality_reports(user_id, limit)
@@ -354,16 +354,17 @@ class CareerPathAIService:
             )
             db.save_knowledge_chunks(user_id, document_id, chunks)
             db.update_knowledge_document_status(
+                user_id,
                 document_id,
                 "READY",
                 error_message="",
                 chunk_count=len(chunks),
             )
-            return db.get_knowledge_document(document_id, user_id) or {}
+            return db.get_knowledge_document(user_id, document_id) or {}
         except Exception as exc:
             if document_id is not None:
-                db.update_knowledge_document_status(document_id, "FAILED", str(exc), 0)
-                failed = db.get_knowledge_document(document_id, user_id)
+                db.update_knowledge_document_status(user_id, document_id, "FAILED", str(exc), 0)
+                failed = db.get_knowledge_document(user_id, document_id)
                 if failed:
                     return failed
             raise
@@ -381,7 +382,7 @@ class CareerPathAIService:
         user_id: int,
         document_ids: List[int],
     ) -> List[dict]:
-        chunks = self.user_db(user_id).get_knowledge_chunks(document_ids, user_id)
+        chunks = self.user_db(user_id).get_knowledge_chunks(user_id, document_ids)
         out: List[dict] = []
         for chunk in chunks:
             metadata = dict(chunk.get("metadata") or {})
@@ -404,7 +405,7 @@ class CareerPathAIService:
         return out
 
     def delete_knowledge_document(self, user_id: int, document_id: int) -> bool:
-        return self.user_db(user_id).delete_knowledge_document(document_id, user_id)
+        return self.user_db(user_id).delete_knowledge_document(user_id, document_id)
 
     def search_courses(self, skills: List[str]) -> List[BilibiliCourse]:
         all_courses = []
@@ -516,6 +517,7 @@ class CareerPathAIService:
         db = self.user_db(user_id)
         job_id = db.insert_job_posting(posting)
         db.add_salary_snapshot(
+            user_id,
             job_id,
             posting.salary_monthly_k,
             note="初始录入",
@@ -532,21 +534,21 @@ class CareerPathAIService:
         parsed, _plain = scrape_salary_from_url(url)
         if parsed is None:
             return None
-        db.add_salary_snapshot(job_posting_id, parsed, note=f"页面抓取: {url}")
-        db.update_job_posting_salary(job_posting_id, parsed)
+        db.add_salary_snapshot(user_id, job_posting_id, parsed, note=f"页面抓取: {url}")
+        db.update_job_posting_salary(user_id, job_posting_id, parsed)
         return parsed
 
     def get_salary_snapshots(self, user_id: int, job_posting_id: int) -> List[SalarySnapshot]:
         db = self.user_db(user_id)
         if not db.job_posting_belongs_to_user(user_id, job_posting_id):
             return []
-        return db.get_salary_snapshots(job_posting_id)
+        return db.get_salary_snapshots(user_id, job_posting_id)
 
     def predict_salary_for_job(self, user_id: int, job_posting_id: int) -> SalaryTrendPrediction:
         db = self.user_db(user_id)
         if not db.job_posting_belongs_to_user(user_id, job_posting_id):
             raise ValueError("job_not_found")
-        snaps = db.get_salary_snapshots(job_posting_id)
+        snaps = db.get_salary_snapshots(user_id, job_posting_id)
         if not snaps:
             raise ValueError("没有薪酬历史，无法预测")
         history = [(s.observed_at, s.salary_monthly_k) for s in snaps]

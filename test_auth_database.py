@@ -155,19 +155,17 @@ def test_fit_scores_are_scoped_by_user(db_path):
     assert set(db.get_latest_fit_score_by_jd(bob)) == {bob_jd}
 
 
-def test_user_databases_are_separate_files(db_path, monkeypatch):
-    user_root = Path(db_path).parent / f"user_data_{Path(db_path).stem}"
-    monkeypatch.setattr(Config, "USER_DB_DIR", str(user_root))
+def test_user_data_isolation_single_database(db_path, monkeypatch):
+    monkeypatch.setattr(Config, "DB_PATH", db_path)
 
     alice_db = Database.for_user(1)
     bob_db = Database.for_user(2)
     alice_jd = alice_db.save_jd_record(1, "alice jd", make_analysis())
     bob_jd = bob_db.save_jd_record(2, "bob jd", make_analysis())
 
-    assert alice_db.db_path != bob_db.db_path
+    assert alice_db.db_path == bob_db.db_path
     assert Path(alice_db.db_path).is_file()
-    assert Path(bob_db.db_path).is_file()
     assert [record.id for record in alice_db.get_jd_records(1)] == [alice_jd]
     assert [record.id for record in bob_db.get_jd_records(2)] == [bob_jd]
-    assert alice_db.get_jd_records(2) == []
-    assert bob_db.get_jd_records(1) == []
+    assert alice_db.get_jd_record_by_id(2, alice_jd) is None
+    assert bob_db.get_jd_record_by_id(1, bob_jd) is None

@@ -4,7 +4,6 @@ import { safeParseModelJson } from "../utils/safeParseModelJson";
 const DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 
 function validateGeminiConfig(config: ChatModelConfig) {
-  if (!config.apiKey.trim()) throw new Error("API Key 不能为空");
   if (!config.modelId.trim()) throw new Error("Model ID 不能为空");
   if ((config.temperature ?? 0.2) < 0 || (config.temperature ?? 0.2) > 2) throw new Error("Temperature 不合法");
   if ((config.maxOutputTokens ?? 4096) <= 0) throw new Error("Max Output Tokens 不合法");
@@ -83,10 +82,6 @@ export async function callGeminiWithConfig(input: {
 }): Promise<string> {
   const { config, prompt, forceJson = true, responseSchema, overrideGenerationConfig, debugCapture } = input;
 
-  if (!config.apiKey?.trim()) {
-    throw new Error("Gemini API Key 不能为空");
-  }
-
   if (!config.modelId?.trim()) {
     throw new Error("Gemini Model ID 不能为空");
   }
@@ -137,14 +132,17 @@ export async function callGeminiWithConfig(input: {
       generationConfig,
     });
 
-    let response = await fetch(url, {
+    let response = await fetch("/api/models/chat-completions", {
       method: "POST",
       signal: controller.signal,
       headers: {
         "Content-Type": "application/json",
-        "x-goog-api-key": config.apiKey,
       },
-      body: JSON.stringify(requestBodyObj),
+      body: JSON.stringify({
+        provider: "gemini",
+        modelId: config.modelId.trim(),
+        requestBody: requestBodyObj,
+      }),
     });
 
     let raw = await response.text();
@@ -171,14 +169,17 @@ export async function callGeminiWithConfig(input: {
           generationConfig,
         });
 
-        response = await fetch(url, {
+        response = await fetch("/api/models/chat-completions", {
           method: "POST",
           signal: controller.signal,
           headers: {
             "Content-Type": "application/json",
-            "x-goog-api-key": config.apiKey,
           },
-          body: JSON.stringify(fallbackRequestBodyObj),
+          body: JSON.stringify({
+            provider: "gemini",
+            modelId: config.modelId.trim(),
+            requestBody: fallbackRequestBodyObj,
+          }),
         });
         raw = await response.text();
         if (debugCapture) {

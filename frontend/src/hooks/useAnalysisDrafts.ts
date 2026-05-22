@@ -1,32 +1,40 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AnalysisDraft, AnalysisDraftStatus } from "../types/analysisDraft";
 import type { AnalysisStep, AnalysisStepId } from "../types/analysis";
 import type { UploadedResumeFile, ParsedResume } from "../types/resume";
 import {
-  getAnalysisDrafts,
-  saveAnalysisDraft,
-  createAnalysisDraft,
-  updateAnalysisDraft,
-  deleteAnalysisDraft,
-  clearConvertedDrafts,
-  getLatestDraft,
-} from "../utils/analysisDraftStorage";
+  fetchDrafts,
+  saveDraftToServer,
+  deleteDraftFromServer,
+  clearConvertedDraftsOnServer,
+} from "../services/draftService";
 import { safeUUID } from "../utils/uuid";
 
-export function useAnalysisDrafts() {
-  const [drafts, setDrafts] = useState<AnalysisDraft[]>(() => getAnalysisDrafts());
+export function useAnalysisDrafts(enabled = true) {
+  const [drafts, setDrafts] = useState<AnalysisDraft[]>([]);
 
-  const reloadDrafts = useCallback(() => {
-    setDrafts(getAnalysisDrafts());
-  }, []);
+  const reloadDrafts = useCallback(async () => {
+    if (!enabled) {
+      setDrafts([]);
+      return;
+    }
+
+    try {
+      const data = await fetchDrafts();
+      setDrafts(data);
+    } catch (err) {
+      console.error("[drafts] Failed to load from server:", err);
+    }
+  }, [enabled]);
+
+  useEffect(() => {
+    reloadDrafts();
+  }, [reloadDrafts]);
 
   const latestDraft = useMemo(() => {
     return drafts.find((d) => d.status !== "converted_to_history") || null;
   }, [drafts]);
 
-  /**
-   * Save current input values manually as a draft.
-   */
   const saveDraft = useCallback(
     (input: {
       id?: string;
@@ -42,73 +50,40 @@ export function useAnalysisDrafts() {
       chatConfigId?: string;
       analysisSettingsId?: string;
     }): AnalysisDraft => {
-      const draftsList = getAnalysisDrafts();
-      const existingId = input.id;
-      
       const now = new Date().toISOString();
+      const existingId = input.id;
 
-      let targetDraft: AnalysisDraft;
+      const targetDraft: AnalysisDraft = {
+        id: existingId || safeUUID(),
+        createdAt: now,
+        updatedAt: now,
+        status: "draft",
+        companyName: input.companyName,
+        jobTitle: input.jobTitle,
+        jdText: input.jdText,
+        targetType: input.targetType,
+        jobDirection: input.jobDirection,
+        notes: input.notes,
+        resumeFile: input.resumeFile || undefined,
+        parsedResume: input.parsedResume || undefined,
+        embeddingConfigId: input.embeddingConfigId,
+        chatConfigId: input.chatConfigId,
+        analysisSettingsId: input.analysisSettingsId,
+        metadata: {
+          jdLength: input.jdText?.length || 0,
+          chunksCount: input.parsedResume?.chunks?.length || 0,
+          source: "manual_save",
+        },
+      };
 
-      if (existingId && draftsList.some((d) => d.id === existingId)) {
-        // Update existing
-        targetDraft = {
-          id: existingId,
-          createdAt: draftsList.find((d) => d.id === existingId)!.createdAt,
-          updatedAt: now,
-          status: "draft",
-          companyName: input.companyName,
-          jobTitle: input.jobTitle,
-          jdText: input.jdText,
-          targetType: input.targetType,
-          jobDirection: input.jobDirection,
-          notes: input.notes,
-          resumeFile: input.resumeFile || undefined,
-          parsedResume: input.parsedResume || undefined,
-          embeddingConfigId: input.embeddingConfigId,
-          chatConfigId: input.chatConfigId,
-          analysisSettingsId: input.analysisSettingsId,
-          metadata: {
-            jdLength: input.jdText?.length || 0,
-            chunksCount: input.parsedResume?.chunks?.length || 0,
-            source: "manual_save",
-          },
-        };
-      } else {
-        // Create new
-        targetDraft = {
-          id: existingId || safeUUID(),
-          createdAt: now,
-          updatedAt: now,
-          status: "draft",
-          companyName: input.companyName,
-          jobTitle: input.jobTitle,
-          jdText: input.jdText,
-          targetType: input.targetType,
-          jobDirection: input.jobDirection,
-          notes: input.notes,
-          resumeFile: input.resumeFile || undefined,
-          parsedResume: input.parsedResume || undefined,
-          embeddingConfigId: input.embeddingConfigId,
-          chatConfigId: input.chatConfigId,
-          analysisSettingsId: input.analysisSettingsId,
-          metadata: {
-            jdLength: input.jdText?.length || 0,
-            chunksCount: input.parsedResume?.chunks?.length || 0,
-            source: "manual_save",
-          },
-        };
-      }
-
-      saveAnalysisDraft(targetDraft);
-      reloadDrafts();
+      saveDraftToServer(targetDraft).then(() => reloadDrafts()).catch((err) => {
+        console.error("[drafts] Server save failed:", err);
+      });
       return targetDraft;
     },
     [reloadDrafts],
   );
 
-  /**
-   * Automatically save a failed analysis as a draft.
-   */
   const saveFailedAnalysisDraft = useCallback(
     (input: {
       id?: string;
@@ -134,7 +109,7 @@ export function useAnalysisDrafts() {
       };
     }): AnalysisDraft => {
       const now = new Date().toISOString();
-      
+
       const targetDraft: AnalysisDraft = {
         id: input.id || safeUUID(),
         createdAt: now,
@@ -166,41 +141,40 @@ export function useAnalysisDrafts() {
         },
       };
 
-      saveAnalysisDraft(targetDraft);
-      reloadDrafts();
+      saveDraftToServer(targetDraft).then(() => reloadDrafts()).catch((err) => {
+        console.error("[drafts] Server save failed:", err);
+      });
       return targetDraft;
     },
     [reloadDrafts],
   );
 
-  /**
-   * Delete a draft by ID.
-   */
   const deleteDraft = useCallback(
     (id: string) => {
-      deleteAnalysisDraft(id);
-      reloadDrafts();
+      deleteDraftFromServer(id).then(() => reloadDrafts()).catch((err) => {
+        console.error("[drafts] Delete failed:", err);
+      });
     },
     [reloadDrafts],
   );
 
-  /**
-   * Update a draft's status or fields.
-   */
   const updateDraftStatus = useCallback(
     (id: string, status: AnalysisDraftStatus) => {
-      updateAnalysisDraft(id, { status });
-      reloadDrafts();
+      const existing = drafts.find((d) => d.id === id);
+      if (existing) {
+        const updated = { ...existing, status, updatedAt: new Date().toISOString() };
+        saveDraftToServer(updated).then(() => reloadDrafts()).catch((err) => {
+          console.error("[drafts] Status update failed:", err);
+        });
+      }
     },
-    [reloadDrafts],
+    [drafts, reloadDrafts],
   );
 
-  /**
-   * Clear all converted drafts.
-   */
   const clearConverted = useCallback(() => {
-    clearConvertedDrafts();
-    reloadDrafts();
+    clearConvertedDraftsOnServer().then(() => reloadDrafts()).catch((err) => {
+      console.error("[drafts] Clear converted failed:", err);
+    });
   }, [reloadDrafts]);
 
   return {

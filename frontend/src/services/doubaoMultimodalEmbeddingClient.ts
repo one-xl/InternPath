@@ -64,14 +64,18 @@ export function extractEmbeddingByProvider(responseJson: any, provider: string):
 
 async function postEmbedding(url: string, config: EmbeddingModelConfig, body: unknown): Promise<unknown> {
   const response = await fetchWithTimeout(
-    url,
+    "/api/models/embeddings",
     {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${config.apiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        provider: config.provider,
+        modelId: config.modelId,
+        requestBody: body,
+        endpoint: config.endpoint || DOUBAO_MULTIMODAL_EMBEDDING_ENDPOINT,
+      }),
     },
     config.timeoutMs ?? 60000,
   );
@@ -93,7 +97,6 @@ async function postEmbedding(url: string, config: EmbeddingModelConfig, body: un
 }
 
 export async function embedTextWithDoubaoMultimodal(text: string, config: EmbeddingModelConfig): Promise<number[]> {
-  if (!config.apiKey.trim()) throw new Error("API Key 不能为空");
   if (!config.modelId.trim()) throw new Error("Model ID 不能为空");
   if (!text.trim()) throw new Error("Embedding 文本不能为空");
 

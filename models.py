@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class User(BaseModel):
-    id: Optional[int] = None
+    id: Optional[Any] = None
     username: str
     created_at: datetime = Field(default_factory=datetime.now)
 
@@ -105,8 +105,8 @@ class SkillPackage(BaseModel):
 
 
 class JDRecord(BaseModel):
-    id: Optional[int] = None
-    user_id: Optional[int] = None
+    id: Optional[Any] = None
+    user_id: Optional[Any] = None
     jd_text: str
     analysis: JobAnalysis
     display_name: Optional[str] = None
@@ -114,10 +114,10 @@ class JDRecord(BaseModel):
 
 
 class AnalysisTask(BaseModel):
-    id: Optional[int] = None
-    user_id: int
+    id: Optional[Any] = None
+    user_id: Any
     task_id: str
-    jd_id: Optional[int] = None
+    jd_id: Optional[Any] = None
     status: str = "PENDING"
     enable_rag: bool = True
     enable_verification: bool = True
@@ -129,8 +129,8 @@ class AnalysisTask(BaseModel):
 
 
 class AnalysisReport(BaseModel):
-    id: Optional[int] = None
-    user_id: int
+    id: Optional[Any] = None
+    user_id: Any
     task_id: str
     jd_text: str = ""
     resume_text: str = ""
@@ -148,8 +148,8 @@ class AnalysisReport(BaseModel):
 
 
 class ClaimCheckResult(BaseModel):
-    id: Optional[int] = None
-    user_id: int
+    id: Optional[Any] = None
+    user_id: Any
     task_id: str
     claim_id: str = ""
     claim_text: str = ""
@@ -163,10 +163,10 @@ class ClaimCheckResult(BaseModel):
 
 
 class CourseRecord(BaseModel):
-    id: Optional[int] = None
+    id: Optional[Any] = None
     skill: str
     course: BilibiliCourse
-    jd_record_id: int
+    jd_record_id: Any
     created_at: datetime = Field(default_factory=datetime.now)
 
 
@@ -194,8 +194,8 @@ class SalaryTrendPrediction(BaseModel):
 
 
 class JobPosting(BaseModel):
-    id: Optional[int] = None
-    user_id: Optional[int] = None
+    id: Optional[Any] = None
+    user_id: Optional[Any] = None
     title: str
     company: str = ""
     region: str = ""
@@ -203,7 +203,7 @@ class JobPosting(BaseModel):
     longitude: Optional[float] = None
     transit_minutes: Optional[int] = None
     salary_monthly_k: float = Field(..., description="当前月薪中值，单位：千元/月")
-    jd_record_id: Optional[int] = None
+    jd_record_id: Optional[Any] = None
     source_url: str = ""
     created_at: datetime = Field(default_factory=datetime.now)
 
@@ -217,9 +217,9 @@ class SalarySnapshot(BaseModel):
 
 
 class FitExamAttempt(BaseModel):
-    id: Optional[int] = None
-    user_id: Optional[int] = None
-    jd_record_id: Optional[int] = None
+    id: Optional[Any] = None
+    user_id: Optional[Any] = None
+    jd_record_id: Optional[Any] = None
     major_profile: str = ""
     paper: FitExamPaper
     answers: List[int] = Field(default_factory=list, description="用户每题所选下标")

@@ -34,7 +34,7 @@ def test_database_analysis_report_roundtrip(local_tmp_dir):
     task_row_id = db.create_analysis_task(user_id=user_id, task_id=task_id)
     assert task_row_id > 0
 
-    db.update_analysis_task_status(task_id, "PROCESSING")
+    db.update_analysis_task_status(user_id, task_id, "PROCESSING")
     report_id = db.save_analysis_report(
         user_id=user_id,
         task_id=task_id,
@@ -63,7 +63,7 @@ def test_database_analysis_report_roundtrip(local_tmp_dir):
         ],
     )
 
-    report = db.get_analysis_report(report_id=report_id)
+    report = db.get_analysis_report(user_id, report_id=report_id)
     assert report is not None
     assert report["knowledge_texts"] == ["FastAPI notes"]
     assert report["final_report"]["matchScore"]["overall"] == 80
@@ -72,7 +72,7 @@ def test_database_analysis_report_roundtrip(local_tmp_dir):
     reports = db.list_analysis_reports(user_id)
     assert [item["id"] for item in reports] == [report_id]
 
-    claims = db.get_claim_check_results(task_id)
+    claims = db.get_claim_check_results(user_id, task_id)
     assert len(claims) == 1
     assert claims[0]["claim_text"] == "Candidate has Python experience."
     assert claims[0]["check_status"] == "supported"
@@ -98,20 +98,20 @@ def test_database_knowledge_document_roundtrip(local_tmp_dir):
         }
     ]
     db.save_knowledge_chunks(1, doc_id, chunks)
-    db.update_knowledge_document_status(doc_id, "READY", chunk_count=1)
+    db.update_knowledge_document_status(1, doc_id, "READY", chunk_count=1)
 
     docs = db.list_knowledge_documents(1)
     assert len(docs) == 1
     assert docs[0]["chunk_count"] == 1
     assert docs[0]["status"] == "READY"
 
-    saved_chunks = db.get_knowledge_chunks([doc_id], 1)
+    saved_chunks = db.get_knowledge_chunks(1, [doc_id])
     assert len(saved_chunks) == 1
     assert saved_chunks[0]["chunk_text"] == "Python project experience"
     assert saved_chunks[0]["metadata"]["fileName"] == "resume.md"
 
     assert db.delete_knowledge_document(doc_id, 1) is True
-    assert db.get_knowledge_chunks([doc_id], 1) == []
+    assert db.get_knowledge_chunks(1, [doc_id]) == []
 
 
 def test_database_jd_record_preserves_personal_decision(local_tmp_dir):
@@ -219,6 +219,7 @@ class _FakeAnalyzer:
 
 def _service_with_tmp_user_db(local_tmp_dir, monkeypatch, client):
     monkeypatch.setattr(Config, "USER_DB_DIR", str(local_tmp_dir / "user_data"))
+    monkeypatch.setattr(Config, "DB_PATH", str(local_tmp_dir / "career_path.db"))
     service = object.__new__(CareerPathAIService)
     service.ai_service_client = client
     service.ai_analyzer = _FakeAnalyzer()
@@ -332,7 +333,7 @@ def test_database_workflow_logs_roundtrip(local_tmp_dir):
         ],
     )
 
-    logs = db.get_workflow_logs("task-workflow")
+    logs = db.get_workflow_logs(1, "task-workflow")
     assert [log["nodeName"] for log in logs] == ["JDParserNode", "RewriteNode"]
     assert logs[0]["durationMs"] == 7
     assert logs[1]["status"] == "WARNING"
@@ -360,7 +361,7 @@ def test_database_quality_evaluation_roundtrip(local_tmp_dir):
         },
     )
 
-    quality = db.get_quality_evaluation("task-quality")
+    quality = db.get_quality_evaluation(1, "task-quality")
     assert quality["finalQualityScore"] == 52
     assert quality["qualityGateStatus"] == "FAILED"
     assert quality["scores"]["citationCompletenessScore"] == 20

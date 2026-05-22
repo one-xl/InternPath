@@ -25,6 +25,7 @@ class _FailingAiServiceClient:
 
 def _service_with_tmp_storage(tmp_path: Path, monkeypatch) -> CareerPathAIService:
     monkeypatch.setattr(Config, "USER_DB_DIR", str(tmp_path / "user_data"))
+    monkeypatch.setattr(Config, "DB_PATH", str(tmp_path / "career_path.db"))
     service = object.__new__(CareerPathAIService)
     service.ai_analyzer = _FakeAnalyzer()
     service.ai_service_client = _FailingAiServiceClient()
@@ -63,4 +64,4 @@ def test_fastapi_auth_analyze_and_history_roundtrip(tmp_path, monkeypatch):
     assert history_response.status_code == 200
     records = history_response.json()["records"]
     assert len(records) == 1
-    assert records[0]["analysis"]["personal_decision"]["match_score"] >= 0
+    assert records[0]["matchScore"] >= 0

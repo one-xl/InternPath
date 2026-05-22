@@ -1,0 +1,83 @@
+import type { ChatModelConfig, EmbeddingModelConfig, ModelConfigState } from "../types/modelConfig";
+import { apiFetch } from "./apiClient";
+
+export async function fetchConfigs(): Promise<ModelConfigState> {
+  const data = await apiFetch<{ configs: any[] }>("/api/configs");
+  const configs = data.configs || [];
+  const embeddingConfigs: EmbeddingModelConfig[] = [];
+  const chatConfigs: ChatModelConfig[] = [];
+  let activeEmbedding: string | undefined;
+  let activeChat: string | undefined;
+
+  for (const c of configs) {
+    if (c.provider === "gemini" || c.provider === "openai-compatible" || c.provider === "custom") {
+      const chat: ChatModelConfig = {
+        id: c.id,
+        type: "chat",
+        name: c.name || c.display_name || "",
+        provider: c.provider,
+        apiKey: c.apiKey || "",
+        modelId: c.modelId || c.model_id || "",
+        enabled: c.enabled !== false,
+        createdAt: c.created_at || new Date().toISOString(),
+        updatedAt: c.updated_at || new Date().toISOString(),
+        testStatus: c.testStatus || "untested",
+        testMessage: c.testMessage,
+        temperature: c.temperature,
+        maxOutputTokens: c.maxOutputTokens,
+        timeoutMs: c.timeoutMs,
+        responseMimeType: c.responseMimeType,
+        fallbackModelId: c.fallbackModelId,
+        testModelId: c.testModelId,
+      };
+      chatConfigs.push(chat);
+      if (c.enabled !== false && !activeChat) activeChat = chat.id;
+    } else {
+      const embed: EmbeddingModelConfig = {
+        id: c.id,
+        type: "embedding",
+        name: c.name || c.display_name || "",
+        provider: c.provider,
+        apiKey: c.apiKey || "",
+        modelId: c.modelId || c.model_id || "",
+        enabled: c.enabled !== false,
+        createdAt: c.created_at || new Date().toISOString(),
+        updatedAt: c.updated_at || new Date().toISOString(),
+        testStatus: c.testStatus || "untested",
+        testMessage: c.testMessage,
+        endpoint: c.endpoint,
+        dimensions: c.dimensions,
+        encodingFormat: c.encodingFormat,
+        timeoutMs: c.timeoutMs,
+        inputType: c.inputType,
+      };
+      embeddingConfigs.push(embed);
+      if (c.enabled !== false && !activeEmbedding) activeEmbedding = embed.id;
+    }
+  }
+
+  return {
+    embeddingConfigs,
+    chatConfigs,
+    active: { embeddingConfigId: activeEmbedding, chatConfigId: activeChat },
+  };
+}
+
+export async function saveConfigToServer(config: {
+  id?: string;
+  provider: string;
+  modelId: string;
+  name?: string;
+  apiKey?: string;
+  enabled?: boolean;
+  [key: string]: any;
+}): Promise<{ id: string }> {
+  return apiFetch<{ id: string }>("/api/configs", {
+    method: "POST",
+    body: JSON.stringify(config),
+  });
+}
+
+export async function deleteConfigFromServer(id: string): Promise<void> {
+  await apiFetch(`/api/configs/${encodeURIComponent(id)}`, { method: "DELETE" });
+}

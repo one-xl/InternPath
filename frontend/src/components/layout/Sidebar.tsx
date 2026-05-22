@@ -69,25 +69,58 @@ const navItems: { key: PageKey; label: string; icon: React.ReactNode }[] = [
   },
 ];
 
-export function Sidebar({ activePage, onNavigate }: { activePage: PageKey; onNavigate: (page: PageKey) => void }) {
+export function Sidebar({ activePage, onNavigate, onLogout }: { activePage: PageKey; onNavigate: (page: PageKey) => void; onLogout?: () => void }) {
   return (
     <aside className="sidebar">
       <div className="sidebar-brand">
         <strong>InternPath</strong>
         <span>Personal Desk</span>
       </div>
-      <nav>
-        {navItems.map((item) => (
+      <nav style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "2px", width: "100%" }}>
+          {navItems.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              className={item.key === activePage ? "active" : ""}
+              onClick={() => onNavigate(item.key)}
+            >
+              {item.icon}
+              {item.label}
+            </button>
+          ))}
+        </div>
+        {onLogout && (
           <button
-            key={item.key}
             type="button"
-            className={item.key === activePage ? "active" : ""}
-            onClick={() => onNavigate(item.key)}
+            className="sidebar-logout-btn"
+            onClick={onLogout}
+            style={{
+              marginTop: "auto",
+              color: "rgba(239, 68, 68, 0.95)",
+              background: "rgba(239, 68, 68, 0.08)",
+              display: "flex",
+              alignItems: "center",
+              gap: "10px",
+              padding: "10px 14px",
+              borderRadius: "var(--radius-md)",
+              border: "1px solid rgba(239, 68, 68, 0.15)",
+              fontWeight: 600,
+              fontSize: "13px",
+              cursor: "pointer",
+              transition: "all 150ms ease",
+              width: "100%",
+              boxSizing: "border-box"
+            }}
           >
-            {item.icon}
-            {item.label}
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+              <polyline points="16 17 21 12 16 7" />
+              <line x1="21" y1="12" x2="9" y2="12" />
+            </svg>
+            退出登录
           </button>
-        ))}
+        )}
       </nav>
     </aside>
   );

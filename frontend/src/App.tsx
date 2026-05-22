@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import { AppShell } from "./components/layout/AppShell";
 import { useHistory } from "./hooks/useHistory";
 import { useJobAnalysis } from "./hooks/useJobAnalysis";
@@ -12,6 +12,7 @@ import { NewAnalysisPage } from "./pages/NewAnalysisPage";
 import { ProfilePage } from "./pages/ProfilePage";
 import { ResultPage } from "./pages/ResultPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { LoginPage } from "./pages/LoginPage";
 import { createEmptyDraft } from "./services/mockAnalysis";
 import type { ApplicationStatus, HistoryRecord } from "./types/analysis";
 import type { JobDraft } from "./types/job";
@@ -35,12 +36,97 @@ export default function App() {
   const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
   const [draftSaveMessage, setDraftSaveMessage] = useState<string | null>(null);
 
+  // Authentication State
+  const [currentUser, setCurrentUser] = useState<{ id: number; username: string } | null>(null);
+  const [checkingAuth, setCheckingAuth] = useState(true);
+  const currentUserRef = useRef(currentUser);
+  const authExpiredAlertShownRef = useRef(false);
+
+  useEffect(() => {
+    currentUserRef.current = currentUser;
+    if (currentUser) {
+      authExpiredAlertShownRef.current = false;
+    }
+  }, [currentUser]);
+
+  // 1. Session check on mount
+  useEffect(() => {
+    async function checkSession() {
+      try {
+        const response = await fetch("/api/me");
+        if (response.ok) {
+          const user = await response.json();
+          setCurrentUser({ id: user.id, username: user.username });
+        } else {
+          setCurrentUser(null);
+        }
+      } catch {
+        setCurrentUser(null);
+      } finally {
+        setCheckingAuth(false);
+      }
+    }
+    checkSession();
+  }, []);
+
+  // 2. Global 401/403 response interceptor
+  useEffect(() => {
+    const originalFetch = window.fetch;
+    window.fetch = async (...args) => {
+      const response = await originalFetch(...args);
+      const urlStr = typeof args[0] === 'string' ? args[0] : (args[0] as any)?.url || '';
+      const isAuthEndpoint = urlStr.includes("/api/auth/login") || urlStr.includes("/api/auth/register") || urlStr.includes("/api/me");
+      if (response.status === 401 && !isAuthEndpoint) {
+        const shouldNotify = currentUserRef.current && !authExpiredAlertShownRef.current;
+        authExpiredAlertShownRef.current = true;
+        setCurrentUser(null);
+        setActivePage("dashboard");
+        if (shouldNotify) {
+          window.setTimeout(() => alert("登录状态已过期，请重新登录。"), 0);
+        }
+      }
+      if (response.status === 403 && !isAuthEndpoint) {
+        console.warn("你没有权限访问该资源。");
+      }
+      return response;
+    };
+    return () => {
+      window.fetch = originalFetch;
+    };
+  }, []);
+
+  // 3. Logout action
+  async function handleLogout() {
+    if (window.confirm("确定要退出登录吗？")) {
+      try {
+        await fetch("/api/auth/logout", { method: "POST" });
+      } catch (err) {
+        console.error("Logout request failed:", err);
+      } finally {
+        // Clear all local storage cache keys (UI preferences only, not authoritative data)
+        localStorage.removeItem("internpath.history.v2");
+        localStorage.removeItem("job-desk:model-configs");
+        localStorage.removeItem("internpath.profile.v2");
+        localStorage.removeItem("internpath.profile");
+        localStorage.removeItem("job-desk:drafts");
+        localStorage.removeItem("job-desk:analysis-drafts");
+        localStorage.removeItem("job-desk:active-configs");
+        
+        setCurrentUser(null);
+        setActivePage("dashboard");
+        alert("已退出登录");
+        window.location.reload();
+      }
+    }
+  }
+
   const { profile, saveProfile, savedAt } = useProfile();
   const analysis = useJobAnalysis();
   const resumeUpload = useResumeUpload();
-  const modelConfigs = useModelConfigs();
-  const history = useHistory();
-  const draftsControl = useAnalysisDrafts();
+  const isAuthenticated = Boolean(currentUser);
+  const modelConfigs = useModelConfigs(isAuthenticated);
+  const history = useHistory(isAuthenticated);
+  const draftsControl = useAnalysisDrafts(isAuthenticated);
 
   const activeSavedRecord = useMemo(
     () => history.records.find((record) => record.id === analysis.result?.id),
@@ -259,8 +345,21 @@ export default function App() {
 
   const formError = analysis.error || resumeUpload.error;
 
+  if (checkingAuth) {
+    return (
+      <div className="login-page-container" style={{ display: "flex", flexDirection: "column", gap: "16px", color: "#fff" }}>
+        <div className="spinner" style={{ width: "40px", height: "40px" }}></div>
+        <p style={{ fontSize: "14px", fontWeight: "600" }}>正在验证登录状态…</p>
+      </div>
+    );
+  }
+
+  if (!currentUser) {
+    return <LoginPage onLoginSuccess={(user) => setCurrentUser(user)} />;
+  }
+
   return (
-    <AppShell activePage={activePage} onNavigate={setActivePage}>
+    <AppShell activePage={activePage} onNavigate={setActivePage} onLogout={handleLogout}>
       {activePage === "dashboard" && (
         <DashboardPage
           records={history.records}

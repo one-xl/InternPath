@@ -4,20 +4,20 @@ import type { ResumeChunk } from "../types/resume";
 import { embedTextWithDoubaoMultimodal, HttpRequestError } from "./doubaoMultimodalEmbeddingClient";
 
 async function embedTextWithOpenAICompatible(text: string, config: EmbeddingModelConfig): Promise<number[]> {
-  const baseUrl = config.baseUrl || "https://api.openai.com/v1";
-  const endpoint = config.endpoint || "/embeddings";
-  const url = `${baseUrl.replace(/\/$/, "")}${endpoint}`;
-
-  const response = await fetch(url, {
+  const response = await fetch("/api/models/embeddings", {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${config.apiKey}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: config.modelId,
-      input: [text],
-      ...(config.dimensions ? { dimensions: config.dimensions } : {}),
+      provider: config.provider,
+      modelId: config.modelId,
+      requestBody: {
+        model: config.modelId,
+        input: [text],
+        ...(config.dimensions ? { dimensions: config.dimensions } : {}),
+      },
+      endpoint: config.endpoint || "/embeddings",
     }),
   });
 

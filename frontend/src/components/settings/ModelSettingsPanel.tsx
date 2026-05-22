@@ -141,14 +141,40 @@ export function ModelSettingsPanel({
         </div>
       </Card>
 
-      <Card title="隐私与安全提示">
-        <p className="privacy-note">
-          API Key 将保存在当前浏览器本地存储中，仅建议在个人本地环境使用。请不要在公共电脑或不可信环境保存密钥。
-          配置不会写入历史分析记录，也不要提交到代码仓库。
-        </p>
-        <Button type="button" variant="danger" onClick={clearAll}>
-          清除所有模型配置
-        </Button>
+      <Card title="安全设置">
+        <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+          <div>
+            <h4 style={{ color: "var(--accent-hover)", fontSize: "14px", fontWeight: "700", marginBottom: "6px" }}>🔒 登录保护</h4>
+            <ul style={{ margin: "0", paddingLeft: "20px", fontSize: "13px", color: "var(--muted)", lineHeight: "1.6" }}>
+              <li>当前账号已启用登录保护。</li>
+              <li>建议定期更换密码以保障账户安全。</li>
+            </ul>
+          </div>
+          <div>
+            <h4 style={{ color: "var(--accent-hover)", fontSize: "14px", fontWeight: "700", marginBottom: "6px" }}>🔑 API 密钥安全</h4>
+            <ul style={{ margin: "0", paddingLeft: "20px", fontSize: "13px", color: "var(--muted)", lineHeight: "1.6" }}>
+              <li>生产环境下，API 密钥由服务器安全托管。</li>
+              <li>前端从不显示、保存或传输任何真实生产环境的 API 密钥。</li>
+              <li>如果你怀疑密钥在其他渠道泄露，请立即前往服务商模型平台重置。</li>
+            </ul>
+          </div>
+          <div>
+            <h4 style={{ color: "var(--accent-hover)", fontSize: "14px", fontWeight: "700", marginBottom: "6px" }}>🛡️ 数据隐私</h4>
+            <ul style={{ margin: "0", paddingLeft: "20px", fontSize: "13px", color: "var(--muted)", lineHeight: "1.6" }}>
+              <li>简历、岗位 JD 和历史分析属于高度个人隐私。</li>
+              <li>系统不会在服务端日志中记录完整简历、完整 JD 文本、提示词或 API 返回体。</li>
+              <li>你可以在历史记录管理页面中随时彻底删除历史分析。</li>
+            </ul>
+          </div>
+          <div>
+            <h4 style={{ color: "var(--accent-hover)", fontSize: "14px", fontWeight: "700", marginBottom: "6px" }}>🚀 部署建议</h4>
+            <ul style={{ margin: "0", paddingLeft: "20px", fontSize: "13px", color: "var(--muted)", lineHeight: "1.6" }}>
+              <li>请确保云服务器上线运行已启用 HTTPS 加密证书。</li>
+              <li>请检查 <code>.gitignore</code>，严防把包含真实密钥的 <code>.env</code> 文件推送到公开 Git。</li>
+              <li>限制服务器数据库的公网监听端口，只允许内网安全访问。</li>
+            </ul>
+          </div>
+        </div>
       </Card>
     </div>
   );

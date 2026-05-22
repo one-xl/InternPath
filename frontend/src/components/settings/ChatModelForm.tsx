@@ -39,14 +39,18 @@ export function ChatModelForm({
   onSave: (config: ChatModelConfig) => void;
   onCancel: () => void;
 }) {
-  const [draft, setDraft] = useState<ChatModelConfig>(() => editingConfig ?? createDefault());
+  const [draft, setDraft] = useState<ChatModelConfig>(() => {
+    const base = editingConfig ?? createDefault();
+    return { ...base, apiKey: "" };
+  });
 
   useEffect(() => {
-    setDraft(editingConfig ?? createDefault());
+    const base = editingConfig ?? createDefault();
+    setDraft({ ...base, apiKey: "" });
   }, [editingConfig]);
 
   function submit() {
-    if (!draft.apiKey.trim() || !draft.modelId.trim()) return;
+    if (!draft.modelId.trim()) return;
     onSave({
       ...draft,
       name: nameFromModelId(draft.modelId),
@@ -63,7 +67,11 @@ export function ChatModelForm({
       <div className="settings-form">
         <label className="field">
           <span>API Key</span>
-          <ApiKeyInput value={draft.apiKey} onChange={(apiKey) => setDraft({ ...draft, apiKey })} />
+          <ApiKeyInput
+            value={draft.apiKey}
+            onChange={(apiKey) => setDraft({ ...draft, apiKey })}
+            placeholder={editingConfig ? "留空表示继续使用已保存的 Gemini API Key" : "输入 Gemini API Key"}
+          />
         </label>
         <label className="field">
           <span>Model ID</span>
@@ -111,7 +119,7 @@ export function ChatModelForm({
         </details>
       </div>
       <div className="settings-actions">
-        <Button type="button" variant="primary" onClick={submit} disabled={!draft.apiKey.trim() || !draft.modelId.trim()}>
+        <Button type="button" variant="primary" onClick={submit} disabled={!draft.modelId.trim()}>
           保存配置
         </Button>
         <Button type="button" variant="ghost" onClick={onCancel}>

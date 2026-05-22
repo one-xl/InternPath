@@ -43,14 +43,18 @@ export function EmbeddingModelForm({
   onSave: (config: EmbeddingModelConfig) => void;
   onCancel: () => void;
 }) {
-  const [draft, setDraft] = useState<EmbeddingModelConfig>(() => editingConfig ?? createDefault());
+  const [draft, setDraft] = useState<EmbeddingModelConfig>(() => {
+    const base = editingConfig ?? createDefault();
+    return { ...base, apiKey: "" };
+  });
 
   useEffect(() => {
-    setDraft(editingConfig ?? createDefault());
+    const base = editingConfig ?? createDefault();
+    setDraft({ ...base, apiKey: "" });
   }, [editingConfig]);
 
   function submit() {
-    if (!draft.apiKey.trim() || !draft.baseUrl?.trim() || !draft.modelId.trim()) return;
+    if (!draft.baseUrl?.trim() || !draft.modelId.trim()) return;
     onSave({
       ...draft,
       provider: "doubao-multimodal",
@@ -115,7 +119,11 @@ export function EmbeddingModelForm({
       <div className="settings-form">
         <label className="field">
           <span>API Key</span>
-          <ApiKeyInput value={draft.apiKey} onChange={(apiKey) => setDraft({ ...draft, apiKey })} />
+          <ApiKeyInput
+            value={draft.apiKey}
+            onChange={(apiKey) => setDraft({ ...draft, apiKey })}
+            placeholder={editingConfig ? "留空表示继续使用已保存的 Doubao API Key" : "输入 Doubao API Key"}
+          />
         </label>
         <label className="field">
           <span>Model ID</span>
@@ -173,7 +181,7 @@ export function EmbeddingModelForm({
         </div>
       </div>
       <div className="settings-actions">
-        <Button type="button" variant="primary" onClick={submit} disabled={!draft.apiKey.trim() || !draft.baseUrl?.trim() || !draft.modelId.trim()}>
+        <Button type="button" variant="primary" onClick={submit} disabled={!draft.baseUrl?.trim() || !draft.modelId.trim()}>
           保存配置
         </Button>
         <Button type="button" variant="ghost" onClick={onCancel}>

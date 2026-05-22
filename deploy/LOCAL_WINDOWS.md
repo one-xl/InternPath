@@ -1,6 +1,6 @@
 # Local Windows Run
 
-This mode keeps the desktop integration available on the same machine.
+This mode starts the React workbench, FastAPI backend, and optional ai-service on the same machine.
 
 ## 1. Configure `.env`
 
@@ -10,7 +10,6 @@ Create the project root `.env` and set:
 - `LLM_BASE_URL`
 - `LLM_MODEL`
 - Optional `LLM_TIMEOUT`
-- `APP_PASSWORD` or `APP_PASSWORD_HASH`
 - Optional `PRACTICE_APP_PATH`
 
 Example:
@@ -19,23 +18,46 @@ Example:
 LLM_API_KEY=your_api_key
 LLM_BASE_URL=https://api.deepseek.com
 LLM_MODEL=deepseek-chat
-APP_PASSWORD=change_me
+AI_SERVICE_BASE_URL=http://127.0.0.1:8000
 PRACTICE_APP_PATH=C:\Path\To\AiSmartDrill.App.exe
 ```
 
-## 2. Start the app
+## 2. Install frontend dependencies
 
 ```powershell
-.\deploy\run_local.ps1
+cd frontend
+npm install
+cd ..
 ```
 
-Default URL:
-
-`http://127.0.0.1:8501`
-
-## 3. Optional port override
+## 3. Start the app
 
 ```powershell
-$env:LOCAL_PORT=8503
+.\start_internpath.cmd
+```
+
+Stop local services:
+
+```powershell
+.\stop_internpath.cmd
+```
+
+Restart local services:
+
+```powershell
+.\restart_internpath.cmd
+```
+
+Default URLs:
+
+- React workbench: `http://127.0.0.1:5173`
+- FastAPI backend: `http://127.0.0.1:8787`
+- ai-service: `http://127.0.0.1:8000`
+
+## 4. Optional port override
+
+```powershell
+$env:INTERNPATH_WEB_PORT=5174
+$env:INTERNPATH_BACKEND_PORT=8788
 .\deploy\run_local.ps1
 ```

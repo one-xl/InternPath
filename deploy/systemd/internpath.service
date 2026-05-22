@@ -1,5 +1,5 @@
 [Unit]
-Description=InternPath Streamlit Service
+Description=InternPath FastAPI Service
 After=network.target
 
 [Service]
@@ -10,7 +10,7 @@ WorkingDirectory=/opt/internpath
 EnvironmentFile=/opt/internpath/.env
 Environment=HOME=/opt/internpath
 Environment=XDG_CACHE_HOME=/opt/internpath/.cache
-ExecStart=/opt/internpath/.venv/bin/streamlit run /opt/internpath/app.py --server.address 0.0.0.0 --server.port 8502 --browser.gatherUsageStats false
+ExecStart=/opt/internpath/.venv/bin/uvicorn backend.main:app --host 0.0.0.0 --port 8502
 Restart=always
 RestartSec=5
 NoNewPrivileges=true

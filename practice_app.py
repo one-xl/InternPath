@@ -129,7 +129,7 @@ class PracticeAppInvoker:
         供 C# 端解析：--import <json> --mode direct|ai-recommend [--auto]。
 
         默认不传 --auto：用户在网页点击「启动刷题软件」后，仍可在 WPF 内二次确认
-        （是否开考 / 是否发起 AI 推荐），避免与 Streamlit 提示「请在软件内确认」不一致。
+        （是否开考 / 是否发起 AI 推荐），避免与网页提示「请在软件内确认」不一致。
 
         若 auto_proceed=True，则附加 --auto，与浏览器唤醒、无人值守场景配合，跳过 WPF 确认框。
         """

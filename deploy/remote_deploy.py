@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import io
 import os
+import shlex
 import stat
 import sys
 import tarfile
@@ -28,6 +29,8 @@ USER = os.getenv("INTERNPATH_SSH_USER", "root")
 REMOTE_TAR = "/tmp/internpath_deploy.tgz"
 APP_DIR = "/opt/internpath"
 APP_PORT = os.getenv("INTERNPATH_APP_PORT", "8502")
+INITIAL_ADMIN_USERNAME = os.getenv("INTERNPATH_ADMIN_USERNAME", "").strip()
+INITIAL_ADMIN_PASSWORD = os.getenv("INTERNPATH_ADMIN_PASSWORD", "")
 
 EXCLUDE_NAMES = {
     ".git",
@@ -38,6 +41,9 @@ EXCLUDE_NAMES = {
     "node_modules",
     ".idea",
     ".cursor",
+    "logs",
+    "user_data",
+    ".test_dbs",
 }
 EXCLUDE_FILES = {
     "career_path.db",
@@ -144,6 +150,17 @@ def main() -> int:
         sftp.chmod(REMOTE_TAR, stat.S_IRUSR | stat.S_IWUSR)
         sftp.close()
 
+        admin_env_script = ""
+        if INITIAL_ADMIN_USERNAME and INITIAL_ADMIN_PASSWORD:
+            admin_username = shlex.quote(f"INTERNPATH_ADMIN_USERNAME={INITIAL_ADMIN_USERNAME}")
+            admin_password = shlex.quote(f"INTERNPATH_ADMIN_PASSWORD={INITIAL_ADMIN_PASSWORD}")
+            admin_env_script = f"""
+touch /etc/internpath/app.env
+grep -q '^INTERNPATH_ADMIN_USERNAME=' /etc/internpath/app.env || printf '%s\\n' {admin_username} >> /etc/internpath/app.env
+grep -q '^INTERNPATH_ADMIN_PASSWORD=' /etc/internpath/app.env || printf '%s\\n' {admin_password} >> /etc/internpath/app.env
+chmod 600 /etc/internpath/app.env
+"""
+
         script = f"""set -euo pipefail
 mkdir -p {APP_DIR}
 tar -xzf {REMOTE_TAR} -C {APP_DIR}
@@ -154,6 +171,8 @@ cd {APP_DIR}
 chmod +x deploy/server_install.sh
 rm -rf .venv
 APP_DIR={APP_DIR} APP_PORT={APP_PORT} SERVICE_NAME=internpath REQUIREMENTS_FILE={APP_DIR}/requirements.server.txt ./deploy/server_install.sh
+{admin_env_script}
+systemctl restart internpath
 command -v ufw >/dev/null 2>&1 && ufw allow {APP_PORT}/tcp comment internpath || true
 """
         stdin, stdout, stderr = client.exec_command(script, timeout=600)

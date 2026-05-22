@@ -26,8 +26,12 @@ class Config:
     LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "https://api.deepseek.com").rstrip("/")
     LLM_MODEL: str = os.getenv("LLM_MODEL", "deepseek-chat")
     LLM_TIMEOUT: float = get_float_env("LLM_TIMEOUT", 120.0)
+    AI_SERVICE_BASE_URL: str = os.getenv("AI_SERVICE_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 
     DB_PATH: str = os.path.join(BASE_DIR, "career_path.db")
+    USER_DB_DIR: str = os.path.join(BASE_DIR, "user_data")
+    INITIAL_ADMIN_USERNAME: str = os.getenv("INTERNPATH_ADMIN_USERNAME", "").strip()
+    INITIAL_ADMIN_PASSWORD: str = os.getenv("INTERNPATH_ADMIN_PASSWORD", "")
 
     DEFAULT_PRACTICE_APP_PATH: str = (
         r"C:\Path\To\AiSmartDrill.App.exe"

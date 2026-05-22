@@ -22,6 +22,7 @@ wheels/
 .env
 .env.*
 !.env.example
+!ai-service/.env.example
 !deploy/.env.server.example
 .venv
 env/
@@ -43,4 +44,13 @@ temp_practice.skillpkg
 
 .DS_Store
 
-.streamlit/secrets.toml
+logs/
+*.log
+
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/tsconfig.tsbuildinfo
+.pytest_cache/
+.pytest_tmp/
+pytest_tmp_backend/

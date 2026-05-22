@@ -1,0 +1,590 @@
+from __future__ import annotations
+
+import re
+from typing import Any
+
+from app.evaluation.quality_evaluator import evaluate_report_quality
+from app.rag.bm25_retriever import search_chunks_bm25
+from app.rag.chunker import chunk_text
+from app.verification.evidence_checker import extract_keywords, split_claims
+from app.workflow.engine import WorkflowEngine
+from app.workflow.state import WorkflowState
+
+CHUNK_SIZE = 800
+CHUNK_OVERLAP = 120
+WEAK_THRESHOLD = 0.25
+
+
+class BaseNode:
+    node_name = "BaseNode"
+    critical = True
+
+    def input_summary(self, state: WorkflowState) -> str:
+        return ""
+
+    def output_summary(self, state: WorkflowState) -> str:
+        return ""
+
+
+class JDParserNode(BaseNode):
+    node_name = "JDParserNode"
+
+    def input_summary(self, state: WorkflowState) -> str:
+        return f"JD length: {len(state.request.jdText)} chars"
+
+    def run(self, state: WorkflowState) -> WorkflowState:
+        jd_text = state.request.jdText
+        keywords = extract_keywords_for_report(jd_text)
+        state.data["jdParse"] = {
+            "jobTitle": "",
+            "company": "",
+            "responsibilities": split_to_items(jd_text, ["负责", "职责", "工作"]),
+            "requirements": keywords,
+            "bonus": split_to_items(jd_text, ["优先", "加分"]),
+            "techKeywords": keywords,
+            "rawSummary": jd_text[:240],
+        }
+        return state
+
+    def output_summary(self, state: WorkflowState) -> str:
+        parsed = state.data.get("jdParse", {})
+        return f"Parsed {len(parsed.get('techKeywords', []))} tech keywords, {len(parsed.get('requirements', []))} requirements"
+
+
+class ResumeContextNode(BaseNode):
+    node_name = "ResumeContextNode"
+
+    def input_summary(self, state: WorkflowState) -> str:
+        return (
+            f"resume length: {len(state.request.resumeText)} chars, "
+            f"knowledge texts: {len(state.request.knowledgeTexts)}, documents: {len(state.request.documents)}"
+        )
+
+    def run(self, state: WorkflowState) -> WorkflowState:
+        documents: list[Any] = []
+        all_documents: list[Any] = [
+            {"documentId": "JD", "content": state.request.jdText, "metadata": {"sourceType": "JD"}}
+        ]
+        if state.request.resumeText.strip():
+            all_documents.append(
+                {"documentId": "RESUME", "content": state.request.resumeText, "metadata": {"sourceType": "RESUME"}}
+            )
+        if state.request.documents:
+            documents.extend(state.request.documents)
+        else:
+            for index, text in enumerate(state.request.knowledgeTexts):
+                if text.strip():
+                    documents.append(
+                        {
+                            "documentId": f"KNOWLEDGE_{index + 1}",
+                            "content": text,
+                            "metadata": {"sourceType": "KNOWLEDGE_BASE"},
+                        }
+                    )
+        all_documents.extend(documents)
+        context_documents = build_chunks(documents)
+        all_chunks = build_chunks(all_documents)
+        state.data["resumeContext"] = {
+            "resumeSummary": state.request.resumeText[:240],
+            "documentCount": len(documents),
+            "chunkCount": len(context_documents),
+            "contextTexts": list(state.request.knowledgeTexts),
+            "contextDocuments": context_documents,
+            "allChunks": all_chunks,
+        }
+        return state
+
+    def output_summary(self, state: WorkflowState) -> str:
+        ctx = state.data.get("resumeContext", {})
+        return f"context documents: {ctx.get('documentCount', 0)}, chunks: {ctx.get('chunkCount', 0)}"
+
+
+class RAGRetrieverNode(BaseNode):
+    node_name = "RAGRetrieverNode"
+
+    def input_summary(self, state: WorkflowState) -> str:
+        keywords = state.data.get("jdParse", {}).get("techKeywords", [])
+        return f"query keywords: {', '.join(keywords[:6])}; enableRag={state.request.options.enableRag}"
+
+    def run(self, state: WorkflowState) -> WorkflowState:
+        ctx = state.data.get("resumeContext", {})
+        evidence_chunks = ctx.get("contextDocuments") or ctx.get("allChunks") or []
+        if state.request.options.enableRag:
+            query = " ".join(state.data.get("jdParse", {}).get("techKeywords", [])) or state.request.jdText[:500]
+            retrieved = search_chunks_bm25(evidence_chunks, query, 8)
+        else:
+            retrieved = []
+        state.data["retrieval"] = {
+            "retrievedChunks": retrieved,
+            "citationsDraft": build_citations_from_chunks(retrieved),
+            "evidenceCount": len(retrieved),
+        }
+        return state
+
+    def output_summary(self, state: WorkflowState) -> str:
+        return f"retrieved chunks: {state.data.get('retrieval', {}).get('evidenceCount', 0)}"
+
+
+class DraftReportNode(BaseNode):
+    node_name = "DraftReportNode"
+
+    def input_summary(self, state: WorkflowState) -> str:
+        return "JD parse + resume context + retrieved chunks"
+
+    def run(self, state: WorkflowState) -> WorkflowState:
+        draft = build_draft_report(
+            state.request.jdText,
+            state.request.resumeText,
+            state.data.get("jdParse", {}),
+        )
+        state.data["draftReport"] = draft
+        return state
+
+    def output_summary(self, state: WorkflowState) -> str:
+        score = state.data.get("draftReport", {}).get("matchScore", {}).get("overall")
+        return f"draft match score: {score}"
+
+
+class ClaimExtractionNode(BaseNode):
+    node_name = "ClaimExtractionNode"
+
+    def input_summary(self, state: WorkflowState) -> str:
+        return "draftReport fields"
+
+    def run(self, state: WorkflowState) -> WorkflowState:
+        report_text = report_to_text(state.data.get("draftReport", {}))
+        claims = []
+        for index, text in enumerate(split_claims(report_text), start=1):
+            claims.append(
+                {
+                    "claimId": f"claim-{index}",
+                    "claimText": text,
+                    "claimType": classify_claim(text),
+                    "sourceNeeded": source_needed_for_claim(text),
+                }
+            )
+        state.data["claims"] = claims
+        return state
+
+    def output_summary(self, state: WorkflowState) -> str:
+        return f"claims extracted: {len(state.data.get('claims', []))}"
+
+
+class EvidenceCheckNode(BaseNode):
+    node_name = "EvidenceCheckNode"
+
+    def input_summary(self, state: WorkflowState) -> str:
+        return f"claims: {len(state.data.get('claims', []))}"
+
+    def run(self, state: WorkflowState) -> WorkflowState:
+        chunks = state.data.get("retrieval", {}).get("retrievedChunks") or state.data.get("resumeContext", {}).get("allChunks", [])
+        evidence_keywords = extract_keywords(" ".join(chunk.get("text", "") for chunk in chunks))
+        results = []
+        supported = weak = unsupported = contradicted = 0
+        for claim in state.data.get("claims", []):
+            claim_keywords = extract_keywords(claim["claimText"])
+            matched = sorted(claim_keywords & evidence_keywords)
+            confidence = len(matched) / len(claim_keywords) if claim_keywords else 0.0
+            if confidence >= 0.5:
+                status = "supported"
+                supported += 1
+            elif confidence >= WEAK_THRESHOLD:
+                status = "weak"
+                weak += 1
+            else:
+                status = "unsupported"
+                unsupported += 1
+            results.append(
+                {
+                    "claimId": claim["claimId"],
+                    "claimText": claim["claimText"],
+                    "claimType": claim["claimType"],
+                    "status": status,
+                    "confidenceScore": round(confidence, 3),
+                    "reason": build_verification_reason(status, matched),
+                    "evidenceChunks": claim_evidence_chunks(chunks, confidence),
+                    "matchedKeywords": matched,
+                }
+            )
+        total = supported + weak + unsupported + contradicted
+        state.data["verification"] = {
+            "verificationResults": results,
+            "evidenceSummary": {
+                "totalClaims": total,
+                "supportedClaims": supported,
+                "weakClaims": weak,
+                "unsupportedClaims": unsupported,
+                "contradictedClaims": contradicted,
+                "evidenceCoverage": round(supported / total, 3) if total else 0,
+            },
+        }
+        return state
+
+    def output_summary(self, state: WorkflowState) -> str:
+        summary = state.data.get("verification", {}).get("evidenceSummary", {})
+        return f"supported: {summary.get('supportedClaims', 0)}, weak: {summary.get('weakClaims', 0)}, unsupported: {summary.get('unsupportedClaims', 0)}"
+
+
+class HallucinationDetectNode(BaseNode):
+    node_name = "HallucinationDetectNode"
+
+    def input_summary(self, state: WorkflowState) -> str:
+        return "verificationResults"
+
+    def run(self, state: WorkflowState) -> WorkflowState:
+        results = state.data.get("verification", {}).get("verificationResults", [])
+        risk = risk_level(
+            sum(1 for item in results if item["status"] == "unsupported"),
+            sum(1 for item in results if item["status"] == "weak"),
+            len(results),
+        )
+        if not state.request.options.enableHallucinationCheck:
+            control = {"riskLevel": "NOT_CHECKED", "detectedItems": [], "rewrittenItems": []}
+        else:
+            control = {
+                "riskLevel": risk,
+                "detectedItems": [item for item in results if item["status"] in {"weak", "unsupported", "contradicted"}],
+                "rewrittenItems": [],
+            }
+        state.data["hallucinationControl"] = control
+        return state
+
+    def output_summary(self, state: WorkflowState) -> str:
+        control = state.data.get("hallucinationControl", {})
+        return f"risk: {control.get('riskLevel')}, detected: {len(control.get('detectedItems', []))}"
+
+
+class RewriteNode(BaseNode):
+    node_name = "RewriteNode"
+    critical = False
+
+    def input_summary(self, state: WorkflowState) -> str:
+        return f"enableRewrite={state.request.options.enableRewrite}"
+
+    def run(self, state: WorkflowState) -> WorkflowState:
+        draft = state.data.get("draftReport", {})
+        results = state.data.get("verification", {}).get("verificationResults", [])
+        if not state.request.options.enableRewrite:
+            state.data["rewrittenReport"] = draft
+            state.data["rewrittenItems"] = []
+            return state
+        unsupported = [item["claimText"] for item in results if item["status"] == "unsupported"]
+        weak = [item["claimText"] for item in results if item["status"] == "weak"]
+        rewritten = dict(draft)
+        rewritten_items = [f"证据不足，不能作为事实输出：{claim}" for claim in unsupported[:10]]
+        rewritten_items.extend(f"证据较弱，建议降级表述：{claim}" for claim in weak[:10])
+        if rewritten_items:
+            rewritten["lowSupportNotice"] = rewritten_items
+        suggestions = rewritten.setdefault("resumeSuggestions", {})
+        suggestions.setdefault("directlyUsable", [])
+        suggestions.setdefault("needToBuildFirst", [])
+        state.data["rewrittenReport"] = rewritten
+        state.data["rewrittenItems"] = rewritten_items
+        return state
+
+    def output_summary(self, state: WorkflowState) -> str:
+        return f"rewritten items: {len(state.data.get('rewrittenItems', []))}"
+
+
+class CitationNode(BaseNode):
+    node_name = "CitationNode"
+
+    def input_summary(self, state: WorkflowState) -> str:
+        return "verificationResults + retrievedChunks"
+
+    def run(self, state: WorkflowState) -> WorkflowState:
+        citations = []
+        for result in state.data.get("verification", {}).get("verificationResults", []):
+            if result["status"] == "unsupported":
+                continue
+            for chunk in result.get("evidenceChunks", [])[:1]:
+                citations.append(
+                    {
+                        "claimId": result["claimId"],
+                        "claimText": result["claimText"],
+                        "sourceType": chunk.get("sourceType", ""),
+                        "documentId": chunk.get("documentId", ""),
+                        "chunkId": chunk.get("chunkId", ""),
+                        "fileName": chunk.get("fileName", ""),
+                        "evidenceText": chunk.get("text", "")[:300],
+                    }
+                )
+        state.data["citations"] = citations
+        return state
+
+    def output_summary(self, state: WorkflowState) -> str:
+        return f"citations: {len(state.data.get('citations', []))}"
+
+
+class FinalReportNode(BaseNode):
+    node_name = "FinalReportNode"
+
+    def input_summary(self, state: WorkflowState) -> str:
+        return "rewrittenReport + evidenceSummary + citations"
+
+    def run(self, state: WorkflowState) -> WorkflowState:
+        final_report = dict(state.data.get("rewrittenReport") or state.data.get("draftReport") or {})
+        evidence_summary = state.data.get("verification", {}).get("evidenceSummary", empty_evidence_summary())
+        hallucination_control = dict(state.data.get("hallucinationControl", {}))
+        hallucination_control["rewrittenItems"] = state.data.get("rewrittenItems", [])
+        citations = state.data.get("citations", [])
+        final_report["evidenceSummary"] = evidence_summary
+        final_report["hallucinationControl"] = hallucination_control
+        final_report["citations"] = citations
+        state.data["finalReport"] = final_report
+        return state
+
+    def output_summary(self, state: WorkflowState) -> str:
+        final_report = state.data.get("finalReport", {})
+        return f"final report keys: {len(final_report)}"
+
+
+class QualityEvaluationNode(BaseNode):
+    node_name = "QualityEvaluationNode"
+
+    def input_summary(self, state: WorkflowState) -> str:
+        verification = state.data.get("verification", {})
+        return (
+            f"claims: {len(verification.get('verificationResults', []))}, "
+            f"citations: {len(state.data.get('citations', []))}"
+        )
+
+    def run(self, state: WorkflowState) -> WorkflowState:
+        state.data["qualityEvaluation"] = evaluate_report_quality(
+            final_report=state.data.get("finalReport", {}),
+            evidence_summary=state.data.get("verification", {}).get("evidenceSummary", empty_evidence_summary()),
+            hallucination_control=state.data.get("hallucinationControl", {}),
+            citations=state.data.get("citations", []),
+            verification_results=state.data.get("verification", {}).get("verificationResults", []),
+            workflow_logs=state.workflow_logs,
+        )
+        return state
+
+    def output_summary(self, state: WorkflowState) -> str:
+        quality = state.data.get("qualityEvaluation", {})
+        return f"quality: {quality.get('finalQualityScore', 0)}, gate: {quality.get('qualityGateStatus', '-')}"
+
+
+def build_analyze_jd_workflow() -> WorkflowEngine:
+    return WorkflowEngine(
+        [
+            JDParserNode(),
+            ResumeContextNode(),
+            RAGRetrieverNode(),
+            DraftReportNode(),
+            ClaimExtractionNode(),
+            EvidenceCheckNode(),
+            HallucinationDetectNode(),
+            RewriteNode(),
+            CitationNode(),
+            FinalReportNode(),
+            QualityEvaluationNode(),
+        ]
+    )
+
+
+def workflow_response(task_id: str, state: WorkflowState) -> dict[str, Any]:
+    evidence_summary = state.data.get("verification", {}).get("evidenceSummary", empty_evidence_summary())
+    hallucination_control = state.data.get("hallucinationControl", {"riskLevel": "LOW", "detectedItems": [], "rewrittenItems": []})
+    final_report = state.data.get("finalReport", {})
+    return {
+        "taskId": task_id,
+        "status": "success",
+        "data": {
+            "draftReport": state.data.get("draftReport", {}),
+            "finalReport": final_report,
+            "evidenceSummary": evidence_summary,
+            "hallucinationControl": hallucination_control,
+            "citations": state.data.get("citations", []),
+            "claims": state.data.get("claims", []),
+            "verificationResults": state.data.get("verification", {}).get("verificationResults", []),
+            "workflowLogs": state.workflow_logs,
+            "qualityEvaluation": state.data.get("qualityEvaluation", {}),
+        },
+    }
+
+
+def build_chunks(documents: list[Any]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for doc in documents:
+        raw = doc.model_dump() if hasattr(doc, "model_dump") else dict(doc)
+        document_id = str(raw.get("documentId", "")).strip()
+        content = str(raw.get("content", ""))
+        metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+        if not document_id or not content.strip():
+            continue
+        for idx, text in enumerate(chunk_text(content, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP)):
+            chunk_id = str(raw.get("chunkId") or f"{document_id}#chunk-{idx}")
+            out.append(
+                {
+                    "documentId": document_id,
+                    "chunkId": chunk_id,
+                    "text": content if raw.get("chunkId") else text,
+                    "score": raw.get("score"),
+                    "metadata": {**metadata, "chunkIndex": metadata.get("chunkIndex", idx)},
+                }
+            )
+            if raw.get("chunkId"):
+                break
+    return out
+
+
+def build_citations_from_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "claimId": "",
+            "claimText": "",
+            "sourceType": chunk["metadata"].get("sourceType", "KNOWLEDGE_BASE"),
+            "documentId": chunk["documentId"],
+            "chunkId": chunk["chunkId"],
+            "fileName": chunk["metadata"].get("fileName", ""),
+            "evidenceText": chunk["text"][:300],
+        }
+        for chunk in chunks
+    ]
+
+
+def report_to_text(report: Any) -> str:
+    if isinstance(report, str):
+        return report
+    parts: list[str] = []
+    collect_report_text(report, parts)
+    return "\n".join(parts)
+
+
+def collect_report_text(value: Any, parts: list[str]) -> None:
+    if isinstance(value, str) and value.strip():
+        parts.append(value.strip())
+    elif isinstance(value, list):
+        for item in value:
+            collect_report_text(item, parts)
+    elif isinstance(value, dict):
+        for item in value.values():
+            collect_report_text(item, parts)
+
+
+def build_draft_report(jd_text: str, resume_text: str, jd_parse: dict[str, Any]) -> dict[str, Any]:
+    keywords = jd_parse.get("techKeywords") or extract_keywords_for_report(jd_text)
+    resume_keywords = extract_keywords_for_report(resume_text)
+    resume_keyset = {item.lower() for item in resume_keywords}
+    matched = [kw for kw in keywords if kw.lower() in resume_keyset]
+    missing = [kw for kw in keywords if kw not in matched]
+    overall = int((len(matched) / len(keywords)) * 100) if keywords else 0
+    return {
+        "reportTitle": "InternPath JD 求职匹配分析报告",
+        "jobSummary": {
+            "jobTitle": jd_parse.get("jobTitle", ""),
+            "company": jd_parse.get("company", ""),
+            "responsibilities": jd_parse.get("responsibilities", []),
+            "requirements": jd_parse.get("requirements", []),
+            "bonus": jd_parse.get("bonus", []),
+            "techKeywords": keywords,
+        },
+        "matchScore": {
+            "overall": overall,
+            "technical": overall,
+            "project": 0,
+            "education": 0,
+            "experience": 0,
+            "riskLevel": "LOW" if overall >= 60 else "MEDIUM",
+        },
+        "strengths": [f"简历中可找到与 {kw} 相关的表述" for kw in matched[:6]],
+        "weaknesses": [f"简历中暂未找到 {kw} 的明确证据" for kw in missing[:6]],
+        "resumeSuggestions": {
+            "directlyUsable": [f"围绕 {kw} 补充已有经历中的量化结果" for kw in matched[:4]],
+            "needToBuildFirst": [f"建议先补做或补充 {kw} 相关项目证据" for kw in missing[:4]],
+        },
+        "learningPath": [f"补齐 {kw} 的基础知识和项目练习" for kw in missing[:5]],
+        "interviewQuestions": [f"请结合项目解释你如何使用 {kw}" for kw in keywords[:5]],
+        "projectPackagingSuggestions": [],
+        "finalConclusion": "该报告为节点化工作流生成版本，建议结合证据覆盖率继续补充材料。",
+    }
+
+
+def extract_keywords_for_report(text: str) -> list[str]:
+    candidates = re.findall(r"[A-Za-z][A-Za-z0-9+#.\-]{1,}|[\u4e00-\u9fff]{2,}", text)
+    stop = {"负责", "岗位", "要求", "相关", "能力", "工作", "经验", "熟悉", "优先", "进行", "使用"}
+    out: list[str] = []
+    for item in candidates:
+        if item in stop or len(item) > 24:
+            continue
+        if item not in out:
+            out.append(item)
+    return out[:12]
+
+
+def split_to_items(text: str, markers: list[str]) -> list[str]:
+    lines = [line.strip(" -•\t") for line in text.splitlines() if line.strip()]
+    matched = [line for line in lines if any(marker in line for marker in markers)]
+    return matched[:8]
+
+
+def classify_claim(text: str) -> str:
+    if any(word in text for word in ("要求", "职责", "岗位", "优先")):
+        return "JD_REQUIREMENT"
+    if any(word in text for word in ("简历", "经历", "项目", "具备", "找到")):
+        return "RESUME_FACT"
+    if "匹配" in text or "overall" in text:
+        return "MATCH_SCORE"
+    if any(word in text for word in ("建议", "补齐", "学习", "优化")):
+        return "SUGGESTION"
+    return "GENERAL"
+
+
+def source_needed_for_claim(text: str) -> str:
+    ctype = classify_claim(text)
+    if ctype == "JD_REQUIREMENT":
+        return "JD"
+    if ctype == "RESUME_FACT":
+        return "RESUME"
+    if ctype == "SUGGESTION":
+        return "ANY"
+    return "ANY"
+
+
+def claim_evidence_chunks(chunks: list[dict[str, Any]], confidence: float) -> list[dict[str, Any]]:
+    if not chunks or confidence <= 0:
+        return []
+    return [
+        {
+            "documentId": chunk["documentId"],
+            "chunkId": chunk["chunkId"],
+            "sourceType": chunk["metadata"].get("sourceType", "KNOWLEDGE_BASE"),
+            "fileName": chunk["metadata"].get("fileName", ""),
+            "text": chunk["text"][:500],
+            "metadata": chunk.get("metadata", {}),
+        }
+        for chunk in chunks[:2]
+    ]
+
+
+def build_verification_reason(status: str, matched: list[str]) -> str:
+    if status == "supported":
+        return "claim 中的关键词可在证据片段中找到足够支持。"
+    if status == "weak":
+        return "claim 与证据存在部分关键词重合，但支持不足，建议谨慎表述。"
+    if status == "contradicted":
+        return "claim 与证据存在冲突。"
+    return "未在证据片段中找到足够支持关键词。"
+
+
+def risk_level(unsupported: int, weak: int, total: int) -> str:
+    if total == 0:
+        return "LOW"
+    rate = (unsupported + weak * 0.5) / total
+    if rate >= 0.45:
+        return "HIGH"
+    if rate >= 0.2:
+        return "MEDIUM"
+    return "LOW"
+
+
+def empty_evidence_summary() -> dict[str, Any]:
+    return {
+        "totalClaims": 0,
+        "supportedClaims": 0,
+        "weakClaims": 0,
+        "unsupportedClaims": 0,
+        "contradictedClaims": 0,
+        "evidenceCoverage": 0,
+    }

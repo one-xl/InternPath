@@ -18,7 +18,7 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
-apt-get install -y python3 python3-venv python3-pip
+apt-get install -y python3 python3-venv python3-pip nodejs npm
 
 if ! id -u "$APP_USER" >/dev/null 2>&1; then
   useradd --system --create-home --shell /usr/sbin/nologin "$APP_USER"
@@ -27,6 +27,10 @@ fi
 python3 -m venv "$APP_DIR/.venv"
 "$APP_DIR/.venv/bin/pip" install --upgrade pip
 "$APP_DIR/.venv/bin/pip" install -r "$REQUIREMENTS_FILE"
+
+if [[ -f "$APP_DIR/frontend/package.json" ]]; then
+  (cd "$APP_DIR/frontend" && npm install && npm run build)
+fi
 
 mkdir -p "$PERSISTENT_ENV_DIR"
 chmod 700 "$PERSISTENT_ENV_DIR"
@@ -49,7 +53,7 @@ chmod 600 "$PERSISTENT_ENV_FILE"
 
 cat >/etc/systemd/system/${SERVICE_NAME}.service <<EOF
 [Unit]
-Description=InternPath Streamlit Service
+Description=InternPath FastAPI Service
 After=network.target
 
 [Service]
@@ -60,7 +64,7 @@ WorkingDirectory=${APP_DIR}
 EnvironmentFile=${PERSISTENT_ENV_FILE}
 Environment=HOME=${APP_DIR}
 Environment=XDG_CACHE_HOME=${APP_DIR}/.cache
-ExecStart=${APP_DIR}/.venv/bin/streamlit run ${APP_DIR}/app.py --server.address 0.0.0.0 --server.port ${APP_PORT} --browser.gatherUsageStats false
+ExecStart=${APP_DIR}/.venv/bin/uvicorn backend.main:app --host 0.0.0.0 --port ${APP_PORT}
 Restart=always
 RestartSec=5
 NoNewPrivileges=true

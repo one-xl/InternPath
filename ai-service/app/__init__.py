@@ -1,0 +1,2 @@
+"""InternPath AI service package."""
+

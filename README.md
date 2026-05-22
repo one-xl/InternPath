@@ -1,130 +1,107 @@
 # InternPath
 
-[中文说明](README.zh-CN.md)
+InternPath 是一个面向个人自用的求职决策工作台。它把目标岗位 JD、个人简历、项目材料和历史分析放在同一条工作流里，帮助你判断一份岗位是否值得投、简历应该怎么改、短期需要补哪些证据和技能。
 
-InternPath is a Streamlit-based JD analysis tool for internship and job preparation. It extracts skills from a job description with an LLM, recommends matching Bilibili courses, stores analysis history, and can generate launch payloads for a local AiSmartDrill client.
+## Frontend
 
-## Features
+项目已经彻底切换为 `React + Vite + TypeScript` 前端，不再保留旧版 Python 页面入口。
 
-- Analyze a JD and extract skills, difficulty, and a short summary
-- Save analysis history and rename records
-- Create a new draft analysis before saving it to history
-- Search and rank Bilibili courses for the extracted skills
-- Persist records locally with SQLite
-- Generate `aismartdrill://` launch links or local skill package files
-- Protect the web UI with a configured password
+## 核心能力
 
-## Stack
+- 投递决策：输出“建议投 / 谨慎投 / 不建议投”、匹配度、关键理由和致命缺口。
+- 简历改造：给出可直接复制的简历表达，并标记还需要补证据的经历。
+- 个人材料：上传简历、项目说明、实习经历或学习资料，作为 JD 分析依据。
+- 历史沉淀：分析结果自动保存到本机 SQLite，方便复盘和比较。
+- 专家调试：RAG、证据校验、幻觉风险和工作流日志保留在折叠区。
 
-- Python
-- Streamlit
-- OpenAI-compatible SDK
-- HTTPX
-- Pydantic v2
-- SQLite
+## 技术栈
 
-## Project Structure
+- Frontend：React、Vite、TypeScript
+- Backend：FastAPI
+- AI/业务：Python、Pydantic、OpenAI-compatible SDK
+- Data：SQLite
+- Optional：独立 `ai-service` 增强校验服务
 
-```text
-app.py                  Streamlit UI
-service.py              Application service layer
-ai_analyzer.py          LLM-based JD analysis
-crawler_api.py          Bilibili course search
-ranker.py               Course ranking logic
-database.py             SQLite persistence
-models.py               Pydantic models
-practice_app.py         AiSmartDrill payload/export helpers
-config.py               Environment-driven configuration
-deploy/                 Local and server deployment helpers
+## 快速开始
+
+1. 安装 Python 依赖。
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-## Requirements
+2. 安装前端依赖。
 
-- Python 3.9+
-- An LLM API key compatible with the configured `LLM_BASE_URL`
-
-## Quick Start
-
-1. Install dependencies.
-
-```bash
-pip install -r requirements.txt
+```powershell
+cd frontend
+npm install
+cd ..
 ```
 
-2. Create `.env` from the example and fill in your own values.
+3. 创建 `.env` 并填写模型配置。
 
-```bash
-cp .env.example .env
+```powershell
+Copy-Item .env.example .env
 ```
 
-Example:
+示例：
 
 ```env
 LLM_API_KEY=your_api_key
 LLM_BASE_URL=https://api.deepseek.com
 LLM_MODEL=deepseek-chat
-APP_PASSWORD=change_me
-PRACTICE_APP_PATH=C:\Path\To\AiSmartDrill.App.exe
+AI_SERVICE_BASE_URL=http://127.0.0.1:8000
 ```
 
-3. Run the app.
-
-```bash
-streamlit run app.py
-```
-
-Default local URL:
-
-`http://127.0.0.1:8501`
-
-## Configuration
-
-Key environment variables:
-
-- `LLM_API_KEY`: required
-- `LLM_BASE_URL`: optional, defaults to `https://api.deepseek.com`
-- `LLM_MODEL`: optional, defaults to `deepseek-chat`
-- `LLM_TIMEOUT`: optional, request timeout in seconds
-- `APP_PASSWORD`: plain-text login password for development or private deployments
-- `APP_PASSWORD_HASH`: PBKDF2 hash for safer deployments
-- `PRACTICE_APP_PATH`: local Windows path to the AiSmartDrill executable
-
-If both `APP_PASSWORD` and `APP_PASSWORD_HASH` are empty, login will not succeed until one of them is configured.
-
-## Running Modes
-
-### Local Windows
-
-Use the helper script:
+4. 启动个人工作台。
 
 ```powershell
-.\deploy\run_local.ps1
+.\start_internpath.cmd
 ```
 
-See [deploy/LOCAL_WINDOWS.md](deploy/LOCAL_WINDOWS.md) for details.
+默认地址：
 
-### Linux / Debian Server
+- React 前端：`http://127.0.0.1:5173`
+- FastAPI 后端：`http://127.0.0.1:8787`
+- ai-service：`http://127.0.0.1:8000`
 
-Use `requirements.server.txt` and `deploy/server_install.sh`.
+## 手动启动
 
-See [deploy/DEPLOY_DEBIAN.md](deploy/DEPLOY_DEBIAN.md) for a generic deployment flow.
+后端：
 
-## Tests
-
-Available tests in this repository currently cover parts of the API integration and skill package generation:
-
-```bash
-pytest
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 8787
 ```
 
-## Privacy and Repository Hygiene
+前端：
 
-This repository is intended to stay safe for public hosting:
+```powershell
+cd frontend
+npm run dev -- --port 5173
+```
 
-- `.env` is ignored
-- SQLite databases are ignored
-- local editor settings such as `.vscode/` are ignored
-- deployment scripts no longer contain a fixed server address
-- example files use placeholder API keys, passwords, and executable paths
+## 测试
 
-Before pushing your own changes, confirm that no real API keys, passwords, private hostnames, or local user paths were added to tracked files.
+根项目测试：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+```
+
+前端构建：
+
+```powershell
+cd frontend
+npm run build
+```
+
+ai-service 测试：
+
+```powershell
+cd ai-service
+..\.venv\Scripts\python.exe -m pytest tests -q
+```
+
+## 隐私
+
+InternPath 默认面向个人本地使用。`.env`、SQLite 数据库、日志、用户数据和上传材料不会进入版本库。上传的简历和项目材料保存在本机 SQLite 中，请按自己的隐私要求管理工作目录和备份。

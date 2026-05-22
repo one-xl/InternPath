@@ -18,7 +18,14 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
-apt-get install -y python3 python3-venv python3-pip nodejs npm
+apt-get install -y python3 python3-venv python3-pip
+
+if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+  echo "Installing Node.js and npm..."
+  apt-get install -y nodejs npm || apt-get install -y nodejs
+else
+  echo "Node.js ($(node -v)) and npm ($(npm -v)) are already installed. Skipping installation."
+fi
 
 if ! id -u "$APP_USER" >/dev/null 2>&1; then
   useradd --system --create-home --shell /usr/sbin/nologin "$APP_USER"

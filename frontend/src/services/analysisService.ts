@@ -4,6 +4,7 @@ import type { JobDraft } from "../types/job";
 import type { ParsedResume, ResumeChunk, UploadedResumeFile } from "../types/resume";
 import { analyzeJobWithChatConfig } from "./chatClient";
 import { embedChunksWithConfig, embedTextWithConfig, retrieveTopChunksByCosineSimilarity } from "./embeddingClient";
+import { safeUUID } from "../utils/uuid";
 
 export interface ResumeRagAnalysisInput {
   jdText: string;
@@ -42,7 +43,7 @@ export async function analyzeJobWithResumeRag(input: ResumeRagAnalysisInput): Pr
   );
 
   return {
-    id: crypto.randomUUID(),
+    id: safeUUID(),
     createdAt: new Date().toISOString(),
     draft: input.draft,
     resumeFile: { ...input.resumeFile, status: "indexed" },

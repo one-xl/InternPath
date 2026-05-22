@@ -1,5 +1,6 @@
 import type { AnalysisDraft, AnalysisDraftStatus } from "../types/analysisDraft";
 import { loadFromStorage, saveToStorage } from "./storage";
+import { safeUUID } from "./uuid";
 
 const DRAFTS_STORAGE_KEY = "job-desk:analysis-drafts";
 
@@ -73,7 +74,7 @@ export function createAnalysisDraft(input: Omit<AnalysisDraft, "id" | "createdAt
   const now = new Date().toISOString();
   const draft: AnalysisDraft = {
     ...input,
-    id: crypto.randomUUID(),
+    id: safeUUID(),
     createdAt: now,
     updatedAt: now,
     status: "draft",

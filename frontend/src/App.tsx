@@ -17,6 +17,7 @@ import type { ApplicationStatus, HistoryRecord } from "./types/analysis";
 import type { JobDraft } from "./types/job";
 import type { PageKey } from "./types/navigation";
 import type { AnalysisDraft } from "./types/analysisDraft";
+import { safeUUID } from "./utils/uuid";
 
 function toHistoryRecord(result: Omit<HistoryRecord, "status">, status: ApplicationStatus): HistoryRecord {
   return { ...result, status };
@@ -237,7 +238,7 @@ export default function App() {
   function handleCloneDraft(targetDraft: AnalysisDraft) {
     const cloned = {
       ...targetDraft,
-      id: crypto.randomUUID(),
+      id: safeUUID(),
       companyName: `${targetDraft.companyName || "未名公司"} (副本)`,
       updatedAt: new Date().toISOString(),
       status: "draft" as const,

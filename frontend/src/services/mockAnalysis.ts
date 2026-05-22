@@ -147,6 +147,8 @@ export function createEmptyDraft(): JobDraft {
   };
 }
 
+import { safeUUID } from "../utils/uuid";
+
 export function analyzeJobDraft(draft: JobDraft, profile: CandidateProfile): AnalysisResult {
   const detectedKeywords = detectKeywords(draft.jdText);
   const candidateText = profileText(profile, draft);
@@ -180,7 +182,7 @@ export function analyzeJobDraft(draft: JobDraft, profile: CandidateProfile): Ana
       projectMatched ? "已有项目经历能承接岗位关键词。" : "项目经历需要更明确地绑定岗位要求。",
     ),
     scoreDimension("学历 / 背景匹配", profile.education ? 72 : 52, profile.education ? [profile.education] : ["待补充"], "背景信息越具体，判断越稳定。"),
-    scoreDimension("年限 / 级别匹配", 62 + levelBonus * 2, [draft.level], "根据岗位级别和个人目标粗略估计。"),
+    scoreDimension("年限 / 级别匹配", 62 + levelBonus * 2, [draft.level], "根据岗位级别 and 个人目标粗略估计。"),
     scoreDimension("关键词覆盖", keywordCoverage * 100, detectedKeywords, `JD 检出 ${detectedKeywords.length || 0} 个关键标签。`),
     scoreDimension("潜在短板", 100 - missingKeywords.length * 13, missingKeywords, missingKeywords.length ? `主要缺口：${missingKeywords.join("、")}。` : "暂无明显短板。"),
   ];
@@ -195,7 +197,7 @@ export function analyzeJobDraft(draft: JobDraft, profile: CandidateProfile): Ana
           : "当前材料和岗位要求距离较大，不建议投入太多时间。";
 
   return {
-    id: crypto.randomUUID(),
+    id: safeUUID(),
     createdAt: new Date().toISOString(),
     draft,
     decision,

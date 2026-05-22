@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { testChatModelConfig, testEmbeddingModelConfig } from "../services/modelConfigService";
 import type { ChatModelConfig, EmbeddingModelConfig, ModelConfigState } from "../types/modelConfig";
+import { safeUUID } from "../utils/uuid";
 import {
   clearAllModelConfigs,
   deleteChatConfig as deleteChatConfigFromStorage,
@@ -16,7 +17,7 @@ function stamp<T extends { id?: string; createdAt?: string; updatedAt?: string; 
   const now = new Date().toISOString();
   return {
     ...config,
-    id: config.id || crypto.randomUUID(),
+    id: config.id || safeUUID(),
     createdAt: config.createdAt || now,
     updatedAt: now,
     testStatus: config.testStatus || "untested",

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { EmbeddingModelConfig, EmbeddingProvider } from "../../types/modelConfig";
 import { Button } from "../ui/Button";
 import { ApiKeyInput } from "./ApiKeyInput";
+import { safeUUID } from "../../utils/uuid";
 
 const DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3";
 const DEFAULT_MULTIMODAL_MODEL = "doubao-embedding-vision-250615";
@@ -14,7 +15,7 @@ function providerLabel(provider: EmbeddingProvider): string {
 function createDefault(provider: EmbeddingProvider = "doubao-multimodal"): EmbeddingModelConfig {
   const now = new Date().toISOString();
   return {
-    id: crypto.randomUUID(),
+    id: safeUUID(),
     type: "embedding",
     name: providerLabel(provider),
     provider,

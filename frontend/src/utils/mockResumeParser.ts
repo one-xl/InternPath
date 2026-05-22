@@ -1,5 +1,6 @@
 import type { ParsedResume, ResumeChunk, UploadedResumeFile } from "../types/resume";
 import { getFileExtension } from "./fileValidation";
+import { safeUUID } from "./uuid";
 
 const SAMPLE_SKILLS = [
   "React",
@@ -20,7 +21,7 @@ function sleep(ms: number): Promise<void> {
 
 function makeResumeFile(file: File): UploadedResumeFile {
   return {
-    id: crypto.randomUUID(),
+    id: safeUUID(),
     name: file.name,
     size: file.size,
     type: file.type || getFileExtension(file.name),

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { ChatModelConfig } from "../../types/modelConfig";
 import { Button } from "../ui/Button";
 import { ApiKeyInput } from "./ApiKeyInput";
+import { safeUUID } from "../../utils/uuid";
 
 function nameFromModelId(modelId: string): string {
   return modelId.trim() ? `Gemini ${modelId.trim()}` : "Gemini";
@@ -11,7 +12,7 @@ function createDefault(): ChatModelConfig {
   const now = new Date().toISOString();
   const modelId = "gemini-flash-latest";
   return {
-    id: crypto.randomUUID(),
+    id: safeUUID(),
     type: "chat",
     name: nameFromModelId(modelId),
     provider: "gemini",

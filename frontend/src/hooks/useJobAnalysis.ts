@@ -9,6 +9,7 @@ import { parseJobDescription } from "../services/jobParser";
 import { retrieveEvidenceForRequirements } from "../services/evidenceRetriever";
 import { checkHardConstraints } from "../services/hardConstraintsChecker";
 import { useAnalysisProgress } from "./useAnalysisProgress";
+import { safeUUID } from "../utils/uuid";
 
 export const ANALYSIS_STEPS = [
   "检查输入与配置",
@@ -316,7 +317,7 @@ export function useJobAnalysis() {
       );
 
       const nextResult: AnalysisResult = {
-        id: crypto.randomUUID(),
+        id: safeUUID(),
         createdAt: new Date().toISOString(),
         draft: input.draft,
         sourceDraftId: input.sourceDraftId,

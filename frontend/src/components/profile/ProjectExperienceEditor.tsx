@@ -2,6 +2,7 @@ import type { ProjectExperience } from "../../types/profile";
 import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
 import { TextArea } from "../ui/TextArea";
+import { safeUUID } from "../../utils/uuid";
 
 interface ProjectExperienceEditorProps {
   projects: ProjectExperience[];
@@ -17,7 +18,7 @@ export function ProjectExperienceEditor({ projects, onChange }: ProjectExperienc
     onChange([
       ...projects,
       {
-        id: crypto.randomUUID(),
+        id: safeUUID(),
         name: "新项目",
         role: "",
         description: "",

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { buildResumeIndex, parseResumeFile } from "../services/resumeService";
 import type { ParsedResume, ResumeChunk, ResumeFileStatus, UploadedResumeFile } from "../types/resume";
 import { validateResumeFile } from "../utils/fileValidation";
+import { safeUUID } from "../utils/uuid";
 
 export function useResumeUpload() {
   const [sourceFile, setSourceFile] = useState<File | null>(null);
@@ -18,7 +19,7 @@ export function useResumeUpload() {
       setStatus("failed");
       setSourceFile(file);
       setResumeFile({
-        id: crypto.randomUUID(),
+        id: safeUUID(),
         name: file.name,
         size: file.size,
         type: file.type,
@@ -35,7 +36,7 @@ export function useResumeUpload() {
     setError("");
     setStatus("selected");
     setResumeFile({
-      id: crypto.randomUUID(),
+      id: safeUUID(),
       name: file.name,
       size: file.size,
       type: file.type,

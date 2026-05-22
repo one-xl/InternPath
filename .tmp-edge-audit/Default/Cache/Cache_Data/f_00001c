@@ -1,0 +1,396 @@
+import { createHotContext as __vite__createHotContext } from "/@vite/client";import.meta.hot = __vite__createHotContext("/src/components/settings/EmbeddingModelForm.tsx");import __vite__cjsImport0_react_jsxDevRuntime from "/node_modules/.vite/deps/react_jsx-dev-runtime.js?v=437c0e67"; const jsxDEV = __vite__cjsImport0_react_jsxDevRuntime["jsxDEV"];
+import * as RefreshRuntime from "/@react-refresh";
+const inWebWorker = typeof WorkerGlobalScope !== "undefined" && self instanceof WorkerGlobalScope;
+let prevRefreshReg;
+let prevRefreshSig;
+if (import.meta.hot && !inWebWorker) {
+  if (!window.$RefreshReg$) {
+    throw new Error(
+      "@vitejs/plugin-react can't detect preamble. Something is wrong."
+    );
+  }
+  prevRefreshReg = window.$RefreshReg$;
+  prevRefreshSig = window.$RefreshSig$;
+  window.$RefreshReg$ = RefreshRuntime.getRefreshReg("C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx");
+  window.$RefreshSig$ = RefreshRuntime.createSignatureFunctionForTransform;
+}
+var _s = $RefreshSig$();
+import __vite__cjsImport3_react from "/node_modules/.vite/deps/react.js?v=437c0e67"; const useEffect = __vite__cjsImport3_react["useEffect"]; const useState = __vite__cjsImport3_react["useState"];
+import { Button } from "/src/components/ui/Button.tsx";
+import { ApiKeyInput } from "/src/components/settings/ApiKeyInput.tsx";
+const DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3";
+const DEFAULT_MULTIMODAL_MODEL = "doubao-embedding-vision-250615";
+const DOUBAO_MULTIMODAL_EMBEDDING_ENDPOINT = "/embeddings/multimodal";
+function providerLabel(provider) {
+  return "Doubao Multimodal Embedding";
+}
+function createDefault(provider = "doubao-multimodal") {
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  return {
+    id: crypto.randomUUID(),
+    type: "embedding",
+    name: providerLabel(provider),
+    provider,
+    apiKey: "",
+    baseUrl: DEFAULT_BASE_URL,
+    endpoint: DOUBAO_MULTIMODAL_EMBEDDING_ENDPOINT,
+    modelId: DEFAULT_MULTIMODAL_MODEL,
+    enabled: true,
+    createdAt: now,
+    updatedAt: now,
+    testStatus: "untested",
+    timeoutMs: 6e4,
+    dimensions: 1024,
+    encodingFormat: "float",
+    inputType: "multimodal"
+  };
+}
+export function EmbeddingModelForm({
+  editingConfig,
+  onSave,
+  onCancel
+}) {
+  _s();
+  const [draft, setDraft] = useState(() => editingConfig ?? createDefault());
+  useEffect(() => {
+    setDraft(editingConfig ?? createDefault());
+  }, [editingConfig]);
+  function submit() {
+    if (!draft.apiKey.trim() || !draft.baseUrl?.trim() || !draft.modelId.trim()) return;
+    onSave({
+      ...draft,
+      provider: "doubao-multimodal",
+      name: providerLabel(draft.provider),
+      endpoint: draft.endpoint || DOUBAO_MULTIMODAL_EMBEDDING_ENDPOINT,
+      inputType: "multimodal",
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+    });
+  }
+  const isDoubao = draft.provider === "doubao-multimodal";
+  const needsFix = isDoubao && (draft.endpoint === "/embeddings" || draft.inputType === "text" || draft.modelId?.includes("embedding-vision") && draft.endpoint !== "/embeddings/multimodal");
+  return /* @__PURE__ */ jsxDEV("div", { className: "settings-editor", children: [
+    /* @__PURE__ */ jsxDEV("div", { className: "settings-editor-head", children: [
+      /* @__PURE__ */ jsxDEV("h3", { children: editingConfig ? "编辑 Doubao 向量模型" : "新增 Doubao 向量模型" }, void 0, false, {
+        fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+        lineNumber: 92,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ jsxDEV("p", { children: [
+        "当前项目使用 Doubao Multimodal Embedding 作为统一向量模型。即使输入是普通文本，也会按多模态接口要求包装为：",
+        /* @__PURE__ */ jsxDEV("code", { children: [
+          "[",
+          "{",
+          ' type: "text", text: "..." ',
+          "}",
+          "]"
+        ] }, void 0, true, {
+          fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+          lineNumber: 95,
+          columnNumber: 11
+        }, this),
+        "。该接口也可扩展支持图片、扫描件、作品集截图和视频材料。"
+      ] }, void 0, true, {
+        fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+        lineNumber: 93,
+        columnNumber: 9
+      }, this)
+    ] }, void 0, true, {
+      fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+      lineNumber: 91,
+      columnNumber: 7
+    }, this),
+    needsFix && /* @__PURE__ */ jsxDEV("div", { style: {
+      margin: "12px 0",
+      padding: "12px 14px",
+      background: "#fffbeb",
+      border: "1px solid #fef3c7",
+      color: "#b45309",
+      borderRadius: "6px",
+      fontSize: "13px",
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      gap: "12px"
+    }, children: [
+      /* @__PURE__ */ jsxDEV("span", { children: "检测到当前配置与多模态向量规范不符，请更新以确保连通性。" }, void 0, false, {
+        fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+        lineNumber: 113,
+        columnNumber: 11
+      }, this),
+      /* @__PURE__ */ jsxDEV(
+        Button,
+        {
+          type: "button",
+          variant: "secondary",
+          onClick: () => setDraft({
+            ...draft,
+            provider: "doubao-multimodal",
+            endpoint: DOUBAO_MULTIMODAL_EMBEDDING_ENDPOINT,
+            inputType: "multimodal",
+            encodingFormat: "float",
+            dimensions: 1024,
+            modelId: DEFAULT_MULTIMODAL_MODEL,
+            _suggestedEndpoint: void 0
+          }),
+          children: "一键切换为 Doubao 多模态向量接口"
+        },
+        void 0,
+        false,
+        {
+          fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+          lineNumber: 114,
+          columnNumber: 11
+        },
+        this
+      )
+    ] }, void 0, true, {
+      fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+      lineNumber: 100,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("div", { className: "settings-form", children: [
+      /* @__PURE__ */ jsxDEV("label", { className: "field", children: [
+        /* @__PURE__ */ jsxDEV("span", { children: "API Key" }, void 0, false, {
+          fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+          lineNumber: 135,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ jsxDEV(ApiKeyInput, { value: draft.apiKey, onChange: (apiKey) => setDraft({ ...draft, apiKey }) }, void 0, false, {
+          fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+          lineNumber: 136,
+          columnNumber: 11
+        }, this)
+      ] }, void 0, true, {
+        fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+        lineNumber: 134,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ jsxDEV("label", { className: "field", children: [
+        /* @__PURE__ */ jsxDEV("span", { children: "Model ID" }, void 0, false, {
+          fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+          lineNumber: 139,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ jsxDEV(
+          "input",
+          {
+            value: draft.modelId,
+            onChange: (event) => setDraft({ ...draft, modelId: event.target.value }),
+            placeholder: DEFAULT_MULTIMODAL_MODEL
+          },
+          void 0,
+          false,
+          {
+            fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+            lineNumber: 140,
+            columnNumber: 11
+          },
+          this
+        ),
+        /* @__PURE__ */ jsxDEV("small", { children: [
+          "可填 ",
+          DEFAULT_MULTIMODAL_MODEL,
+          "，或火山方舟控制台你实际开通的接入点 Endpoint ID。"
+        ] }, void 0, true, {
+          fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+          lineNumber: 145,
+          columnNumber: 11
+        }, this)
+      ] }, void 0, true, {
+        fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+        lineNumber: 138,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ jsxDEV("label", { className: "field", children: [
+        /* @__PURE__ */ jsxDEV("span", { children: "Base URL" }, void 0, false, {
+          fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+          lineNumber: 150,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ jsxDEV("input", { value: draft.baseUrl ?? "", onChange: (event) => setDraft({ ...draft, baseUrl: event.target.value }) }, void 0, false, {
+          fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+          lineNumber: 151,
+          columnNumber: 11
+        }, this)
+      ] }, void 0, true, {
+        fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+        lineNumber: 149,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ jsxDEV("label", { className: "field", children: [
+        /* @__PURE__ */ jsxDEV("span", { children: "Endpoint" }, void 0, false, {
+          fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+          lineNumber: 155,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ jsxDEV("input", { value: draft.endpoint ?? "", onChange: (event) => setDraft({ ...draft, endpoint: event.target.value }) }, void 0, false, {
+          fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+          lineNumber: 156,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ jsxDEV("small", { children: "多模态接口固定建议为 /embeddings/multimodal，请求体包含 encoding_format 与 dimensions。" }, void 0, false, {
+          fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+          lineNumber: 157,
+          columnNumber: 11
+        }, this)
+      ] }, void 0, true, {
+        fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+        lineNumber: 154,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ jsxDEV("div", { className: "form-grid", style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "12px" }, children: [
+        /* @__PURE__ */ jsxDEV("label", { className: "field", children: [
+          /* @__PURE__ */ jsxDEV("span", { children: "Dimensions（尺寸）" }, void 0, false, {
+            fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+            lineNumber: 164,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ jsxDEV(
+            "select",
+            {
+              value: draft.dimensions ?? 1024,
+              onChange: (event) => setDraft({ ...draft, dimensions: Number(event.target.value) }),
+              children: [
+                /* @__PURE__ */ jsxDEV("option", { value: "1024", children: "1024 (默认)" }, void 0, false, {
+                  fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+                  lineNumber: 169,
+                  columnNumber: 15
+                }, this),
+                /* @__PURE__ */ jsxDEV("option", { value: "2048", children: "2048" }, void 0, false, {
+                  fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+                  lineNumber: 170,
+                  columnNumber: 15
+                }, this)
+              ]
+            },
+            void 0,
+            true,
+            {
+              fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+              lineNumber: 165,
+              columnNumber: 13
+            },
+            this
+          )
+        ] }, void 0, true, {
+          fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+          lineNumber: 163,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ jsxDEV("label", { className: "field", children: [
+          /* @__PURE__ */ jsxDEV("span", { children: "Encoding Format" }, void 0, false, {
+            fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+            lineNumber: 174,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ jsxDEV(
+            "select",
+            {
+              value: draft.encodingFormat ?? "float",
+              onChange: (event) => setDraft({ ...draft, encodingFormat: event.target.value }),
+              children: [
+                /* @__PURE__ */ jsxDEV("option", { value: "float", children: "float" }, void 0, false, {
+                  fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+                  lineNumber: 179,
+                  columnNumber: 15
+                }, this),
+                /* @__PURE__ */ jsxDEV("option", { value: "base64", children: "base64" }, void 0, false, {
+                  fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+                  lineNumber: 180,
+                  columnNumber: 15
+                }, this)
+              ]
+            },
+            void 0,
+            true,
+            {
+              fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+              lineNumber: 175,
+              columnNumber: 13
+            },
+            this
+          )
+        ] }, void 0, true, {
+          fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+          lineNumber: 173,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ jsxDEV("label", { className: "field", children: [
+          /* @__PURE__ */ jsxDEV("span", { children: "Timeout (ms)" }, void 0, false, {
+            fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+            lineNumber: 184,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ jsxDEV(
+            "input",
+            {
+              type: "number",
+              value: draft.timeoutMs ?? 6e4,
+              onChange: (event) => setDraft({ ...draft, timeoutMs: Number(event.target.value) })
+            },
+            void 0,
+            false,
+            {
+              fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+              lineNumber: 185,
+              columnNumber: 13
+            },
+            this
+          )
+        ] }, void 0, true, {
+          fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+          lineNumber: 183,
+          columnNumber: 11
+        }, this)
+      ] }, void 0, true, {
+        fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+        lineNumber: 162,
+        columnNumber: 9
+      }, this)
+    ] }, void 0, true, {
+      fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+      lineNumber: 133,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("div", { className: "settings-actions", children: [
+      /* @__PURE__ */ jsxDEV(Button, { type: "button", variant: "primary", onClick: submit, disabled: !draft.apiKey.trim() || !draft.baseUrl?.trim() || !draft.modelId.trim(), children: "保存配置" }, void 0, false, {
+        fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+        lineNumber: 194,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ jsxDEV(Button, { type: "button", variant: "ghost", onClick: onCancel, children: "取消" }, void 0, false, {
+        fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+        lineNumber: 197,
+        columnNumber: 9
+      }, this)
+    ] }, void 0, true, {
+      fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+      lineNumber: 193,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx",
+    lineNumber: 90,
+    columnNumber: 5
+  }, this);
+}
+_s(EmbeddingModelForm, "rDBvgLJvtA7qRUzPjKlCXqCiWjE=");
+_c = EmbeddingModelForm;
+var _c;
+$RefreshReg$(_c, "EmbeddingModelForm");
+if (import.meta.hot && !inWebWorker) {
+  window.$RefreshReg$ = prevRefreshReg;
+  window.$RefreshSig$ = prevRefreshSig;
+}
+if (import.meta.hot && !inWebWorker) {
+  RefreshRuntime.__hmr_import(import.meta.url).then((currentExports) => {
+    RefreshRuntime.registerExportsForReactRefresh("C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx", currentExports);
+    import.meta.hot.accept((nextExports) => {
+      if (!nextExports) return;
+      const invalidateMessage = RefreshRuntime.validateRefreshBoundaryAndEnqueueUpdate("C:/Users/a1028/Desktop/vibecoding/实习通/InternPath/frontend/src/components/settings/EmbeddingModelForm.tsx", currentExports, nextExports);
+      if (invalidateMessage) import.meta.hot.invalidate(invalidateMessage);
+    });
+  });
+}
+
+//# sourceMappingURL=data:application/json;base64,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LFNBQ2Y7QUFBQSxpQ0FBQyxVQUFLLDRCQUFOO0FBQUE7QUFBQTtBQUFBO0FBQUEsaUJBQWtCO0FBQUEsVUFDbEI7QUFBQSxZQUFDO0FBQUE7QUFBQSxjQUNDLE1BQUs7QUFBQSxjQUNMLE9BQU90QixNQUFNVCxhQUFhO0FBQUEsY0FDMUIsVUFBVSxDQUFDNkIsVUFBVW5CLFNBQVMsRUFBRSxHQUFHRCxPQUFPVCxXQUFXaUMsT0FBT0osTUFBTUMsT0FBT0MsS0FBSyxFQUFFLENBQUM7QUFBQTtBQUFBLFlBSG5GO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQSxVQUdxRjtBQUFBLGFBTHZGO0FBQUE7QUFBQTtBQUFBO0FBQUEsZUFPQTtBQUFBLFdBNUJGO0FBQUE7QUFBQTtBQUFBO0FBQUEsYUE2QkE7QUFBQSxTQTFERjtBQUFBO0FBQUE7QUFBQTtBQUFBLFdBMkRBO0FBQUEsSUFDQSx1QkFBQyxTQUFJLFdBQVUsb0JBQ2I7QUFBQSw2QkFBQyxVQUFPLE1BQUssVUFBUyxTQUFRLFdBQVUsU0FBU3BCLFFBQVEsVUFBVSxDQUFDRixNQUFNakIsT0FBT29CLEtBQUssS0FBSyxDQUFDSCxNQUFNaEIsU0FBU21CLEtBQUssS0FBSyxDQUFDSCxNQUFNZCxRQUFRaUIsS0FBSyxHQUFFLG9CQUEzSTtBQUFBO0FBQUE7QUFBQTtBQUFBLGFBRUE7QUFBQSxNQUNBLHVCQUFDLFVBQU8sTUFBSyxVQUFTLFNBQVEsU0FBUSxTQUFTTCxVQUFTLGtCQUF4RDtBQUFBO0FBQUE7QUFBQTtBQUFBLGFBRUE7QUFBQSxTQU5GO0FBQUE7QUFBQTtBQUFBO0FBQUEsV0FPQTtBQUFBLE9BOUdGO0FBQUE7QUFBQTtBQUFBO0FBQUEsU0ErR0E7QUFFSjtBQUFDQyxHQXBKZUosb0JBQWtCO0FBQUEsS0FBbEJBO0FBQWtCLElBQUE4QjtBQUFBLGFBQUFBLElBQUEiLCJuYW1lcyI6WyJ1c2VFZmZlY3QiLCJ1c2VTdGF0ZSIsIkJ1dHRvbiIsIkFwaUtleUlucHV0IiwiREVGQVVMVF9CQVNFX1VSTCIsIkRFRkFVTFRfTVVMVElNT0RBTF9NT0RFTCIsIkRPVUJBT19NVUxUSU1PREFMX0VNQkVERElOR19FTkRQT0lOVCIsInByb3ZpZGVyTGFiZWwiLCJwcm92aWRlciIsImNyZWF0ZURlZmF1bHQiLCJub3ciLCJEYXRlIiwidG9JU09TdHJpbmciLCJpZCIsImNyeXB0byIsInJhbmRvbVVVSUQiLCJ0eXBlIiwibmFtZSIsImFwaUtleSIsImJhc2VVcmwiLCJlbmRwb2ludCIsIm1vZGVsSWQiLCJlbmFibGVkIiwiY3JlYXRlZEF0IiwidXBkYXRlZEF0IiwidGVzdFN0YXR1cyIsInRpbWVvdXRNcyIsImRpbWVuc2lvbnMiLCJlbmNvZGluZ0Zvcm1hdCIsImlucHV0VHlwZSIsIkVtYmVkZGluZ01vZGVsRm9ybSIsImVkaXRpbmdDb25maWciLCJvblNhdmUiLCJvbkNhbmNlbCIsIl9zIiwiZHJhZnQiLCJzZXREcmFmdCIsInN1Ym1pdCIsInRyaW0iLCJpc0RvdWJhbyIsIm5lZWRzRml4IiwiaW5jbHVkZXMiLCJtYXJnaW4iLCJwYWRkaW5nIiwiYmFja2dyb3VuZCIsImJvcmRlciIsImNvbG9yIiwiYm9yZGVyUmFkaXVzIiwiZm9udFNpemUiLCJkaXNwbGF5IiwianVzdGlmeUNvbnRlbnQiLCJhbGlnbkl0ZW1zIiwiZ2FwIiwiX3N1Z2dlc3RlZEVuZHBvaW50IiwidW5kZWZpbmVkIiwiZXZlbnQiLCJ0YXJnZXQiLCJ2YWx1ZSIsImdyaWRUZW1wbGF0ZUNvbHVtbnMiLCJOdW1iZXIiLCJfYyJdLCJpZ25vcmVMaXN0IjpbXSwic291cmNlcyI6WyJFbWJlZGRpbmdNb2RlbEZvcm0udHN4Il0sInNvdXJjZXNDb250ZW50IjpbImltcG9ydCB7IHVzZUVmZmVjdCwgdXNlU3RhdGUgfSBmcm9tIFwicmVhY3RcIjtcbmltcG9ydCB0eXBlIHsgRW1iZWRkaW5nTW9kZWxDb25maWcsIEVtYmVkZGluZ1Byb3ZpZGVyIH0gZnJvbSBcIi4uLy4uL3R5cGVzL21vZGVsQ29uZmlnXCI7XG5pbXBvcnQgeyBCdXR0b24gfSBmcm9tIFwiLi4vdWkvQnV0dG9uXCI7XG5pbXBvcnQgeyBBcGlLZXlJbnB1dCB9IGZyb20gXCIuL0FwaUtleUlucHV0XCI7XG5cbmNvbnN0IERFRkFVTFRfQkFTRV9VUkwgPSBcImh0dHBzOi8vYXJrLmNuLWJlaWppbmcudm9sY2VzLmNvbS9hcGkvdjNcIjtcbmNvbnN0IERFRkFVTFRfTVVMVElNT0RBTF9NT0RFTCA9IFwiZG91YmFvLWVtYmVkZGluZy12aXNpb24tMjUwNjE1XCI7XG5jb25zdCBET1VCQU9fTVVMVElNT0RBTF9FTUJFRERJTkdfRU5EUE9JTlQgPSBcIi9lbWJlZGRpbmdzL211bHRpbW9kYWxcIjtcblxuZnVuY3Rpb24gcHJvdmlkZXJMYWJlbChwcm92aWRlcjogRW1iZWRkaW5nUHJvdmlkZXIpOiBzdHJpbmcge1xuICByZXR1cm4gXCJEb3ViYW8gTXVsdGltb2RhbCBFbWJlZGRpbmdcIjtcbn1cblxuZnVuY3Rpb24gY3JlYXRlRGVmYXVsdChwcm92aWRlcjogRW1iZWRkaW5nUHJvdmlkZXIgPSBcImRvdWJhby1tdWx0aW1vZGFsXCIpOiBFbWJlZGRpbmdNb2RlbENvbmZpZyB7XG4gIGNvbnN0IG5vdyA9IG5ldyBEYXRlKCkudG9JU09TdHJpbmcoKTtcbiAgcmV0dXJuIHtcbiAgICBpZDogY3J5cHRvLnJhbmRvbVVVSUQoKSxcbiAgICB0eXBlOiBcImVtYmVkZGluZ1wiLFxuICAgIG5hbWU6IHByb3ZpZGVyTGFiZWwocHJvdmlkZXIpLFxuICAgIHByb3ZpZGVyLFxuICAgIGFwaUtleTogXCJcIixcbiAgICBiYXNlVXJsOiBERUZBVUxUX0JBU0VfVVJMLFxuICAgIGVuZHBvaW50OiBET1VCQU9fTVVMVElNT0RBTF9FTUJFRERJTkdfRU5EUE9JTlQsXG4gICAgbW9kZWxJZDogREVGQVVMVF9NVUxUSU1PREFMX01PREVMLFxuICAgIGVuYWJsZWQ6IHRydWUsXG4gICAgY3JlYXRlZEF0OiBub3csXG4gICAgdXBkYXRlZEF0OiBub3csXG4gICAgdGVzdFN0YXR1czogXCJ1bnRlc3RlZFwiLFxuICAgIHRpbWVvdXRNczogNjAwMDAsXG4gICAgZGltZW5zaW9uczogMTAyNCxcbiAgICBlbmNvZGluZ0Zvcm1hdDogXCJmbG9hdFwiLFxuICAgIGlucHV0VHlwZTogXCJtdWx0aW1vZGFsXCIsXG4gIH07XG59XG5cbmV4cG9ydCBmdW5jdGlvbiBFbWJlZGRpbmdNb2RlbEZvcm0oe1xuICBlZGl0aW5nQ29uZmlnLFxuICBvblNhdmUsXG4gIG9uQ2FuY2VsLFxufToge1xuICBlZGl0aW5nQ29uZmlnPzogRW1iZWRkaW5nTW9kZWxDb25maWc7XG4gIG9uU2F2ZTogKGNvbmZpZzogRW1iZWRkaW5nTW9kZWxDb25maWcpID0+IHZvaWQ7XG4gIG9uQ2FuY2VsOiAoKSA9PiB2b2lkO1xufSkge1xuICBjb25zdCBbZHJhZnQsIHNldERyYWZ0XSA9IHVzZVN0YXRlPEVtYmVkZGluZ01vZGVsQ29uZmlnPigoKSA9PiBlZGl0aW5nQ29uZmlnID8/IGNyZWF0ZURlZmF1bHQoKSk7XG5cbiAgdXNlRWZmZWN0KCgpID0+IHtcbiAgICBzZXREcmFmdChlZGl0aW5nQ29uZmlnID8/IGNyZWF0ZURlZmF1bHQoKSk7XG4gIH0sIFtlZGl0aW5nQ29uZmlnXSk7XG5cbiAgZnVuY3Rpb24gc3VibWl0KCkge1xuICAgIGlmICghZHJhZnQuYXBpS2V5LnRyaW0oKSB8fCAhZHJhZnQuYmFzZVVybD8udHJpbSgpIHx8ICFkcmFmdC5tb2RlbElkLnRyaW0oKSkgcmV0dXJuO1xuICAgIG9uU2F2ZSh7XG4gICAgICAuLi5kcmFmdCxcbiAgICAgIHByb3ZpZGVyOiBcImRvdWJhby1tdWx0aW1vZGFsXCIsXG4gICAgICBuYW1lOiBwcm92aWRlckxhYmVsKGRyYWZ0LnByb3ZpZGVyKSxcbiAgICAgIGVuZHBvaW50OiBkcmFmdC5lbmRwb2ludCB8fCBET1VCQU9fTVVMVElNT0RBTF9FTUJFRERJTkdfRU5EUE9JTlQsXG4gICAgICBpbnB1dFR5cGU6IFwibXVsdGltb2RhbFwiLFxuICAgICAgdXBkYXRlZEF0OiBuZXcgRGF0ZSgpLnRvSVNPU3RyaW5nKCksXG4gICAgfSk7XG4gIH1cblxuICBjb25zdCBpc0RvdWJhbyA9IGRyYWZ0LnByb3ZpZGVyID09PSBcImRvdWJhby1tdWx0aW1vZGFsXCI7XG4gIGNvbnN0IG5lZWRzRml4ID1cbiAgICBpc0RvdWJhbyAmJlxuICAgIChkcmFmdC5lbmRwb2ludCA9PT0gXCIvZW1iZWRkaW5nc1wiIHx8XG4gICAgICBkcmFmdC5pbnB1dFR5cGUgPT09IFwidGV4dFwiIHx8XG4gICAgICAoZHJhZnQubW9kZWxJZD8uaW5jbHVkZXMoXCJlbWJlZGRpbmctdmlzaW9uXCIpICYmIGRyYWZ0LmVuZHBvaW50ICE9PSBcIi9lbWJlZGRpbmdzL211bHRpbW9kYWxcIikpO1xuXG4gIHJldHVybiAoXG4gICAgPGRpdiBjbGFzc05hbWU9XCJzZXR0aW5ncy1lZGl0b3JcIj5cbiAgICAgIDxkaXYgY2xhc3NOYW1lPVwic2V0dGluZ3MtZWRpdG9yLWhlYWRcIj5cbiAgICAgICAgPGgzPntlZGl0aW5nQ29uZmlnID8gXCLnvJbovpEgRG91YmFvIOWQkemHj+aooeWei1wiIDogXCLmlrDlop4gRG91YmFvIOWQkemHj+aooeWei1wifTwvaDM+XG4gICAgICAgIDxwPlxuICAgICAgICAgIOW9k+WJjemhueebruS9v+eUqCBEb3ViYW8gTXVsdGltb2RhbCBFbWJlZGRpbmcg5L2c5Li657uf5LiA5ZCR6YeP5qih5Z6L44CC5Y2z5L2/6L6T5YWl5piv5pmu6YCa5paH5pys77yM5Lmf5Lya5oyJ5aSa5qih5oCB5o6l5Y+j6KaB5rGC5YyF6KOF5Li677yaXG4gICAgICAgICAgPGNvZGU+W3tcIntcIn0gdHlwZTogXCJ0ZXh0XCIsIHRleHQ6IFwiLi4uXCIge1wifVwifV08L2NvZGU+44CC6K+l5o6l5Y+j5Lmf5Y+v5omp5bGV5pSv5oyB5Zu+54mH44CB5omr5o+P5Lu244CB5L2c5ZOB6ZuG5oiq5Zu+5ZKM6KeG6aKR5p2Q5paZ44CCXG4gICAgICAgIDwvcD5cbiAgICAgIDwvZGl2PlxuXG4gICAgICB7bmVlZHNGaXggJiYgKFxuICAgICAgICA8ZGl2IHN0eWxlPXt7XG4gICAgICAgICAgbWFyZ2luOiBcIjEycHggMFwiLFxuICAgICAgICAgIHBhZGRpbmc6IFwiMTJweCAxNHB4XCIsXG4gICAgICAgICAgYmFja2dyb3VuZDogXCIjZmZmYmViXCIsXG4gICAgICAgICAgYm9yZGVyOiBcIjFweCBzb2xpZCAjZmVmM2M3XCIsXG4gICAgICAgICAgY29sb3I6IFwiI2I0NTMwOVwiLFxuICAgICAgICAgIGJvcmRlclJhZGl1czogXCI2cHhcIixcbiAgICAgICAgICBmb250U2l6ZTogXCIxM3B4XCIsXG4gICAgICAgICAgZGlzcGxheTogXCJmbGV4XCIsXG4gICAgICAgICAganVzdGlmeUNvbnRlbnQ6IFwic3BhY2UtYmV0d2VlblwiLFxuICAgICAgICAgIGFsaWduSXRlbXM6IFwiY2VudGVyXCIsXG4gICAgICAgICAgZ2FwOiBcIjEycHhcIlxuICAgICAgICB9fT5cbiAgICAgICAgICA8c3Bhbj7mo4DmtYvliLDlvZPliY3phY3nva7kuI7lpJrmqKHmgIHlkJHph4/op4TojIPkuI3nrKbvvIzor7fmm7TmlrDku6Xnoa7kv53ov57pgJrmgKfjgII8L3NwYW4+XG4gICAgICAgICAgPEJ1dHRvblxuICAgICAgICAgICAgdHlwZT1cImJ1dHRvblwiXG4gICAgICAgICAgICB2YXJpYW50PVwic2Vjb25kYXJ5XCJcbiAgICAgICAgICAgIG9uQ2xpY2s9eygpID0+IHNldERyYWZ0KHtcbiAgICAgICAgICAgICAgLi4uZHJhZnQsXG4gICAgICAgICAgICAgIHByb3ZpZGVyOiBcImRvdWJhby1tdWx0aW1vZGFsXCIsXG4gICAgICAgICAgICAgIGVuZHBvaW50OiBET1VCQU9fTVVMVElNT0RBTF9FTUJFRERJTkdfRU5EUE9JTlQsXG4gICAgICAgICAgICAgIGlucHV0VHlwZTogXCJtdWx0aW1vZGFsXCIsXG4gICAgICAgICAgICAgIGVuY29kaW5nRm9ybWF0OiBcImZsb2F0XCIsXG4gICAgICAgICAgICAgIGRpbWVuc2lvbnM6IDEwMjQsXG4gICAgICAgICAgICAgIG1vZGVsSWQ6IERFRkFVTFRfTVVMVElNT0RBTF9NT0RFTCxcbiAgICAgICAgICAgICAgX3N1Z2dlc3RlZEVuZHBvaW50OiB1bmRlZmluZWRcbiAgICAgICAgICAgIH0pfVxuICAgICAgICAgID5cbiAgICAgICAgICAgIOS4gOmUruWIh+aNouS4uiBEb3ViYW8g5aSa5qih5oCB5ZCR6YeP5o6l5Y+jXG4gICAgICAgICAgPC9CdXR0b24+XG4gICAgICAgIDwvZGl2PlxuICAgICAgKX1cblxuICAgICAgPGRpdiBjbGFzc05hbWU9XCJzZXR0aW5ncy1mb3JtXCI+XG4gICAgICAgIDxsYWJlbCBjbGFzc05hbWU9XCJmaWVsZFwiPlxuICAgICAgICAgIDxzcGFuPkFQSSBLZXk8L3NwYW4+XG4gICAgICAgICAgPEFwaUtleUlucHV0IHZhbHVlPXtkcmFmdC5hcGlLZXl9IG9uQ2hhbmdlPXsoYXBpS2V5KSA9PiBzZXREcmFmdCh7IC4uLmRyYWZ0LCBhcGlLZXkgfSl9IC8+XG4gICAgICAgIDwvbGFiZWw+XG4gICAgICAgIDxsYWJlbCBjbGFzc05hbWU9XCJmaWVsZFwiPlxuICAgICAgICAgIDxzcGFuPk1vZGVsIElEPC9zcGFuPlxuICAgICAgICAgIDxpbnB1dFxuICAgICAgICAgICAgdmFsdWU9e2RyYWZ0Lm1vZGVsSWR9XG4gICAgICAgICAgICBvbkNoYW5nZT17KGV2ZW50KSA9PiBzZXREcmFmdCh7IC4uLmRyYWZ0LCBtb2RlbElkOiBldmVudC50YXJnZXQudmFsdWUgfSl9XG4gICAgICAgICAgICBwbGFjZWhvbGRlcj17REVGQVVMVF9NVUxUSU1PREFMX01PREVMfVxuICAgICAgICAgIC8+XG4gICAgICAgICAgPHNtYWxsPlxuICAgICAgICAgICAg5Y+v5aGrIHtERUZBVUxUX01VTFRJTU9EQUxfTU9ERUx977yM5oiW54Gr5bGx5pa56Iif5o6n5Yi25Y+w5L2g5a6e6ZmF5byA6YCa55qE5o6l5YWl54K5IEVuZHBvaW50IElE44CCXG4gICAgICAgICAgPC9zbWFsbD5cbiAgICAgICAgPC9sYWJlbD5cbiAgICAgICAgPGxhYmVsIGNsYXNzTmFtZT1cImZpZWxkXCI+XG4gICAgICAgICAgPHNwYW4+QmFzZSBVUkw8L3NwYW4+XG4gICAgICAgICAgPGlucHV0IHZhbHVlPXtkcmFmdC5iYXNlVXJsID8/IFwiXCJ9IG9uQ2hhbmdlPXsoZXZlbnQpID0+IHNldERyYWZ0KHsgLi4uZHJhZnQsIGJhc2VVcmw6IGV2ZW50LnRhcmdldC52YWx1ZSB9KX0gLz5cbiAgICAgICAgPC9sYWJlbD5cblxuICAgICAgICA8bGFiZWwgY2xhc3NOYW1lPVwiZmllbGRcIj5cbiAgICAgICAgICA8c3Bhbj5FbmRwb2ludDwvc3Bhbj5cbiAgICAgICAgICA8aW5wdXQgdmFsdWU9e2RyYWZ0LmVuZHBvaW50ID8/IFwiXCJ9IG9uQ2hhbmdlPXsoZXZlbnQpID0+IHNldERyYWZ0KHsgLi4uZHJhZnQsIGVuZHBvaW50OiBldmVudC50YXJnZXQudmFsdWUgfSl9IC8+XG4gICAgICAgICAgPHNtYWxsPlxuICAgICAgICAgICAg5aSa5qih5oCB5o6l5Y+j5Zu65a6a5bu66K6u5Li6IC9lbWJlZGRpbmdzL211bHRpbW9kYWzvvIzor7fmsYLkvZPljIXlkKsgZW5jb2RpbmdfZm9ybWF0IOS4jiBkaW1lbnNpb25z44CCXG4gICAgICAgICAgPC9zbWFsbD5cbiAgICAgICAgPC9sYWJlbD5cblxuICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cImZvcm0tZ3JpZFwiIHN0eWxlPXt7IGRpc3BsYXk6IFwiZ3JpZFwiLCBncmlkVGVtcGxhdGVDb2x1bW5zOiBcIjFmciAxZnIgMWZyXCIsIGdhcDogXCIxMnB4XCIgfX0+XG4gICAgICAgICAgPGxhYmVsIGNsYXNzTmFtZT1cImZpZWxkXCI+XG4gICAgICAgICAgICA8c3Bhbj5EaW1lbnNpb25z77yI5bC65a+477yJPC9zcGFuPlxuICAgICAgICAgICAgPHNlbGVjdFxuICAgICAgICAgICAgICB2YWx1ZT17ZHJhZnQuZGltZW5zaW9ucyA/PyAxMDI0fVxuICAgICAgICAgICAgICBvbkNoYW5nZT17KGV2ZW50KSA9PiBzZXREcmFmdCh7IC4uLmRyYWZ0LCBkaW1lbnNpb25zOiBOdW1iZXIoZXZlbnQudGFyZ2V0LnZhbHVlKSBhcyAxMDI0IHwgMjA0OCB9KX1cbiAgICAgICAgICAgID5cbiAgICAgICAgICAgICAgPG9wdGlvbiB2YWx1ZT1cIjEwMjRcIj4xMDI0ICjpu5jorqQpPC9vcHRpb24+XG4gICAgICAgICAgICAgIDxvcHRpb24gdmFsdWU9XCIyMDQ4XCI+MjA0ODwvb3B0aW9uPlxuICAgICAgICAgICAgPC9zZWxlY3Q+XG4gICAgICAgICAgPC9sYWJlbD5cbiAgICAgICAgICA8bGFiZWwgY2xhc3NOYW1lPVwiZmllbGRcIj5cbiAgICAgICAgICAgIDxzcGFuPkVuY29kaW5nIEZvcm1hdDwvc3Bhbj5cbiAgICAgICAgICAgIDxzZWxlY3RcbiAgICAgICAgICAgICAgdmFsdWU9e2RyYWZ0LmVuY29kaW5nRm9ybWF0ID8/IFwiZmxvYXRcIn1cbiAgICAgICAgICAgICAgb25DaGFuZ2U9eyhldmVudCkgPT4gc2V0RHJhZnQoeyAuLi5kcmFmdCwgZW5jb2RpbmdGb3JtYXQ6IGV2ZW50LnRhcmdldC52YWx1ZSBhcyBhbnkgfSl9XG4gICAgICAgICAgICA+XG4gICAgICAgICAgICAgIDxvcHRpb24gdmFsdWU9XCJmbG9hdFwiPmZsb2F0PC9vcHRpb24+XG4gICAgICAgICAgICAgIDxvcHRpb24gdmFsdWU9XCJiYXNlNjRcIj5iYXNlNjQ8L29wdGlvbj5cbiAgICAgICAgICAgIDwvc2VsZWN0PlxuICAgICAgICAgIDwvbGFiZWw+XG4gICAgICAgICAgPGxhYmVsIGNsYXNzTmFtZT1cImZpZWxkXCI+XG4gICAgICAgICAgICA8c3Bhbj5UaW1lb3V0IChtcyk8L3NwYW4+XG4gICAgICAgICAgICA8aW5wdXRcbiAgICAgICAgICAgICAgdHlwZT1cIm51bWJlclwiXG4gICAgICAgICAgICAgIHZhbHVlPXtkcmFmdC50aW1lb3V0TXMgPz8gNjAwMDB9XG4gICAgICAgICAgICAgIG9uQ2hhbmdlPXsoZXZlbnQpID0+IHNldERyYWZ0KHsgLi4uZHJhZnQsIHRpbWVvdXRNczogTnVtYmVyKGV2ZW50LnRhcmdldC52YWx1ZSkgfSl9XG4gICAgICAgICAgICAvPlxuICAgICAgICAgIDwvbGFiZWw+XG4gICAgICAgIDwvZGl2PlxuICAgICAgPC9kaXY+XG4gICAgICA8ZGl2IGNsYXNzTmFtZT1cInNldHRpbmdzLWFjdGlvbnNcIj5cbiAgICAgICAgPEJ1dHRvbiB0eXBlPVwiYnV0dG9uXCIgdmFyaWFudD1cInByaW1hcnlcIiBvbkNsaWNrPXtzdWJtaXR9IGRpc2FibGVkPXshZHJhZnQuYXBpS2V5LnRyaW0oKSB8fCAhZHJhZnQuYmFzZVVybD8udHJpbSgpIHx8ICFkcmFmdC5tb2RlbElkLnRyaW0oKX0+XG4gICAgICAgICAg5L+d5a2Y6YWN572uXG4gICAgICAgIDwvQnV0dG9uPlxuICAgICAgICA8QnV0dG9uIHR5cGU9XCJidXR0b25cIiB2YXJpYW50PVwiZ2hvc3RcIiBvbkNsaWNrPXtvbkNhbmNlbH0+XG4gICAgICAgICAg5Y+W5raIXG4gICAgICAgIDwvQnV0dG9uPlxuICAgICAgPC9kaXY+XG4gICAgPC9kaXY+XG4gICk7XG59XG4iXSwiZmlsZSI6IkM6L1VzZXJzL2ExMDI4L0Rlc2t0b3AvdmliZWNvZGluZy/lrp7kuaDpgJovSW50ZXJuUGF0aC9mcm9udGVuZC9zcmMvY29tcG9uZW50cy9zZXR0aW5ncy9FbWJlZGRpbmdNb2RlbEZvcm0udHN4In0=

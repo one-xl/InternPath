@@ -11,6 +11,7 @@ import {
   clearConvertedDrafts,
   getLatestDraft,
 } from "../utils/analysisDraftStorage";
+import { safeUUID } from "../utils/uuid";
 
 export function useAnalysisDrafts() {
   const [drafts, setDrafts] = useState<AnalysisDraft[]>(() => getAnalysisDrafts());
@@ -75,7 +76,7 @@ export function useAnalysisDrafts() {
       } else {
         // Create new
         targetDraft = {
-          id: existingId || crypto.randomUUID(),
+          id: existingId || safeUUID(),
           createdAt: now,
           updatedAt: now,
           status: "draft",
@@ -135,7 +136,7 @@ export function useAnalysisDrafts() {
       const now = new Date().toISOString();
       
       const targetDraft: AnalysisDraft = {
-        id: input.id || crypto.randomUUID(),
+        id: input.id || safeUUID(),
         createdAt: now,
         updatedAt: now,
         status: "analysis_failed",

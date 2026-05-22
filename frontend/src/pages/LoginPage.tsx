@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "../components/ui/Button";
 
 interface LoginPageProps {
@@ -10,6 +10,10 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [verificationCode, setVerificationCode] = useState("");
+  const [codeMessage, setCodeMessage] = useState<string | null>(null);
+  const [codeCooldown, setCodeCooldown] = useState(0);
+  const [sendingCode, setSendingCode] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
@@ -18,6 +22,46 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
   function validateEmail(val: string) {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val);
   }
+
+  async function handleSendCode() {
+    setError(null);
+    setCodeMessage(null);
+    if (!email.trim()) {
+      setError("请先填写邮箱。");
+      return;
+    }
+    if (!validateEmail(email)) {
+      setError("请输入有效的电子邮箱地址。");
+      return;
+    }
+
+    setSendingCode(true);
+    try {
+      const response = await fetch("/api/auth/send-email-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: email }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.detail || "验证码发送失败，请稍后重试。");
+      }
+      setCodeCooldown(60);
+      setCodeMessage(data.devCode ? `${data.message} 开发验证码：${data.devCode}` : data.message || "验证码已发送，请查收邮箱。");
+    } catch (err: any) {
+      setError(err.message || "验证码发送失败，请稍后重试。");
+    } finally {
+      setSendingCode(false);
+    }
+  }
+
+  useEffect(() => {
+    if (codeCooldown <= 0) return;
+    const timer = window.setInterval(() => {
+      setCodeCooldown((current) => (current > 0 ? current - 1 : 0));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [codeCooldown]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -44,6 +88,11 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
       return;
     }
 
+    if (!isLogin && !/^\d{6}$/.test(verificationCode.trim())) {
+      setError("请输入 6 位邮箱验证码。");
+      return;
+    }
+
     setLoading(true);
 
     try {
@@ -56,6 +105,7 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
         body: JSON.stringify({
           username: email,
           password: password,
+          verification_code: verificationCode.trim(),
         }),
       });
 
@@ -72,7 +122,8 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
         throw new Error(errorMsg);
       }
 
-      const user = await response.json();
+      const payload = await response.json();
+      const user = payload.user ?? payload;
       onLoginSuccess({
         id: user.id,
         username: user.username,
@@ -193,6 +244,38 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
             </label>
           )}
 
+          {!isLogin && (
+            <label className="field animate-fadeIn">
+              <span className="field-label-text">邮箱验证码</span>
+              <div className="input-with-icon">
+                <svg className="input-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15a4 4 0 0 1-4 4H7l-4 4V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z" />
+                </svg>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={6}
+                  placeholder="输入 6 位验证码"
+                  value={verificationCode}
+                  onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                  disabled={loading}
+                  required
+                  autoComplete="one-time-code"
+                />
+                <button
+                  type="button"
+                  className="password-toggle-btn"
+                  onClick={handleSendCode}
+                  disabled={loading || sendingCode || codeCooldown > 0}
+                  style={{ width: "auto", minWidth: "92px", fontSize: "12px", padding: "0 10px" }}
+                >
+                  {sendingCode ? "发送中" : codeCooldown > 0 ? `${codeCooldown}s` : "发送验证码"}
+                </button>
+              </div>
+              {codeMessage && <small style={{ color: "#22c55e", fontSize: "12px" }}>{codeMessage}</small>}
+            </label>
+          )}
+
           <Button
             type="submit"
             variant="primary"
@@ -213,6 +296,8 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
               setError(null);
               setPassword("");
               setConfirmPassword("");
+              setVerificationCode("");
+              setCodeMessage(null);
             }}
             disabled={loading}
           >

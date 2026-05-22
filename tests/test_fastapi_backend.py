@@ -33,6 +33,7 @@ def _service_with_tmp_storage(tmp_path: Path, monkeypatch) -> CareerPathAIServic
 
 
 def test_fastapi_auth_analyze_and_history_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setattr(Config, "EMAIL_VERIFICATION_REQUIRED", False)
     service = _service_with_tmp_storage(tmp_path, monkeypatch)
     app = create_app(service=service, auth_db=Database(str(tmp_path / "auth.db")))
     client = TestClient(app)
@@ -65,3 +66,35 @@ def test_fastapi_auth_analyze_and_history_roundtrip(tmp_path, monkeypatch):
     records = history_response.json()["records"]
     assert len(records) == 1
     assert records[0]["matchScore"] >= 0
+
+
+def test_register_requires_email_code_and_accepts_dev_code(tmp_path, monkeypatch):
+    monkeypatch.setattr(Config, "EMAIL_VERIFICATION_REQUIRED", True)
+    monkeypatch.setattr(Config, "SMTP_HOST", "")
+    service = _service_with_tmp_storage(tmp_path, monkeypatch)
+    app = create_app(service=service, auth_db=Database(str(tmp_path / "auth.db")))
+    client = TestClient(app)
+
+    without_code = client.post(
+        "/api/auth/register",
+        json={"username": "verify@example.com", "password": "password123"},
+    )
+    assert without_code.status_code == 400
+
+    code_response = client.post(
+        "/api/auth/send-email-code",
+        json={"username": "verify@example.com"},
+    )
+    assert code_response.status_code == 200
+    code = code_response.json()["devCode"]
+
+    register_response = client.post(
+        "/api/auth/register",
+        json={
+            "username": "verify@example.com",
+            "password": "password123",
+            "verification_code": code,
+        },
+    )
+    assert register_response.status_code == 200
+    assert register_response.json()["user"]["username"] == "verify@example.com"

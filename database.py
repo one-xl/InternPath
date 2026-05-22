@@ -501,6 +501,23 @@ class Database:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_model_configs_user_provider ON model_configs(user_id, provider);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_embeddings_user_analysis ON embeddings(user_id, analysis_id);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_embeddings_user_hash ON embeddings(user_id, content_hash);")
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS email_verification_codes (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    email VARCHAR(255) NOT NULL,
+                    code_hash TEXT NOT NULL,
+                    purpose VARCHAR(50) NOT NULL DEFAULT 'register',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    max_attempts INTEGER NOT NULL DEFAULT 5,
+                    expires_at TIMESTAMP NOT NULL,
+                    used_at TIMESTAMP,
+                    request_ip VARCHAR(255),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_email_codes_email_purpose ON email_verification_codes(email, purpose, created_at DESC);")
             
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_jd_records_user_created ON jd_records(user_id, created_at);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_analysis_report_user_created ON analysis_report(user_id, created_at);")
@@ -843,6 +860,23 @@ class Database:
             )
             if not self._column_exists(cursor, "model_configs", "config_json"):
                 cursor.execute("ALTER TABLE model_configs ADD COLUMN config_json TEXT")
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS email_verification_codes (
+                    id TEXT PRIMARY KEY,
+                    email TEXT NOT NULL,
+                    code_hash TEXT NOT NULL,
+                    purpose TEXT NOT NULL DEFAULT 'register',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    max_attempts INTEGER NOT NULL DEFAULT 5,
+                    expires_at TEXT NOT NULL,
+                    used_at TEXT,
+                    request_ip TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_email_codes_email_purpose ON email_verification_codes(email, purpose, created_at DESC)")
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS embeddings (
@@ -1232,6 +1266,24 @@ class Database:
             WHERE id = ?
             """,
             (user_id,),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        if row is None:
+            return None
+        return User(id=row[0], username=row[1], created_at=datetime.fromisoformat(row[2]))
+
+    def get_user_by_username(self, username: str) -> Optional[User]:
+        normalized = normalize_username(username)
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, username, created_at
+            FROM users
+            WHERE username = ?
+            """,
+            (normalized,),
         )
         row = cursor.fetchone()
         conn.close()
@@ -2716,6 +2768,82 @@ class Database:
             return {}
         return json.loads(row[0]) if row[0] else {}
 
+    # EMAIL VERIFICATION CRUD methods
+    def create_email_verification_code(
+        self,
+        email: str,
+        code_hash: str,
+        purpose: str,
+        expires_at: datetime,
+        max_attempts: int,
+        request_ip: str = "",
+    ) -> str:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        now = datetime.now().isoformat()
+        from uuid import uuid4
+        code_id = str(uuid4())
+        cursor.execute(
+            """
+            INSERT INTO email_verification_codes
+                (id, email, code_hash, purpose, attempts, max_attempts, expires_at, request_ip, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (code_id, email, code_hash, purpose, 0, max_attempts, expires_at.isoformat(), request_ip, now),
+        )
+        conn.commit()
+        conn.close()
+        return code_id
+
+    def get_latest_email_verification_code(self, email: str, purpose: str) -> Optional[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, email, code_hash, purpose, attempts, max_attempts, expires_at, used_at, created_at
+            FROM email_verification_codes
+            WHERE email = ? AND purpose = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (email, purpose),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "email": row[1],
+            "code_hash": row[2],
+            "purpose": row[3],
+            "attempts": int(row[4] or 0),
+            "max_attempts": int(row[5] or 5),
+            "expires_at": row[6],
+            "used_at": row[7],
+            "created_at": row[8],
+        }
+
+    def increment_email_verification_attempts(self, code_id: str) -> None:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE email_verification_codes SET attempts = attempts + 1 WHERE id = ?",
+            (code_id,),
+        )
+        conn.commit()
+        conn.close()
+
+    def mark_email_verification_code_used(self, code_id: str) -> None:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE email_verification_codes SET used_at = ? WHERE id = ?",
+            (datetime.now().isoformat(), code_id),
+        )
+        conn.commit()
+        conn.close()
+
     # MODEL CONFIGS CRUD methods
     @staticmethod
     def _is_api_key_placeholder(api_key: Optional[str]) -> bool:
@@ -2855,6 +2983,16 @@ class Database:
     def get_model_api_key(self, user_id: Optional[Any], provider: str, model_id: str) -> str:
         conn = self.get_connection()
         cursor = conn.cursor()
+
+        def first_usable_key(rows: list[Any]) -> str:
+            for row in rows:
+                if not row or not row[0]:
+                    continue
+                api_key = self.decrypt_api_key(row[0]).strip()
+                if not self._is_api_key_placeholder(api_key):
+                    return api_key
+            return ""
+
         if user_id:
             cursor.execute(
                 """
@@ -2883,13 +3021,43 @@ class Database:
                 """,
                 (provider, model_id),
             )
-        row = cursor.fetchone()
-        conn.close()
-        if not row or not row[0]:
-            return ""
+        rows = cursor.fetchall()
+        api_key = first_usable_key(rows)
+        if api_key:
+            conn.close()
+            return api_key
 
-        api_key = self.decrypt_api_key(row[0]).strip()
-        return "" if self._is_api_key_placeholder(api_key) else api_key
+        if user_id:
+            cursor.execute(
+                """
+                SELECT encrypted_api_key
+                FROM model_configs
+                WHERE enabled = TRUE
+                  AND (user_id = ? OR user_id IS NULL)
+                  AND provider = ?
+                  AND encrypted_api_key IS NOT NULL
+                ORDER BY CASE WHEN user_id = ? THEN 0 ELSE 1 END, updated_at DESC
+                LIMIT 5
+                """,
+                (user_id, provider, user_id),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT encrypted_api_key
+                FROM model_configs
+                WHERE enabled = TRUE
+                  AND user_id IS NULL
+                  AND provider = ?
+                  AND encrypted_api_key IS NOT NULL
+                ORDER BY updated_at DESC
+                LIMIT 5
+                """,
+                (provider,),
+            )
+        rows = cursor.fetchall()
+        conn.close()
+        return first_usable_key(rows)
 
     def delete_model_config(self, user_id: Any, config_id: Any) -> bool:
         conn = self.get_connection()

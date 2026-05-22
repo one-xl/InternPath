@@ -18,6 +18,30 @@ def get_float_env(name: str, default: float) -> float:
     return float(value)
 
 
+def get_int_env(name: str, default: int) -> int:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+
+    value = raw_value.strip()
+    if not value:
+        return default
+
+    return int(value)
+
+
+def get_bool_env(name: str, default: bool) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+
+    value = raw_value.strip().lower()
+    if not value:
+        return default
+
+    return value in {"1", "true", "yes", "on"}
+
+
 class Config:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     IS_WINDOWS: bool = os.name == "nt"
@@ -33,6 +57,16 @@ class Config:
 
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     GEMINI_BASE_URL: str = os.getenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
+
+    EMAIL_VERIFICATION_REQUIRED: bool = get_bool_env("EMAIL_VERIFICATION_REQUIRED", True)
+    EMAIL_CODE_TTL_MINUTES: int = get_int_env("EMAIL_CODE_TTL_MINUTES", 10)
+    EMAIL_CODE_MAX_ATTEMPTS: int = get_int_env("EMAIL_CODE_MAX_ATTEMPTS", 5)
+    SMTP_HOST: str = os.getenv("SMTP_HOST", "").strip()
+    SMTP_PORT: int = get_int_env("SMTP_PORT", 587)
+    SMTP_USERNAME: str = os.getenv("SMTP_USERNAME", "").strip()
+    SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
+    SMTP_USE_TLS: bool = get_bool_env("SMTP_USE_TLS", True)
+    MAIL_FROM: str = os.getenv("MAIL_FROM", "InternPath <noreply@internpath.local>").strip()
 
     DB_PATH: str = os.path.join(BASE_DIR, "career_path.db")
     USER_DB_DIR: str = os.path.join(BASE_DIR, "user_data")

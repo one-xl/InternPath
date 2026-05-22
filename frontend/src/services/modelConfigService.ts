@@ -51,6 +51,10 @@ export async function testChatModelConfig(
   onProgress?: (msg: string) => void
 ): Promise<ModelTestResult> {
   const started = nowMs();
+  const modelId = config.testModelId?.trim() || config.modelId;
+  const baseUrl = config.baseUrl?.trim() || "https://generativelanguage.googleapis.com/v1beta";
+  const url = `${baseUrl.replace(/\/$/, "")}/models/${encodeURIComponent(modelId)}:generateContent`;
+
   if (onProgress) {
     onProgress("正在向服务器发起测试连接请求...");
   }
@@ -62,20 +66,46 @@ export async function testChatModelConfig(
       },
       body: JSON.stringify({
         provider: config.provider,
-        modelId: config.modelId,
+        modelId,
       }),
     });
-    const data = await response.json();
+    const rawResponseText = await response.text();
+    let data: any = {};
+    try {
+      data = rawResponseText ? JSON.parse(rawResponseText) : {};
+    } catch {
+      data = {};
+    }
+
+    const diagnostics = {
+      provider: config.provider,
+      url: data.url || url,
+      modelId,
+      temperature: 0,
+      maxOutputTokens: 256,
+      responseMimeType: "application/json",
+      hasResponseSchema: false,
+      status: data.upstreamStatus ?? response.status,
+      proxyStatus: response.status,
+      message: data.message || rawResponseText || "连接失败，请检查服务器端模型配置。",
+      rawResponseText: data.rawResponseText || rawResponseText,
+      responsePreview: (data.rawResponseText || rawResponseText).slice(0, 500),
+      retryable: false,
+    };
+
     if (response.ok && data.ok) {
       return {
         ok: true,
         message: data.message || "连接成功",
         latencyMs: Math.round(nowMs() - started),
         provider: config.provider,
-        modelId: config.modelId,
+        modelId,
+        diagnostics,
       };
     } else {
-      throw new Error(data.message || "连接失败，请检查服务器端模型配置。");
+      const err: any = new Error(data.message || "连接失败，请检查服务器端模型配置。");
+      err.diagnostics = diagnostics;
+      throw err;
     }
   } catch (error) {
     return {
@@ -83,10 +113,15 @@ export async function testChatModelConfig(
       message: error instanceof Error ? error.message : "连接失败，请检查服务器端模型配置。",
       latencyMs: Math.round(nowMs() - started),
       provider: config.provider,
-      modelId: config.modelId,
-      diagnostics: {
+      modelId,
+      diagnostics: (error as any)?.diagnostics || {
         provider: config.provider,
-        modelId: config.modelId,
+        url,
+        modelId,
+        temperature: 0,
+        maxOutputTokens: 256,
+        responseMimeType: "application/json",
+        hasResponseSchema: false,
         message: error instanceof Error ? error.message : "未知错误",
       }
     } as any;

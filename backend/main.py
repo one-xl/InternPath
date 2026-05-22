@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
+from email.message import EmailMessage
+import hashlib
+import hmac
 import os
 from pathlib import Path
 import re
+import secrets
+import smtplib
 import time
 from typing import Any, Optional
 from uuid import uuid4
@@ -28,6 +33,14 @@ import httpx
 class AuthRequest(BaseModel):
     username: str = Field(..., min_length=1)
     password: str = Field(..., min_length=8)
+
+
+class RegisterRequest(AuthRequest):
+    verification_code: str = Field(default="", min_length=0, max_length=12)
+
+
+class EmailCodeRequest(BaseModel):
+    username: str = Field(..., min_length=1)
 
 
 class AnalyzeRequest(BaseModel):
@@ -219,6 +232,66 @@ def create_app(
             return saved_key
         return (env_key or "").strip()
 
+    def normalize_email(value: str) -> str:
+        email = value.strip().lower()
+        if not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="请输入有效的邮箱地址。")
+        return email
+
+    def email_code_hash(email: str, code: str) -> str:
+        secret = (
+            os.getenv("EMAIL_CODE_SECRET")
+            or os.getenv("MODEL_SECRET_ENCRYPTION_KEY")
+            or "internpath-email-code-dev-secret"
+        )
+        return hmac.new(secret.encode("utf-8"), f"{email}:{code}".encode("utf-8"), hashlib.sha256).hexdigest()
+
+    def send_email_code(email: str, code: str) -> bool:
+        if not Config.SMTP_HOST or not Config.SMTP_USERNAME or not Config.SMTP_PASSWORD:
+            print(f"[EMAIL_CODE][DEV] {email} -> {code}")
+            return False
+
+        message = EmailMessage()
+        message["Subject"] = "InternPath 注册验证码"
+        message["From"] = Config.MAIL_FROM
+        message["To"] = email
+        message.set_content(
+            f"你的 InternPath 注册验证码是：{code}\n\n"
+            f"验证码 {Config.EMAIL_CODE_TTL_MINUTES} 分钟内有效。若不是你本人操作，请忽略这封邮件。"
+        )
+
+        with smtplib.SMTP(Config.SMTP_HOST, Config.SMTP_PORT, timeout=15) as smtp:
+            if Config.SMTP_USE_TLS:
+                smtp.starttls()
+            if Config.SMTP_USERNAME or Config.SMTP_PASSWORD:
+                smtp.login(Config.SMTP_USERNAME, Config.SMTP_PASSWORD)
+            smtp.send_message(message)
+        return True
+
+    def verify_register_code(email: str, code: str) -> None:
+        if not Config.EMAIL_VERIFICATION_REQUIRED:
+            return
+        normalized_code = code.strip()
+        if not re.match(r"^\d{6}$", normalized_code):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="请输入 6 位邮箱验证码。")
+
+        record = state.auth_db.get_latest_email_verification_code(email, "register")
+        if not record:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="请先获取邮箱验证码。")
+        if record["used_at"]:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="验证码已使用，请重新获取。")
+        if record["attempts"] >= record["max_attempts"]:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="验证码尝试次数过多，请重新获取。")
+        if datetime.fromisoformat(str(record["expires_at"])) < datetime.now():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="验证码已过期，请重新获取。")
+
+        expected_hash = email_code_hash(email, normalized_code)
+        if not hmac.compare_digest(expected_hash, record["code_hash"]):
+            state.auth_db.increment_email_verification_attempts(record["id"])
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="验证码错误，请重新输入。")
+
+        state.auth_db.mark_email_verification_code_used(record["id"])
+
     @app.get("/api/health")
     def health() -> dict[str, Any]:
         try:
@@ -328,14 +401,52 @@ def create_app(
         }
 
     @app.post("/api/auth/register")
-    def register(payload: AuthRequest, response: Response) -> dict[str, Any]:
+    def register(payload: RegisterRequest, response: Response) -> dict[str, Any]:
+        email = normalize_email(payload.username)
+        verify_register_code(email, payload.verification_code)
         try:
-            user_id = state.auth_db.create_user(payload.username, payload.password)
+            user_id = state.auth_db.create_user(email, payload.password)
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         token = issue_token(user_id)
         set_session_cookie(response, token)
         return auth_payload(user_id, token)
+
+    @app.post("/api/auth/send-email-code")
+    def send_register_email_code(payload: EmailCodeRequest, request: Request) -> dict[str, Any]:
+        email = normalize_email(payload.username)
+        client_ip = request.client.host if request.client else "unknown"
+        check_rate_limit(f"email_code_ip:{client_ip}", 10, 3600)
+        check_rate_limit(f"email_code_addr:{email}", 3, 600)
+
+        if state.auth_db.get_user_by_username(email):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="该邮箱已注册，请直接登录。")
+
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        expires_at = datetime.now() + timedelta(minutes=Config.EMAIL_CODE_TTL_MINUTES)
+        state.auth_db.create_email_verification_code(
+            email=email,
+            code_hash=email_code_hash(email, code),
+            purpose="register",
+            expires_at=expires_at,
+            max_attempts=Config.EMAIL_CODE_MAX_ATTEMPTS,
+            request_ip=client_ip,
+        )
+
+        try:
+            sent = send_email_code(email, code)
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"验证码邮件发送失败：{str(exc)}") from exc
+
+        response: dict[str, Any] = {
+            "ok": True,
+            "message": "验证码已发送，请查收邮箱。",
+            "expiresInSeconds": Config.EMAIL_CODE_TTL_MINUTES * 60,
+        }
+        if not sent and not Config.IS_PRODUCTION:
+            response["devCode"] = code
+            response["message"] = "本地未配置 SMTP，验证码已输出到后端日志。"
+        return response
 
     @app.post("/api/auth/login")
     def login(payload: AuthRequest, request: Request, response: Response) -> dict[str, Any]:
@@ -472,11 +583,34 @@ def create_app(
                 async with httpx.AsyncClient() as client:
                     res = await client.post(url, headers={"Content-Type": "application/json", "x-goog-api-key": api_key}, json=test_body, timeout=20.0)
                     if res.status_code == 200:
-                        return {"ok": True, "message": "连接成功"}
-                    else:
-                        return {"ok": False, "message": "连接失败，请检查服务器端模型配置。"}
+                        return {
+                            "ok": True,
+                            "message": "连接成功",
+                            "upstreamStatus": res.status_code,
+                            "url": url,
+                            "rawResponseText": res.text[:500],
+                        }
+
+                    message = "Gemini 连接失败，请检查 Model ID、API Key 权限或额度。"
+                    try:
+                        body = res.json()
+                        message = body.get("error", {}).get("message") or body.get("message") or message
+                    except Exception:
+                        pass
+                    return {
+                        "ok": False,
+                        "message": message,
+                        "upstreamStatus": res.status_code,
+                        "url": url,
+                        "rawResponseText": res.text[:500],
+                    }
             except Exception as exc:
-                return {"ok": False, "message": "连接失败，请检查服务器端模型配置。"}
+                return {
+                    "ok": False,
+                    "message": f"Gemini 连接失败：{str(exc)}",
+                    "url": url,
+                    "rawResponseText": "",
+                }
 
         elif "doubao" in payload.provider or "volc" in payload.provider or payload.provider == "openai-compatible" or payload.provider == "custom":
             api_key = model_api_key(user_id, payload.provider, payload.modelId.strip(), Config.LLM_API_KEY)
@@ -496,11 +630,34 @@ def create_app(
                 async with httpx.AsyncClient() as client:
                     res = await client.post(url, headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, json=test_body, timeout=20.0)
                     if res.status_code == 200:
-                        return {"ok": True, "message": "连接成功"}
-                    else:
-                        return {"ok": False, "message": "连接失败，请检查服务器端模型配置。"}
+                        return {
+                            "ok": True,
+                            "message": "连接成功",
+                            "upstreamStatus": res.status_code,
+                            "url": url,
+                            "rawResponseText": res.text[:500],
+                        }
+
+                    message = "向量模型连接失败，请检查 Model ID、API Key 权限或额度。"
+                    try:
+                        body = res.json()
+                        message = body.get("error", {}).get("message") or body.get("message") or message
+                    except Exception:
+                        pass
+                    return {
+                        "ok": False,
+                        "message": message,
+                        "upstreamStatus": res.status_code,
+                        "url": url,
+                        "rawResponseText": res.text[:500],
+                    }
             except Exception as exc:
-                return {"ok": False, "message": "连接失败，请检查服务器端模型配置。"}
+                return {
+                    "ok": False,
+                    "message": f"向量模型连接失败：{str(exc)}",
+                    "url": url,
+                    "rawResponseText": "",
+                }
                 
         return {"ok": False, "message": "不支持的 Provider 连接测试"}
 

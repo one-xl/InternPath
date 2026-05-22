@@ -2,14 +2,19 @@ import type { AnalysisResult, Decision, LearningSuggestion, MatchDimension, Prio
 import type { ChatModelConfig } from "../types/modelConfig";
 import type { ResumeChunk } from "../types/resume";
 import { safeParseModelJson } from "../utils/safeParseModelJson";
+import { validateModelCitations } from "../utils/citationValidator";
 import { callGeminiWithConfig, classifyGeminiError } from "./geminiClient";
 
-interface ChatAnalysisInput {
+export interface ChatAnalysisInput {
   jdText: string;
   targetType: string;
   jobDirection: string;
   retrievedChunks: ResumeChunk[];
   config: ChatModelConfig;
+  parsedJD?: any;
+  requirementMatches?: any;
+  hardConstraintsResult?: any;
+  userExtraContext?: string;
 }
 
 interface GeminiResumeAdvice {
@@ -46,11 +51,11 @@ function clampScore(value: unknown, fallback = 50): number {
   return Math.max(0, Math.min(100, Math.round(parsed)));
 }
 
-function mapDecision(decision: GeminiAnalysis["decision"], score: number): Decision {
-  if (decision === "strong_apply") return "strong_yes";
-  if (decision === "apply") return "yes";
-  if (decision === "cautious") return "maybe";
-  if (decision === "not_recommended") return "no";
+function mapDecision(decision: string | undefined, score: number): Decision {
+  if (decision === "strong_apply" || decision === "strong_yes") return "strong_yes";
+  if (decision === "apply" || decision === "yes") return "yes";
+  if (decision === "cautious" || decision === "maybe" || decision === "apply_after_revision") return "maybe";
+  if (decision === "not_recommended" || decision === "no" || decision === "low_priority") return "no";
   if (score >= 85) return "strong_yes";
   if (score >= 70) return "yes";
   if (score >= 50) return "maybe";
@@ -71,6 +76,98 @@ function priorityFromScore(score: number): Priority {
 }
 
 function buildPrompt(input: ChatAnalysisInput): string {
+  // If we have structured JD and matches, we perform structural, evidence-constrained evaluation
+  if (input.parsedJD && input.requirementMatches) {
+    return `你是一名严格、客观、不讨好用户的求职分析专家。
+你必须基于提供的 JD 结构化结果、简历证据片段、向量召回结果和硬性条件检查结果进行分析。
+向量相似度只代表语义相关，不代表用户满足岗位要求。
+你不能编造用户没有提供的经历。
+你不能把“学习过”当成“熟练掌握”。
+你不能把课程项目直接等同于生产经验。
+你必须区分 matched、partial、missing、unknown。
+如果证据不足，必须输出 unknown 或 evidence_insufficient。
+如果存在硬性风险，必须优先指出。
+请输出严格 JSON，不要输出 markdown，不要包含 markdown 代码块。
+
+【分析输入】
+1. 岗位结构化 JD:
+${JSON.stringify(input.parsedJD, null, 2)}
+
+2. 针对每个岗位要求的简历向量召回证据 (requirementMatches):
+${JSON.stringify(input.requirementMatches, null, 2)}
+
+3. 硬性条件筛查结果 (hardConstraintsResult):
+${JSON.stringify(input.hardConstraintsResult, null, 2)}
+
+4. 候选人补充说明:
+${input.userExtraContext || "无"}
+
+【输出 JSON 格式要求】
+必须严格符合以下 JSON 模式 (JSON Schema)：
+{
+  "requirement_assessments": [
+    {
+      "requirement_id": "req_001",
+      "requirement_text": "JD要求原文",
+      "status": "matched | partial | missing | unknown",
+      "confidence": "high | medium | low",
+      "evidence_used": ["关联的简历片段 ID，如 chunk id"],
+      "reason": "具体匹配判断理由，基于证据对比",
+      "gap": "缺失细节或不匹配之处",
+      "fixable_by_resume_rewrite": true
+    }
+  ],
+  "decision": {
+    "decision": "strong_apply | apply | apply_after_revision | low_priority | not_recommended",
+    "confidence": "high | medium | low",
+    "overall_score": 85,
+    "summary": "一句话投递决策总结",
+    "why_this_decision": ["决策理由 1", "决策理由 2"],
+    "main_risks": ["潜在缺口或硬性条件风险 1", "潜在缺口 2"],
+    "main_opportunities": ["已具备优势或机会 1", "机会 2"]
+  },
+  "matchBreakdown": {
+    "techStack": 90,
+    "projectExperience": 80,
+    "educationBackground": 85,
+    "keywordCoverage": 75,
+    "seniorityFit": 80,
+    "competitionLevel": 70,
+    "evidenceStrength": 80,
+    "resumeImprovementPotential": 85
+  },
+  "resume_rewrite_suggestions": [
+    {
+      "target_requirement_id": "req_001",
+      "resume_section": "项目经历/工作经历/技能",
+      "current_problem": "当前简历表达的问题",
+      "rewrite_strategy": "改写策略与方向",
+      "example_rewrite": "改写后的高契合度对比表达，符合 STAR 原则和量化要求，不虚构经历",
+      "risk": "do_not_exaggerate | needs_more_evidence | safe_to_rewrite"
+    }
+  ],
+  "learning_plan": [
+    {
+      "gap": "对应缺失的技能或业务背景",
+      "topic": "推荐学习或刷题的主题",
+      "priority": "high | medium | low",
+      "reason": "推荐理由，与岗位的关联性",
+      "suggested_action": "具体的学习/刷题行动指南",
+      "estimated_effort": "2天 / 5天 / 2周"
+    }
+  ],
+  "interview_prep": [
+    {
+      "topic": "常问高频技术点",
+      "question_type": "技术问答 / 场景设计 / 取舍分析",
+      "reason": "JD 强相关且简历中仅偏理论"
+    }
+  ]
+}
+`;
+  }
+
+  // Fallback old flat layout format
   const chunks = input.retrievedChunks.map((chunk) => ({
     id: chunk.id,
     section: chunk.section,
@@ -161,7 +258,7 @@ function dimension(id: string, label: string, score: unknown, explanation: strin
   };
 }
 
-function mapDimensions(breakdown: GeminiAnalysis["matchBreakdown"]): MatchDimension[] {
+function mapDimensions(breakdown: any): MatchDimension[] {
   const source = breakdown ?? {};
   return [
     dimension("techStack", "技能匹配", source.techStack, "基于 JD 技术栈和检索片段的技术证据判断。"),
@@ -199,7 +296,118 @@ function mapLearning(roadmap: GeminiAnalysis["learningRoadmap"]): LearningSugges
   }));
 }
 
+// Rich Schema for the multi-stage structural parsing
 const JobAnalysisSchema = {
+  type: "object",
+  properties: {
+    requirement_assessments: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          requirement_id: { type: "string" },
+          requirement_text: { type: "string" },
+          status: { type: "string", enum: ["matched", "partial", "missing", "unknown"] },
+          confidence: { type: "string", enum: ["high", "medium", "low"] },
+          evidence_used: { type: "array", items: { type: "string" } },
+          reason: { type: "string" },
+          gap: { type: "string" },
+          fixable_by_resume_rewrite: { type: "boolean" }
+        },
+        required: ["requirement_id", "requirement_text", "status", "confidence", "evidence_used", "reason", "gap", "fixable_by_resume_rewrite"]
+      }
+    },
+    decision: {
+      type: "object",
+      properties: {
+        decision: { type: "string", enum: ["strong_apply", "apply", "apply_after_revision", "low_priority", "not_recommended"] },
+        confidence: { type: "string", enum: ["high", "medium", "low"] },
+        overall_score: { type: "integer" },
+        summary: { type: "string" },
+        why_this_decision: { type: "array", items: { type: "string" } },
+        main_risks: { type: "array", items: { type: "string" } },
+        main_opportunities: { type: "array", items: { type: "string" } }
+      },
+      required: ["decision", "confidence", "overall_score", "summary", "why_this_decision", "main_risks", "main_opportunities"]
+    },
+    matchBreakdown: {
+      type: "object",
+      properties: {
+        techStack: { type: "integer" },
+        projectExperience: { type: "integer" },
+        educationBackground: { type: "integer" },
+        keywordCoverage: { type: "integer" },
+        seniorityFit: { type: "integer" },
+        competitionLevel: { type: "integer" },
+        evidenceStrength: { type: "integer" },
+        resumeImprovementPotential: { type: "integer" }
+      },
+      required: [
+        "techStack",
+        "projectExperience",
+        "educationBackground",
+        "keywordCoverage",
+        "seniorityFit",
+        "competitionLevel",
+        "evidenceStrength",
+        "resumeImprovementPotential"
+      ]
+    },
+    resume_rewrite_suggestions: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          target_requirement_id: { type: "string" },
+          resume_section: { type: "string" },
+          current_problem: { type: "string" },
+          rewrite_strategy: { type: "string" },
+          example_rewrite: { type: "string" },
+          risk: { type: "string", enum: ["do_not_exaggerate", "needs_more_evidence", "safe_to_rewrite"] }
+        },
+        required: ["target_requirement_id", "resume_section", "current_problem", "rewrite_strategy", "example_rewrite", "risk"]
+      }
+    },
+    learning_plan: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          gap: { type: "string" },
+          topic: { type: "string" },
+          priority: { type: "string", enum: ["high", "medium", "low"] },
+          reason: { type: "string" },
+          suggested_action: { type: "string" },
+          estimated_effort: { type: "string" }
+        },
+        required: ["gap", "topic", "priority", "reason", "suggested_action", "estimated_effort"]
+      }
+    },
+    interview_prep: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          topic: { type: "string" },
+          question_type: { type: "string" },
+          reason: { type: "string" }
+        },
+        required: ["topic", "question_type", "reason"]
+      }
+    }
+  },
+  required: [
+    "requirement_assessments",
+    "decision",
+    "matchBreakdown",
+    "resume_rewrite_suggestions",
+    "learning_plan",
+    "interview_prep"
+  ]
+};
+
+// Original schema fallback
+const LegacyJobAnalysisSchema = {
   type: "object",
   properties: {
     decision: {
@@ -298,9 +506,16 @@ function asStringList(value: string[] | undefined): string[] {
   return (value ?? []).filter((item) => item.trim());
 }
 
-export async function analyzeJobWithChatConfig(input: ChatAnalysisInput): Promise<Omit<AnalysisResult, "id" | "createdAt" | "draft"> & { chatModelId?: string }> {
-  if (input.config.provider !== "gemini") throw new Error("当前仅支持 Gemini 大语言模型配置");
+export async function analyzeJobWithChatConfig(
+  input: ChatAnalysisInput
+): Promise<Omit<AnalysisResult, "id" | "createdAt" | "draft"> & { chatModelId?: string }> {
+  if (input.config.provider !== "gemini") {
+    throw new Error("当前仅支持 Gemini 大语言模型配置");
+  }
   
+  const isMultiStage = Boolean(input.parsedJD && input.requirementMatches);
+  const currentSchema = isMultiStage ? JobAnalysisSchema : LegacyJobAnalysisSchema;
+
   async function executeAnalysis(modelId: string, useSchema: boolean): Promise<string> {
     return await callGeminiWithConfig({
       config: {
@@ -309,7 +524,7 @@ export async function analyzeJobWithChatConfig(input: ChatAnalysisInput): Promis
       },
       prompt: buildPrompt(input),
       forceJson: true,
-      responseSchema: useSchema ? JobAnalysisSchema : undefined,
+      responseSchema: useSchema ? currentSchema : undefined,
       overrideGenerationConfig: {
         responseMimeType: "application/json",
         maxOutputTokens: Math.max(input.config.maxOutputTokens ?? 8192, 8192),
@@ -378,25 +593,132 @@ export async function analyzeJobWithChatConfig(input: ChatAnalysisInput): Promis
     throw error;
   }
 
-  const parsed = safeParseModelJson<GeminiAnalysis>(text);
+  const parsed = safeParseModelJson<any>(text);
 
-  const score = clampScore(parsed.score, 50);
-  const decision = mapDecision(parsed.decision, score);
-  const strengths = asStringList(parsed.strengths);
-  const risks = asStringList(parsed.risks);
-  return {
+  let score = 50;
+  let rawDecision = "cautious";
+  let summary = "Gemini 已基于 JD 和检索片段完成判断。";
+  let strengths: string[] = [];
+  let risks: string[] = [];
+  let matchBreakdown = parsed.matchBreakdown ?? {};
+
+  if (isMultiStage && parsed.decision && typeof parsed.decision === "object") {
+    // New structural mapping
+    score = clampScore(parsed.decision.overall_score, 50);
+    rawDecision = parsed.decision.decision || "cautious";
+    summary = parsed.decision.summary || summary;
+    strengths = Array.isArray(parsed.decision.main_opportunities) ? parsed.decision.main_opportunities : [];
+    risks = Array.isArray(parsed.decision.main_risks) ? parsed.decision.main_risks : [];
+  } else {
+    // Old mapping
+    score = clampScore(parsed.score, 50);
+    rawDecision = parsed.decision || "cautious";
+    summary = parsed.summary || summary;
+    strengths = Array.isArray(parsed.strengths) ? parsed.strengths : [];
+    risks = Array.isArray(parsed.risks) ? parsed.risks : [];
+  }
+
+  // Adjust score and recommendation if there is a blocking hard risk
+  if (input.hardConstraintsResult?.has_blocking_risk) {
+    if (rawDecision === "strong_apply" || rawDecision === "apply") {
+      rawDecision = "cautious";
+    }
+    score = Math.min(score, 50); // Hard constraint blocker caps match score at 50
+  }
+
+  const decision = mapDecision(rawDecision, score);
+
+  let advice: ResumeAdvice[] = [];
+  if (isMultiStage && Array.isArray(parsed.resume_rewrite_suggestions)) {
+    // Construct rich compatible advice
+    advice = parsed.resume_rewrite_suggestions.slice(0, 8).map((s: any, idx: number) => {
+      // Find corresponding chunks if referenced by id, or keep empty
+      const basedOnChunkIds = s.target_requirement_id ? [s.target_requirement_id] : [];
+      return {
+        id: `advice-${idx}`,
+        priority: s.risk === "safe_to_rewrite" ? "medium" : s.risk === "needs_more_evidence" ? "high" : "low",
+        issue: `【${s.resume_section || "简历表达"}】针对岗位要求 ID "${s.target_requirement_id || "未知要求"}" 的不足之处：${s.current_problem}`,
+        suggestion: s.rewrite_strategy,
+        example: s.example_rewrite,
+        impact: s.risk === "safe_to_rewrite" ? "安全改写，显著提升简历契合度" : "需真实补充经历/证书证据，避免夸大虚构",
+        basedOnChunkIds,
+        target_requirement_id: s.target_requirement_id,
+        resume_section: s.resume_section,
+        risk: s.risk
+      };
+    });
+  } else {
+    advice = mapAdvice(parsed.resumeAdvice);
+  }
+
+  let suggestions: LearningSuggestion[] = [];
+  if (isMultiStage && Array.isArray(parsed.learning_plan)) {
+    suggestions = parsed.learning_plan.slice(0, 6).map((l: any, idx: number) => ({
+      id: `learning-${idx}`,
+      skill: l.topic || l.gap || "专业背景提升",
+      order: idx + 1,
+      estimatedTime: l.estimated_effort || "3-7 天",
+      practiceDirection: `【缺口: ${l.gap}】行动指南: ${l.suggested_action}`,
+      interviewFocus: `【重点】${l.reason}`,
+      gap: l.gap,
+      priority: l.priority,
+      reason: l.reason
+    }));
+  } else {
+    suggestions = mapLearning(parsed.learningRoadmap);
+  }
+
+  // Next actions
+  const nextActions = [
+    "针对硬性条件和筛查结论进行自查与核实",
+    "优先改造【必须改 (高优先级)】的简历表达",
+    "围绕岗位核心缺口做针对性的项目实践和学习",
+    "准备面试中的取舍论证和场景设计"
+  ];
+  if (isMultiStage && Array.isArray(parsed.interview_prep) && parsed.interview_prep.length > 0) {
+    parsed.interview_prep.slice(0, 2).forEach((prep: any) => {
+      nextActions.push(`准备面试问题：${prep.topic} (类型: ${prep.question_type}，原因: ${prep.reason})`);
+    });
+  }
+
+  // Set the cited chunks
+  let citedResumeChunks: string[] = [];
+  if (isMultiStage && Array.isArray(parsed.requirement_assessments)) {
+    // Gather all evidence chunk ids referenced in assessments
+    const ids = new Set<string>();
+    parsed.requirement_assessments.forEach((ass: any) => {
+      if (Array.isArray(ass.evidence_used)) {
+        ass.evidence_used.forEach((id: string) => {
+          if (id) ids.add(id);
+        });
+      }
+    });
+    citedResumeChunks = Array.from(ids);
+  } else {
+    citedResumeChunks = parsed.citedResumeChunks ?? [];
+  }
+
+  const resultObj = {
     chatModelId: finalModelId,
     decision,
     matchScore: score,
     riskLevel: riskFromScore(score),
     priority: priorityFromScore(score),
-    oneLineReason: parsed.summary || "Gemini 已基于 JD 和检索片段完成判断。",
+    oneLineReason: summary,
     detectedKeywords: strengths.slice(0, 8),
     missingKeywords: risks.slice(0, 8),
-    dimensions: mapDimensions(parsed.matchBreakdown),
-    resumeAdvice: mapAdvice(parsed.resumeAdvice),
-    learningSuggestions: mapLearning(parsed.learningRoadmap),
-    nextActions: ["处理高优先级简历建议", "保存到历史并标记投递状态", "按学习路线补齐关键缺口"],
-    citedResumeChunks: parsed.citedResumeChunks ?? [],
+    dimensions: mapDimensions(matchBreakdown),
+    resumeAdvice: advice,
+    learningSuggestions: suggestions,
+    nextActions,
+    citedResumeChunks,
+    
+    // Custom pipeline outcomes for step-by-step history trace
+    parsedJD: input.parsedJD,
+    requirementMatches: input.requirementMatches,
+    hardConstraintsResult: input.hardConstraintsResult,
+    requirementAssessments: parsed.requirement_assessments || []
   };
+
+  return validateModelCitations(resultObj, input.retrievedChunks);
 }

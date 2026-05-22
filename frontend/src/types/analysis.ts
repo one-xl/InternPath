@@ -23,6 +23,9 @@ export interface ResumeAdvice {
   example: string;
   impact: string;
   basedOnChunkIds?: string[];
+  target_requirement_id?: string;
+  resume_section?: string;
+  risk?: "do_not_exaggerate" | "needs_more_evidence" | "safe_to_rewrite";
 }
 
 export interface LearningSuggestion {
@@ -32,6 +35,20 @@ export interface LearningSuggestion {
   estimatedTime: string;
   practiceDirection: string;
   interviewFocus: string;
+  gap?: string;
+  priority?: "high" | "medium" | "low";
+  reason?: string;
+}
+
+export interface RequirementAssessment {
+  requirement_id: string;
+  requirement_text: string;
+  status: "matched" | "partial" | "missing" | "unknown";
+  confidence: "high" | "medium" | "low";
+  evidence_used: string[];
+  reason: string;
+  gap: string;
+  fixable_by_resume_rewrite: boolean;
 }
 
 export interface AnalysisResult {
@@ -58,6 +75,12 @@ export interface AnalysisResult {
   resumeAdvice: ResumeAdvice[];
   learningSuggestions: LearningSuggestion[];
   nextActions: string[];
+  
+  // Rearchitected pipeline structural outcomes
+  parsedJD?: any; // ParsedJobDescription
+  requirementMatches?: any; // RequirementsMatchesResult
+  hardConstraintsResult?: any; // HardConstraintsResult
+  requirementAssessments?: RequirementAssessment[];
 }
 
 export interface HistoryRecord extends AnalysisResult {

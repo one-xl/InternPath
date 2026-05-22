@@ -1,10 +1,13 @@
 import { useState } from "react";
-import type { AnalysisResult, AnalysisRunStatus, AnalysisStep } from "../types/analysis";
+import type { AnalysisResult, AnalysisRunStatus, AnalysisStep, AnalysisStepId } from "../types/analysis";
 import type { JobDraft } from "../types/job";
 import type { ChatModelConfig, EmbeddingModelConfig } from "../types/modelConfig";
 import type { ParsedResume, ResumeChunk, UploadedResumeFile } from "../types/resume";
 import { embedChunksWithConfig, embedTextWithConfig, retrieveTopChunksByCosineSimilarity } from "../services/embeddingClient";
 import { analyzeJobWithChatConfig } from "../services/chatClient";
+import { parseJobDescription } from "../services/jobParser";
+import { retrieveEvidenceForRequirements } from "../services/evidenceRetriever";
+import { checkHardConstraints } from "../services/hardConstraintsChecker";
 import { useAnalysisProgress } from "./useAnalysisProgress";
 
 export const ANALYSIS_STEPS = [
@@ -16,6 +19,19 @@ export const ANALYSIS_STEPS = [
   "保存分析记录"
 ];
 
+export type AnalysisRunResult =
+  | {
+      ok: true;
+      result: AnalysisResult;
+      savedHistoryId?: string;
+    }
+  | {
+      ok: false;
+      failedStep: AnalysisStepId;
+      errorMessage: string;
+      partialResult?: unknown;
+    };
+
 interface RunAnalysisInput {
   draft: JobDraft;
   resumeFile: UploadedResumeFile | null;
@@ -26,6 +42,7 @@ interface RunAnalysisInput {
   activeEmbeddingConfigId?: string;
   activeChatConfigId?: string;
   sourceDraftId?: string;
+  onSaveHistory?: (result: AnalysisResult) => void | Promise<void>;
 }
 
 export function toUserFriendlyAnalysisError(error: any): string {
@@ -84,12 +101,14 @@ export function useJobAnalysis() {
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const progress = useAnalysisProgress();
 
-  async function runAnalysis(input: RunAnalysisInput): Promise<AnalysisResult | null> {
+  async function runAnalysis(input: RunAnalysisInput): Promise<AnalysisRunResult> {
     progress.resetProgress();
     progress.setIsRunning(true);
     progress.setError(null);
     progress.setStatus("validating");
     progress.setRunningStep("validate");
+
+    let currentStepId: AnalysisStepId = "validate";
 
     try {
       console.info("[analysis] start clicked");
@@ -166,6 +185,7 @@ export function useJobAnalysis() {
       });
 
       // Step 2: embedding_resume
+      currentStepId = "resume_embedding";
       progress.setStatus("embedding_resume");
       progress.setRunningStep("resume_embedding");
       
@@ -191,19 +211,62 @@ export function useJobAnalysis() {
       });
 
       // Step 3: embedding_jd
+      currentStepId = "jd_embedding";
       progress.setStatus("embedding_jd");
       progress.setRunningStep("jd_embedding");
+      
+      // Stage A: Decompose JD into structural requirements and constraints
+      const parsedJD = await parseJobDescription(input.draft.jdText, input.chatConfig);
+      
+      // Stage B: Vectorize entire JD text for legacy/fallback search compatibility
       const jdEmbedding = await embedTextWithConfig(input.draft.jdText, input.embeddingConfig);
       progress.completeStep("jd_embedding");
 
       // Step 4: retrieving
+      currentStepId = "retrieve_chunks";
       progress.setStatus("retrieving");
       progress.setRunningStep("retrieve_chunks");
-      const retrievedChunks = retrieveTopChunksByCosineSimilarity({
-        jdEmbedding,
-        chunks: embeddedChunks,
-        topK: 8,
+      
+      // Stage A: Core multi-requirement vector retrieval
+      const requirementMatchesResult = await retrieveEvidenceForRequirements(
+        parsedJD,
+        embeddedChunks,
+        input.embeddingConfig,
+        { topK: 3, threshold: 0.3 }
+      );
+      
+      // Stage B: Deduplicate evidence chunks to build flat array for compatible rendering
+      const seenChunkIds = new Set<string>();
+      const retrievedChunks: ResumeChunk[] = [];
+      
+      requirementMatchesResult.requirement_matches.forEach((rm) => {
+        rm.matched_evidence.forEach((ev) => {
+          if (!seenChunkIds.has(ev.evidence_id)) {
+            seenChunkIds.add(ev.evidence_id);
+            const originalChunk = embeddedChunks.find((c) => c.id === ev.evidence_id);
+            if (originalChunk) {
+              retrievedChunks.push({
+                ...originalChunk,
+                score: ev.similarity // Store highest retrieved similarity
+              });
+            }
+          }
+        });
       });
+      
+      // Sort flat list by similarity score descending
+      retrievedChunks.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+      
+      // Fallback: if no requirement matches returned any chunks, use whole-JD similarity
+      if (retrievedChunks.length === 0) {
+        const legacyChunks = retrieveTopChunksByCosineSimilarity({
+          jdEmbedding,
+          chunks: embeddedChunks,
+          topK: 8,
+        });
+        retrievedChunks.push(...legacyChunks);
+      }
+      
       progress.completeStep("retrieve_chunks", {
         retrievedChunksCount: retrievedChunks.length
       });
@@ -213,20 +276,37 @@ export function useJobAnalysis() {
       }
 
       // Step 5: analyzing
+      currentStepId = "gemini_analysis";
       progress.setStatus("analyzing");
       progress.setRunningStep("gemini_analysis");
+      
+      // Stage A: Hard constraints audit checking
+      const hardConstraintsResult = await checkHardConstraints(
+        parsedJD,
+        input.parsedResume,
+        input.chatConfig
+      );
+      
+      // Stage B: Structured evidence-constrained Gemini analysis
       const chatResult = await analyzeJobWithChatConfig({
         jdText: input.draft.jdText,
         targetType: input.draft.targetType || input.draft.level,
         jobDirection: input.draft.jobDirection || input.draft.title,
         retrievedChunks,
         config: input.chatConfig,
+        
+        // Pass structural context
+        parsedJD,
+        requirementMatches: requirementMatchesResult,
+        hardConstraintsResult,
+        userExtraContext: input.draft.candidateMaterial
       });
       progress.completeStep("gemini_analysis", {
         retryCount: (chatResult as any).retryCount || 0
       });
 
       // Step 6: saving
+      currentStepId = "save_history";
       progress.setStatus("saving");
       progress.setRunningStep("save_history");
       await new Promise((resolve) => window.setTimeout(resolve, 500));
@@ -258,29 +338,38 @@ export function useJobAnalysis() {
         },
         ...chatResult,
       };
+
+      // Auto-save history if callback is provided
+      if (input.onSaveHistory) {
+        try {
+          await input.onSaveHistory(nextResult);
+        } catch (saveError: any) {
+          throw new Error("保存历史记录失败: " + (saveError.message || String(saveError)));
+        }
+      }
+
       progress.completeStep("save_history");
 
       // Step 7: render_result
+      currentStepId = "render_result";
       progress.setRunningStep("render_result");
       setResult(nextResult);
       progress.completeStep("render_result");
 
       progress.setStatus("success");
-      return nextResult;
+      return { ok: true, result: nextResult };
     } catch (caught: any) {
       console.error("[analysis] failed", caught);
       const friendlyError = toUserFriendlyAnalysisError(caught);
       
-      const runningStep = progress.steps.find(s => s.status === "running");
-      if (runningStep) {
-        progress.failStep(runningStep.id, friendlyError);
-      } else {
-        progress.failStep("validate", friendlyError);
-      }
-
+      progress.failStep(currentStepId, friendlyError);
       progress.setError(friendlyError);
       progress.setStatus("failed");
-      return null;
+      return {
+        ok: false,
+        failedStep: currentStepId,
+        errorMessage: friendlyError
+      };
     } finally {
       progress.setIsRunning(false);
     }

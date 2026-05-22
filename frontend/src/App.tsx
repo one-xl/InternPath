@@ -52,7 +52,7 @@ export default function App() {
 
   async function runAnalysis() {
     setDraftSaveMessage(null);
-    const result = await analysis.runAnalysis({
+    const runResult = await analysis.runAnalysis({
       draft,
       resumeFile: resumeUpload.resumeFile,
       parsedResume: resumeUpload.parsedResume,
@@ -62,9 +62,12 @@ export default function App() {
       activeEmbeddingConfigId: modelConfigs.state.active.embeddingConfigId,
       activeChatConfigId: modelConfigs.state.active.chatConfigId,
       sourceDraftId: activeDraftId || undefined,
+      onSaveHistory: (res) => {
+        history.saveRecord(toHistoryRecord(res, "watching"));
+      }
     });
 
-    if (result) {
+    if (runResult.ok) {
       // If successful, and we are working from a draft, mark the draft as converted to history
       if (activeDraftId) {
         draftsControl.updateDraftStatus(activeDraftId, "converted_to_history");
@@ -74,9 +77,8 @@ export default function App() {
     } else {
       // Analysis failed! Auto-save the input fields and context as a failed draft.
       try {
-        const runningStep = analysis.steps.find((s) => s.status === "failed") || analysis.steps.find((s) => s.status === "running");
-        const failedStepId = runningStep?.id || "validate";
-        const errorMsg = analysis.error || "未知分析错误";
+        const failedStepId = runResult.failedStep || "validate";
+        const errorMsg = runResult.errorMessage || "未知分析错误";
 
         const saved = draftsControl.saveFailedAnalysisDraft({
           id: activeDraftId || undefined,

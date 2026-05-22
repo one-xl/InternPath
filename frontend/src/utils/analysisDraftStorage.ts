@@ -21,7 +21,7 @@ export function getAnalysisDrafts(): AnalysisDraft[] {
       }
       return draft;
     })
-    .sort((a, b) => new Date(b.updatedAt).getTime() - a.updatedAt.localeCompare(b.updatedAt));
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
 }
 
 /**

@@ -146,7 +146,7 @@ export function ModelTestButton({ status, message, diagnostics, onTest }: ModelT
                     </tr>
                     <tr style={{ borderBottom: "1px solid #f3f4f6" }}>
                       <td style={{ padding: "4px 0", fontWeight: "bold" }}>Dimensions:</td>
-                      <td style={{ padding: "4px 0" }}>{diagnostics.dimensions ?? "默认 (2048)"}</td>
+                      <td style={{ padding: "4px 0" }}>{diagnostics.dimensions ?? "默认 (1024)"}</td>
                     </tr>
                   </>
                 )}

@@ -3840,21 +3840,15 @@ blockquote,
 /* Tabs switcher in History page */
 .history-tabs-header {
   display: flex;
-  gap: 8px;
-  border-bottom: 2px solid var(--line);
   margin-bottom: 20px;
-  padding-bottom: 2px;
 }
 
 .history-tab-btn {
   background: transparent;
   border: none;
-  padding: 10px 20px;
   font-size: 14px;
   font-weight: 600;
-  color: var(--muted);
   cursor: pointer;
-  position: relative;
   transition: all 0.2s ease;
   outline: none;
 }
@@ -3864,19 +3858,11 @@ blockquote,
 }
 
 .history-tab-btn.active {
-  color: var(--accent);
+  color: #061007;
 }
 
 .history-tab-btn.active::after {
-  content: "";
-  position: absolute;
-  bottom: -4px;
-  left: 0;
-  right: 0;
-  height: 4px;
-  background: var(--accent);
-  border-top-left-radius: 4px;
-  border-top-right-radius: 4px;
+  display: none;
 }
 
 /* Draft notice card in Progress Panel failed area */

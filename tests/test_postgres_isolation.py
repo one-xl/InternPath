@@ -38,6 +38,7 @@ class _FailingAiServiceClient:
 def _make_app(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(Config, "USER_DB_DIR", str(tmp_path / "user_data"))
     monkeypatch.setattr(Config, "DB_PATH", str(tmp_path / "career_path.db"))
+    monkeypatch.setattr(Config, "EMAIL_VERIFICATION_REQUIRED", False)
     service = object.__new__(CareerPathAIService)
     service.ai_analyzer = _FakeAnalyzer()
     service.ai_service_client = _FailingAiServiceClient()
@@ -152,6 +153,39 @@ def test_model_config_isolation_between_users(tmp_path, monkeypatch):
     # Verify it still exists for Alice
     resp = client.get("/api/configs", headers=headers_a)
     assert any(c["id"] == alice_config_id for c in resp.json()["configs"])
+
+
+def test_model_config_update_persists_model_id(tmp_path, monkeypatch):
+    client, _ = _make_app(tmp_path, monkeypatch)
+    token = _register(client, "alice@test.com")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    resp = client.post("/api/configs", headers=headers, json={
+        "provider": "gemini",
+        "modelId": "gemini-flash-latest",
+        "name": "Gemini gemini-flash-latest",
+        "apiKey": "sk-alice-secret-key-12345678",
+        "enabled": True,
+        "type": "chat",
+    })
+    assert resp.status_code == 200
+    config_id = resp.json()["id"]
+
+    resp = client.post("/api/configs", headers=headers, json={
+        "id": config_id,
+        "provider": "gemini",
+        "modelId": "gemini-3-flash-preview",
+        "name": "Gemini gemini-3-flash-preview",
+        "apiKey": "",
+        "enabled": True,
+        "type": "chat",
+    })
+    assert resp.status_code == 200
+
+    resp = client.get("/api/configs", headers=headers)
+    config_entry = next(c for c in resp.json()["configs"] if c["id"] == config_id)
+    assert config_entry["modelId"] == "gemini-3-flash-preview"
+    assert config_entry["name"] == "Gemini gemini-3-flash-preview"
 
 
 # ── History isolation ──

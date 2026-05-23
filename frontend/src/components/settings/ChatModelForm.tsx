@@ -1,31 +1,57 @@
 import { useEffect, useState } from "react";
-import type { ChatModelConfig } from "../../types/modelConfig";
+import type { ChatModelConfig, ChatProvider } from "../../types/modelConfig";
 import { Button } from "../ui/Button";
-import { ApiKeyInput } from "./ApiKeyInput";
 import { safeUUID } from "../../utils/uuid";
+import { ApiKeyInput } from "./ApiKeyInput";
 
-function nameFromModelId(modelId: string): string {
-  return modelId.trim() ? `Gemini ${modelId.trim()}` : "Gemini";
+const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
+const GEMINI_DEFAULT_MODEL = "gemini-flash-latest";
+
+function providerLabel(provider: ChatProvider): string {
+  if (provider === "gemini") return "Gemini";
+  if (provider === "openai-compatible") return "OpenAI Compatible";
+  return "Custom";
+}
+
+function nameFromProviderModel(provider: ChatProvider, modelId: string): string {
+  const label = providerLabel(provider);
+  return modelId.trim() ? `${label} ${modelId.trim()}` : label;
+}
+
+function providerDefaults(provider: ChatProvider): Pick<ChatModelConfig, "baseUrl" | "modelId" | "responseMimeType"> {
+  if (provider === "gemini") {
+    return {
+      baseUrl: GEMINI_BASE_URL,
+      modelId: GEMINI_DEFAULT_MODEL,
+      responseMimeType: "application/json",
+    };
+  }
+
+  return {
+    baseUrl: "",
+    modelId: "",
+    responseMimeType: "application/json",
+  };
 }
 
 function createDefault(): ChatModelConfig {
   const now = new Date().toISOString();
-  const modelId = "gemini-flash-latest";
+  const defaults = providerDefaults("gemini");
   return {
     id: safeUUID(),
     type: "chat",
-    name: nameFromModelId(modelId),
+    name: nameFromProviderModel("gemini", defaults.modelId),
     provider: "gemini",
     apiKey: "",
-    baseUrl: "https://generativelanguage.googleapis.com/v1beta",
-    modelId,
+    baseUrl: defaults.baseUrl,
+    modelId: defaults.modelId,
     enabled: true,
     createdAt: now,
     updatedAt: now,
     testStatus: "untested",
     temperature: 0.2,
     maxOutputTokens: 4096,
-    responseMimeType: "application/json",
+    responseMimeType: defaults.responseMimeType,
     timeoutMs: 60000,
   };
 }
@@ -49,75 +75,150 @@ export function ChatModelForm({
     setDraft({ ...base, apiKey: "" });
   }, [editingConfig]);
 
+  function changeProvider(provider: ChatProvider) {
+    const defaults = providerDefaults(provider);
+    const currentIsGeminiDefault =
+      draft.provider === "gemini" &&
+      (!draft.modelId.trim() || draft.modelId === GEMINI_DEFAULT_MODEL) &&
+      (!draft.baseUrl?.trim() || draft.baseUrl === GEMINI_BASE_URL);
+
+    setDraft({
+      ...draft,
+      provider,
+      modelId: currentIsGeminiDefault || !editingConfig ? defaults.modelId : draft.modelId,
+      baseUrl: currentIsGeminiDefault || !editingConfig ? defaults.baseUrl : draft.baseUrl,
+      responseMimeType: draft.responseMimeType ?? defaults.responseMimeType,
+    });
+  }
+
   function submit() {
-    if (!draft.modelId.trim()) return;
+    const modelId = draft.modelId.trim();
+    if (!modelId) return;
+
     onSave({
       ...draft,
-      name: nameFromModelId(draft.modelId),
+      provider: draft.provider,
+      modelId,
+      baseUrl: draft.baseUrl?.trim(),
+      fallbackModelId: draft.fallbackModelId?.trim(),
+      testModelId: draft.testModelId?.trim(),
+      name: nameFromProviderModel(draft.provider, modelId),
       updatedAt: new Date().toISOString(),
     });
   }
 
+  const isGemini = draft.provider === "gemini";
+
   return (
     <div className="settings-editor">
       <div className="settings-editor-head">
-        <h3>{editingConfig ? "编辑 Gemini 配置" : "新增 Gemini 配置"}</h3>
-        <p>用户只需要填写 API Key 和模型参数；URL、headers、body、generateContent endpoint 都由代码自动生成。</p>
+        <h3>{editingConfig ? "编辑大语言模型配置" : "新增大语言模型配置"}</h3>
       </div>
       <div className="settings-form">
+        <label className="field">
+          <span>Provider</span>
+          <select value={draft.provider} onChange={(event) => changeProvider(event.target.value as ChatProvider)}>
+            <option value="gemini">Gemini</option>
+            <option value="openai-compatible">OpenAI Compatible</option>
+            <option value="custom">Custom</option>
+          </select>
+        </label>
+
         <label className="field">
           <span>API Key</span>
           <ApiKeyInput
             value={draft.apiKey}
             onChange={(apiKey) => setDraft({ ...draft, apiKey })}
-            placeholder={editingConfig ? "留空表示继续使用已保存的 Gemini API Key" : "输入 Gemini API Key"}
+            placeholder={editingConfig ? "留空表示继续使用已保存的 API Key" : "输入 API Key"}
           />
         </label>
+
         <label className="field">
           <span>Model ID</span>
-          <input value={draft.modelId} onChange={(event) => setDraft({ ...draft, modelId: event.target.value })} placeholder="gemini-flash-latest" />
+          <input
+            value={draft.modelId}
+            onChange={(event) => setDraft({ ...draft, modelId: event.target.value })}
+            placeholder={isGemini ? GEMINI_DEFAULT_MODEL : "输入模型 ID"}
+          />
         </label>
+
         <label className="field">
-          <span>备用 Model ID (可选 fallbackModelId)</span>
-          <input value={draft.fallbackModelId ?? ""} onChange={(event) => setDraft({ ...draft, fallbackModelId: event.target.value })} placeholder="例如 gemini-2.5-flash 或 gemini-flash-latest" />
+          <span>备用 Model ID</span>
+          <input
+            value={draft.fallbackModelId ?? ""}
+            onChange={(event) => setDraft({ ...draft, fallbackModelId: event.target.value })}
+            placeholder={isGemini ? "例如 gemini-2.5-flash" : "可选"}
+          />
         </label>
+
         <label className="field">
-          <span>测试 Model ID (可选 testModelId)</span>
-          <input value={draft.testModelId ?? ""} onChange={(event) => setDraft({ ...draft, testModelId: event.target.value })} placeholder="例如 gemini-2.5-flash，专门在连接测试中替代 Preview 模型" />
+          <span>测试 Model ID</span>
+          <input
+            value={draft.testModelId ?? ""}
+            onChange={(event) => setDraft({ ...draft, testModelId: event.target.value })}
+            placeholder={isGemini ? "例如 gemini-2.5-flash" : "可选"}
+          />
         </label>
+
         <div className="form-grid">
           <label className="field">
             <span>Temperature</span>
-            <input type="number" min="0" max="2" step="0.1" value={draft.temperature ?? 0.2} onChange={(event) => setDraft({ ...draft, temperature: Number(event.target.value) })} />
+            <input
+              type="number"
+              min="0"
+              max="2"
+              step="0.1"
+              value={draft.temperature ?? 0.2}
+              onChange={(event) => setDraft({ ...draft, temperature: Number(event.target.value) })}
+            />
           </label>
           <label className="field">
             <span>Max Output Tokens</span>
-            <input type="number" min="1" value={draft.maxOutputTokens ?? 4096} onChange={(event) => setDraft({ ...draft, maxOutputTokens: Number(event.target.value) })} />
+            <input
+              type="number"
+              min="1"
+              value={draft.maxOutputTokens ?? 4096}
+              onChange={(event) => setDraft({ ...draft, maxOutputTokens: Number(event.target.value) })}
+            />
           </label>
         </div>
+
         <div className="form-grid">
           <label className="field">
             <span>Response MIME Type</span>
-            <select value={draft.responseMimeType ?? "application/json"} onChange={(event) => setDraft({ ...draft, responseMimeType: event.target.value as ChatModelConfig["responseMimeType"] })}>
+            <select
+              value={draft.responseMimeType ?? "application/json"}
+              onChange={(event) => setDraft({ ...draft, responseMimeType: event.target.value as ChatModelConfig["responseMimeType"] })}
+            >
               <option value="application/json">application/json</option>
               <option value="text/plain">text/plain</option>
             </select>
           </label>
           <label className="field">
             <span>Timeout</span>
-            <input type="number" value={draft.timeoutMs ?? 60000} onChange={(event) => setDraft({ ...draft, timeoutMs: Number(event.target.value) })} />
+            <input
+              type="number"
+              value={draft.timeoutMs ?? 60000}
+              onChange={(event) => setDraft({ ...draft, timeoutMs: Number(event.target.value) })}
+            />
           </label>
         </div>
-        <details className="settings-details">
+
+        <details className="settings-details" open={!isGemini}>
           <summary>高级设置</summary>
           <div className="settings-form">
             <label className="field">
               <span>Base URL</span>
-              <input value={draft.baseUrl ?? ""} onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })} />
+              <input
+                value={draft.baseUrl ?? ""}
+                onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })}
+                placeholder={isGemini ? GEMINI_BASE_URL : "https://api.example.com/v1"}
+              />
             </label>
           </div>
         </details>
       </div>
+
       <div className="settings-actions">
         <Button type="button" variant="primary" onClick={submit} disabled={!draft.modelId.trim()}>
           保存配置

@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from email.message import EmailMessage
 import hashlib
 import hmac
+import json
 import os
 from pathlib import Path
 import re
@@ -77,6 +78,7 @@ class JobRagAnalyzeRequest(BaseModel):
 class UserResponse(BaseModel):
     id: Any
     username: str
+    role: str = "user"
     created_at: datetime
 
 
@@ -85,12 +87,28 @@ class ModelProxyRequest(BaseModel):
     modelId: str
     requestBody: dict[str, Any]
     endpoint: Optional[str] = None
+    configId: Optional[str] = None
 
 
 class TestConnectionRequest(BaseModel):
     provider: str
     modelId: str
     endpoint: Optional[str] = None
+    type: Optional[str] = None
+    configId: Optional[str] = None
+
+
+class AdminModelConfigRequest(BaseModel):
+    provider: str
+    modelId: str
+    name: str
+    apiKey: str
+    enabled: bool = True
+    config_json: Optional[dict[str, Any]] = None
+
+
+class AdminAssignRequest(BaseModel):
+    userIds: list[Any]
 
 
 class SlidingWindowLimiter:
@@ -124,6 +142,136 @@ class UploadedFileAdapter:
 
     def getvalue(self) -> bytes:
         return self._content
+
+
+def openai_chat_body(model_id: str, request_body: dict) -> dict:
+    messages = []
+    contents = request_body.get("contents", [])
+    for item in contents:
+        role = item.get("role", "user")
+        if role == "model":
+            role = "assistant"
+        parts = item.get("parts", [])
+        text_content = ""
+        for part in parts:
+            if isinstance(part, dict) and "text" in part:
+                text_content += part["text"]
+            elif isinstance(part, str):
+                text_content += part
+        messages.append({"role": role, "content": text_content})
+        
+    gen_config = request_body.get("generationConfig", {})
+    temperature = gen_config.get("temperature", 0.2)
+    max_tokens = gen_config.get("maxOutputTokens") or gen_config.get("max_tokens") or 4096
+    
+    openai_body = {
+        "model": model_id,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    
+    response_mime = gen_config.get("responseMimeType")
+    if response_mime == "application/json":
+        openai_body["response_format"] = {"type": "json_object"}
+        
+    return openai_body
+
+
+def wrap_openai_chat_response(res_json: dict) -> dict:
+    choices = res_json.get("choices", [])
+    text = ""
+    finish_reason = "STOP"
+    if choices:
+        msg = choices[0].get("message", {})
+        text = msg.get("content", "") or ""
+        fr = choices[0].get("finish_reason", "stop")
+        if fr == "stop":
+            finish_reason = "STOP"
+        elif fr == "length":
+            finish_reason = "MAX_TOKENS"
+        else:
+            finish_reason = "STOP"
+            
+    usage = res_json.get("usage") or {}
+    if not isinstance(usage, dict):
+        usage = {}
+    prompt_tokens = usage.get("prompt_tokens") or 0
+    completion_tokens = usage.get("completion_tokens") or 0
+    total_tokens = usage.get("total_tokens") or 0
+    
+    return {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        { "text": text }
+                    ]
+                },
+                "finishReason": finish_reason
+            }
+        ],
+        "usageMetadata": {
+            "promptTokenCount": prompt_tokens,
+            "candidatesTokenCount": completion_tokens,
+            "totalTokenCount": total_tokens
+        }
+    }
+
+
+def prompt_from_gemini_request(request_body: dict) -> str:
+    contents = request_body.get("contents", [])
+    text_content = ""
+    for item in contents:
+        parts = item.get("parts", [])
+        for part in parts:
+            if isinstance(part, dict) and "text" in part:
+                text_content += part["text"]
+            elif isinstance(part, str):
+                text_content += part
+    return text_content
+
+
+def chat_base_url(user_id: Any, provider: str, model_id: str) -> str:
+    if provider == "gemini":
+        return Config.GEMINI_BASE_URL or "https://generativelanguage.googleapis.com/v1beta"
+        
+    from database import Database
+    db = Database()
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT config_json 
+        FROM model_configs 
+        WHERE user_id = ? AND provider = ? AND model_id = ? AND enabled = ?
+        LIMIT 1
+        """,
+        (user_id, provider, model_id, 1 if not db.is_postgres else True)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    
+    if row and row[0]:
+        import json
+        try:
+            extra = json.loads(row[0])
+            base_url = extra.get("baseUrl") or extra.get("base_url")
+            if base_url:
+                return base_url.strip()
+        except Exception:
+            pass
+            
+    return ""
+
+
+def openai_chat_url(base_url: str) -> str:
+    base = base_url.rstrip("/")
+    if base.endswith("/chat/completions"):
+        return base
+    if base.endswith("/chat"):
+        return f"{base}/completions"
+    return f"{base}/chat/completions"
 
 
 def create_app(
@@ -203,6 +351,17 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="登录状态已过期，请重新登录。")
         return user_id
 
+    def current_admin_user(
+        user_id: Any = Depends(current_user_id)
+    ) -> Any:
+        user = state.auth_db.get_user_by_id(user_id)
+        if user is None or user.role != "admin":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="权限不足，只有管理员可以执行此操作。"
+            )
+        return user_id
+
     def set_session_cookie(response: Response, token: str) -> None:
         response.set_cookie(
             key="session_id",
@@ -222,6 +381,7 @@ def create_app(
             "user": UserResponse(
                 id=user.id or user_id,
                 username=user.username,
+                role=user.role,
                 created_at=user.created_at,
             ).model_dump(mode="json"),
         }
@@ -478,43 +638,136 @@ def create_app(
         payload: ModelProxyRequest,
         user_id: Any = Depends(current_user_id)
     ) -> Response:
-        if payload.provider != "gemini":
-            raise HTTPException(status_code=400, detail="Only Gemini chat completions are supported")
+        if payload.provider not in {"gemini", "openai-compatible", "custom"}:
+            raise HTTPException(status_code=400, detail="Unsupported chat provider")
             
         check_rate_limit(f"chat_comp:{user_id}", 10, 3600)
         
         model_id = payload.modelId.strip()
-        api_key = model_api_key(user_id, "gemini", model_id, Config.GEMINI_API_KEY)
+        api_key, resolved_config_id, resolved_assignment_id = state.auth_db.get_model_api_key_v2(
+            user_id, payload.provider, model_id, payload.configId
+        )
         if not api_key:
-            raise HTTPException(status_code=500, detail="未找到可用的 Gemini API Key：请在模型配置中保存 API Key，或在服务器 .env 中设置 GEMINI_API_KEY。")
+            env_key = Config.GEMINI_API_KEY if payload.provider == "gemini" else Config.LLM_API_KEY
+            api_key = env_key.strip() if env_key else ""
+            
+        if not api_key:
+            raise HTTPException(status_code=500, detail="未找到可用的 LLM API Key。请在模型配置中保存 API Key，或在服务器 .env 中设置。")
             
         if not re.match(r"^[a-zA-Z0-9\-_./]+$", model_id):
             raise HTTPException(status_code=400, detail="Invalid model ID format")
             
-        gemini_base = (Config.GEMINI_BASE_URL or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
-        url = f"{gemini_base}/models/{model_id}:generateContent"
-        
-        headers = {
-            "Content-Type": "application/json",
-            "x-goog-api-key": api_key,
-        }
+        if payload.provider == "gemini":
+            url = f"{chat_base_url(user_id, payload.provider, model_id)}/models/{model_id}:generateContent"
+            headers = {
+                "Content-Type": "application/json",
+                "x-goog-api-key": api_key,
+            }
+            request_json = payload.requestBody
+            wrap_openai = False
+        else:
+            base_url = chat_base_url(user_id, payload.provider, model_id)
+            if not base_url:
+                raise HTTPException(status_code=400, detail="Base URL is required for OpenAI Compatible or Custom chat models.")
+            url = openai_chat_url(base_url)
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            }
+            request_json = openai_chat_body(model_id, payload.requestBody)
+            wrap_openai = True
         
         start_time = time.time()
         success = False
+        res = None
         try:
             async with httpx.AsyncClient() as client:
-                res = await client.post(url, headers=headers, json=payload.requestBody, timeout=120.0)
+                res = await client.post(url, headers=headers, json=request_json, timeout=120.0)
                 success = res.status_code == 200
+                if wrap_openai and res.status_code == 200:
+                    return Response(
+                        content=json.dumps(wrap_openai_chat_response(res.json()), ensure_ascii=False),
+                        status_code=200,
+                        media_type="application/json"
+                    )
                 return Response(
                     content=res.content,
                     status_code=res.status_code,
                     media_type="application/json"
                 )
         except Exception as exc:
+            import traceback
+            traceback.print_exc()
             raise HTTPException(status_code=502, detail=f"Failed to communicate with LLM provider: {str(exc)}")
         finally:
             duration = int((time.time() - start_time) * 1000)
             print(f"[AUDIT] Event: model_chat_completions | userId: {user_id} | provider: {payload.provider} | modelId: {model_id} | durationMs: {duration} | success: {success}")
+            
+            # Log usage non-sensitively
+            try:
+                prompt_tokens = None
+                completion_tokens = None
+                total_tokens = None
+                input_chars = len(prompt_from_gemini_request(payload.requestBody)) if payload.provider == "gemini" else 0
+                output_chars = 0
+                error_type = None
+                
+                if success and res is not None:
+                    res_data = res.json()
+                    if payload.provider == "gemini":
+                        usage = res_data.get("usageMetadata", {})
+                        prompt_tokens = usage.get("promptTokenCount")
+                        completion_tokens = usage.get("candidatesTokenCount")
+                        total_tokens = usage.get("totalTokenCount")
+                        
+                        candidates = res_data.get("candidates", [])
+                        if candidates:
+                            parts = candidates[0].get("content", {}).get("parts", [])
+                            if parts:
+                                output_chars = len(parts[0].get("text", ""))
+                    else:
+                        if wrap_openai:
+                            usage = res_data.get("usage", {})
+                        else:
+                            usage = res_data.get("usageMetadata", {}) or res_data.get("usage", {})
+                        prompt_tokens = usage.get("prompt_tokens") or usage.get("promptTokenCount")
+                        completion_tokens = usage.get("completion_tokens") or usage.get("candidatesTokenCount")
+                        total_tokens = usage.get("total_tokens") or usage.get("totalTokenCount")
+                        
+                        choices = res_data.get("choices", [])
+                        if choices:
+                            output_chars = len(choices[0].get("message", {}).get("content", ""))
+                else:
+                    error_type = f"HTTP_{res.status_code}" if res is not None else "CONNECTION_ERROR"
+                    
+                if payload.provider != "gemini":
+                    try:
+                        input_chars = len(prompt_from_gemini_request(payload.requestBody))
+                    except Exception:
+                        pass
+                
+                analysis_id = payload.requestBody.get("analysis_id") or payload.requestBody.get("analysisId")
+                
+                state.auth_db.log_model_usage(
+                    user_id=user_id,
+                    config_id=resolved_config_id,
+                    assignment_id=resolved_assignment_id,
+                    analysis_id=analysis_id,
+                    provider=payload.provider,
+                    model_id=model_id,
+                    usage_type="chat",
+                    endpoint=None,
+                    success=success,
+                    error_type=error_type,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    input_chars=input_chars,
+                    output_chars=output_chars,
+                    latency_ms=duration
+                )
+            except Exception as e:
+                print(f"[ERROR] Failed to log model usage: {e}")
 
     @app.post("/api/models/embeddings")
     async def embeddings(
@@ -526,9 +779,14 @@ def create_app(
             
         check_rate_limit(f"embeddings:{user_id}", 30, 3600)
         
-        api_key = model_api_key(user_id, payload.provider, payload.modelId.strip(), Config.LLM_API_KEY)
+        api_key, resolved_config_id, resolved_assignment_id = state.auth_db.get_model_api_key_v2(
+            user_id, payload.provider, payload.modelId.strip(), payload.configId
+        )
+        if not api_key:
+            api_key = Config.LLM_API_KEY.strip() if Config.LLM_API_KEY else ""
+            
         if not api_key or api_key.lower() in PLACEHOLDER_KEYS:
-            raise HTTPException(status_code=500, detail="未找到可用的向量模型 API Key：请在模型配置中保存 API Key，或在服务器 .env 中设置 LLM_API_KEY。")
+            raise HTTPException(status_code=500, detail="未找到可用的向量模型 API Key。请在模型配置中保存 API Key，或在服务器 .env 中设置。")
             
         endpoint = payload.endpoint or "/embeddings/multimodal"
         if not re.match(r"^/[a-zA-Z0-9\-_/]+$", endpoint):
@@ -544,6 +802,7 @@ def create_app(
         
         start_time = time.time()
         success = False
+        res = None
         try:
             async with httpx.AsyncClient() as client:
                 res = await client.post(url, headers=headers, json=payload.requestBody, timeout=60.0)
@@ -558,6 +817,59 @@ def create_app(
         finally:
             duration = int((time.time() - start_time) * 1000)
             print(f"[AUDIT] Event: model_embeddings | userId: {user_id} | provider: {payload.provider} | modelId: {payload.modelId} | durationMs: {duration} | success: {success}")
+            
+            # Log usage non-sensitively
+            try:
+                prompt_tokens = None
+                total_tokens = None
+                input_chars = 0
+                error_type = None
+                
+                try:
+                    input_data = payload.requestBody.get("input", [])
+                    if isinstance(input_data, list):
+                        for item in input_data:
+                            if isinstance(item, str):
+                                input_chars += len(item)
+                            elif isinstance(item, dict) and isinstance(item.get("text"), str):
+                                input_chars += len(item["text"])
+                    elif isinstance(input_data, str):
+                        input_chars = len(input_data)
+                except Exception:
+                    pass
+                
+                if success and res is not None:
+                    try:
+                        usage = res.json().get("usage", {})
+                        prompt_tokens = usage.get("prompt_tokens")
+                        total_tokens = usage.get("total_tokens")
+                    except Exception:
+                        pass
+                else:
+                    error_type = f"HTTP_{res.status_code}" if res is not None else "CONNECTION_ERROR"
+                    
+                analysis_id = payload.requestBody.get("analysis_id") or payload.requestBody.get("analysisId")
+                
+                state.auth_db.log_model_usage(
+                    user_id=user_id,
+                    config_id=resolved_config_id,
+                    assignment_id=resolved_assignment_id,
+                    analysis_id=analysis_id,
+                    provider=payload.provider,
+                    model_id=payload.modelId.strip(),
+                    usage_type="embedding",
+                    endpoint=endpoint,
+                    success=success,
+                    error_type=error_type,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=None,
+                    total_tokens=total_tokens,
+                    input_chars=input_chars,
+                    output_chars=0,
+                    latency_ms=duration
+                )
+            except Exception as e:
+                print(f"[ERROR] Failed to log embedding usage: {e}")
 
     @app.post("/api/models/test-connection")
     async def test_connection(
@@ -566,23 +878,39 @@ def create_app(
     ) -> dict[str, Any]:
         check_rate_limit(f"test_conn:{user_id}", 10, 3600)
         
-        if payload.provider == "gemini":
-            api_key = model_api_key(user_id, "gemini", payload.modelId.strip(), Config.GEMINI_API_KEY)
-            if not api_key:
-                return {"ok": False, "message": "未找到可用的 Gemini API Key：请在模型配置中保存 API Key，或在服务器 .env 中设置 GEMINI_API_KEY。"}
+        model_id = payload.modelId.strip()
+        api_key, resolved_config_id, resolved_assignment_id = state.auth_db.get_model_api_key_v2(
+            user_id, payload.provider, model_id, payload.configId
+        )
+        if not api_key:
+            env_key = Config.GEMINI_API_KEY if payload.provider == "gemini" else Config.LLM_API_KEY
+            api_key = env_key.strip() if env_key else ""
             
-            gemini_base = (Config.GEMINI_BASE_URL or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
-            url = f"{gemini_base}/models/{payload.modelId}:generateContent"
-            
-            test_body = {
-                "contents": [{"parts": [{"text": "Return exactly:\n{\"ok\":true}"}]}],
-                "generationConfig": {"temperature": 0, "maxOutputTokens": 256, "responseMimeType": "application/json"}
-            }
-            
-            try:
+        start_time = time.time()
+        success = False
+        res_status = None
+        message = ""
+        url = ""
+        
+        try:
+            if payload.provider == "gemini":
+                if not api_key:
+                    message = "未找到可用的 Gemini API Key：请在模型配置中保存 API Key，或在服务器 .env 中设置 GEMINI_API_KEY。"
+                    return {"ok": False, "message": message}
+                
+                gemini_base = (Config.GEMINI_BASE_URL or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
+                url = f"{gemini_base}/models/{payload.modelId}:generateContent"
+                
+                test_body = {
+                    "contents": [{"parts": [{"text": "Return exactly:\n{\"ok\":true}"}]}],
+                    "generationConfig": {"temperature": 0, "maxOutputTokens": 256, "responseMimeType": "application/json"}
+                }
+                
                 async with httpx.AsyncClient() as client:
                     res = await client.post(url, headers={"Content-Type": "application/json", "x-goog-api-key": api_key}, json=test_body, timeout=20.0)
-                    if res.status_code == 200:
+                    res_status = res.status_code
+                    success = res.status_code == 200
+                    if success:
                         return {
                             "ok": True,
                             "message": "连接成功",
@@ -590,7 +918,6 @@ def create_app(
                             "url": url,
                             "rawResponseText": res.text[:500],
                         }
-
                     message = "Gemini 连接失败，请检查 Model ID、API Key 权限或额度。"
                     try:
                         body = res.json()
@@ -604,32 +931,64 @@ def create_app(
                         "url": url,
                         "rawResponseText": res.text[:500],
                     }
-            except Exception as exc:
-                return {
-                    "ok": False,
-                    "message": f"Gemini 连接失败：{str(exc)}",
-                    "url": url,
-                    "rawResponseText": "",
+                    
+            elif "doubao" in payload.provider or "volc" in payload.provider or payload.provider == "openai-compatible" or payload.provider == "custom":
+                if not api_key or api_key.lower() in PLACEHOLDER_KEYS:
+                    message = "未找到可用的向量模型 API Key：请在模型配置中保存 API Key，或在服务器 .env 中设置 LLM_API_KEY。"
+                    return {"ok": False, "message": message}
+                
+                if payload.type == "chat" and payload.provider in {"openai-compatible", "custom"}:
+                    base_url = chat_base_url(user_id, payload.provider, model_id)
+                    if not base_url:
+                        message = "请先为该大语言模型配置 Base URL。"
+                        return {"ok": False, "message": message}
+                    url = openai_chat_url(base_url)
+                    test_body = {
+                        "model": payload.modelId,
+                        "messages": [{"role": "user", "content": "Return exactly: {\"ok\": true}"}],
+                        "temperature": 0,
+                        "max_tokens": 256,
+                        "response_format": {"type": "json_object"},
+                    }
+                    async with httpx.AsyncClient() as client:
+                        res = await client.post(url, headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, json=test_body, timeout=20.0)
+                        res_status = res.status_code
+                        success = res.status_code == 200
+                        if success:
+                            return {
+                                "ok": True,
+                                "message": "连接成功",
+                                "upstreamStatus": res.status_code,
+                                "url": url,
+                                "rawResponseText": res.text[:500],
+                            }
+                        message = "大语言模型连接失败，请检查 Base URL、Model ID、API Key 权限或额度。"
+                        try:
+                            body = res.json()
+                            message = body.get("error", {}).get("message") or body.get("message") or message
+                        except Exception:
+                            pass
+                        return {
+                            "ok": False,
+                            "message": message,
+                            "upstreamStatus": res.status_code,
+                            "url": url,
+                            "rawResponseText": res.text[:500],
+                        }
+                        
+                volcano_base = (Config.LLM_BASE_URL or "https://ark.cn-beijing.volces.com/api/v3").rstrip("/")
+                endpoint = payload.endpoint or "/embeddings/multimodal"
+                url = f"{volcano_base}{endpoint}"
+                
+                test_body = {
+                    "model": payload.modelId,
+                    "input": [{"type": "text", "text": "test"}] if endpoint == "/embeddings/multimodal" else ["test"]
                 }
-
-        elif "doubao" in payload.provider or "volc" in payload.provider or payload.provider == "openai-compatible" or payload.provider == "custom":
-            api_key = model_api_key(user_id, payload.provider, payload.modelId.strip(), Config.LLM_API_KEY)
-            if not api_key or api_key.lower() in PLACEHOLDER_KEYS:
-                return {"ok": False, "message": "未找到可用的向量模型 API Key：请在模型配置中保存 API Key，或在服务器 .env 中设置 LLM_API_KEY。"}
-            
-            volcano_base = (Config.LLM_BASE_URL or "https://ark.cn-beijing.volces.com/api/v3").rstrip("/")
-            endpoint = payload.endpoint or "/embeddings/multimodal"
-            url = f"{volcano_base}{endpoint}"
-            
-            test_body = {
-                "model": payload.modelId,
-                "input": [{"type": "text", "text": "test"}] if endpoint == "/embeddings/multimodal" else ["test"]
-            }
-            
-            try:
                 async with httpx.AsyncClient() as client:
                     res = await client.post(url, headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, json=test_body, timeout=20.0)
-                    if res.status_code == 200:
+                    res_status = res.status_code
+                    success = res.status_code == 200
+                    if success:
                         return {
                             "ok": True,
                             "message": "连接成功",
@@ -637,7 +996,6 @@ def create_app(
                             "url": url,
                             "rawResponseText": res.text[:500],
                         }
-
                     message = "向量模型连接失败，请检查 Model ID、API Key 权限或额度。"
                     try:
                         body = res.json()
@@ -651,22 +1009,49 @@ def create_app(
                         "url": url,
                         "rawResponseText": res.text[:500],
                     }
-            except Exception as exc:
-                return {
-                    "ok": False,
-                    "message": f"向量模型连接失败：{str(exc)}",
-                    "url": url,
-                    "rawResponseText": "",
-                }
-                
-        return {"ok": False, "message": "不支持的 Provider 连接测试"}
+            
+            message = "不支持的 Provider 连接测试"
+            return {"ok": False, "message": message}
+            
+        except Exception as exc:
+            message = f"连接失败：{str(exc)}"
+            return {
+                "ok": False,
+                "message": message,
+                "url": url,
+                "rawResponseText": "",
+            }
+        finally:
+            duration = int((time.time() - start_time) * 1000)
+            try:
+                error_type = f"HTTP_{res_status}" if res_status is not None else ("EXCEPTION" if not success else None)
+                state.auth_db.log_model_usage(
+                    user_id=user_id,
+                    config_id=resolved_config_id,
+                    assignment_id=resolved_assignment_id,
+                    analysis_id=None,
+                    provider=payload.provider,
+                    model_id=model_id,
+                    usage_type="model_test",
+                    endpoint=payload.endpoint if payload.endpoint else None,
+                    success=success,
+                    error_type=error_type,
+                    prompt_tokens=None,
+                    completion_tokens=None,
+                    total_tokens=None,
+                    input_chars=0,
+                    output_chars=0,
+                    latency_ms=duration
+                )
+            except Exception as e:
+                print(f"[ERROR] Failed to log test connection usage: {e}")
 
     @app.get("/api/me")
     def me(user_id: Any = Depends(current_user_id)) -> dict[str, Any]:
         user = state.auth_db.get_user_by_id(user_id)
         if user is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="user_not_found")
-        return UserResponse(id=user.id or user_id, username=user.username, created_at=user.created_at).model_dump(mode="json")
+        return UserResponse(id=user.id or user_id, username=user.username, role=user.role, created_at=user.created_at).model_dump(mode="json")
 
     @app.get("/api/materials")
     def list_materials(user_id: Any = Depends(current_user_id)) -> dict[str, Any]:
@@ -852,7 +1237,7 @@ def create_app(
 
     @app.get("/api/configs")
     def list_configs(user_id: Any = Depends(current_user_id)) -> dict[str, Any]:
-        configs = state.auth_db.list_model_configs(user_id)
+        configs = state.auth_db.list_user_available_configs(user_id)
         return {"configs": configs}
 
     @app.post("/api/configs")
@@ -863,6 +1248,19 @@ def create_app(
         api_key = payload.get("apiKey") or payload.get("api_key", "")
         enabled = payload.get("enabled", True)
         config_id = payload.get("id")
+        
+        # Intercept if updating a config owned by admin/system
+        if config_id:
+            conn = state.auth_db.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT owner_type FROM model_configs WHERE id = ?", (config_id,))
+            row = cursor.fetchone()
+            conn.close()
+            if row and row[0] in ("admin", "system"):
+                user = state.auth_db.get_user_by_id(user_id)
+                if not user or user.role != "admin":
+                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权修改管理员托管的配置。")
+                    
         # Store full config object (minus sensitive apiKey) as config_json
         safe_payload = {k: v for k, v in payload.items() if k not in ("apiKey", "api_key")}
         new_id = state.auth_db.save_model_config(
@@ -879,8 +1277,176 @@ def create_app(
 
     @app.delete("/api/configs/{config_id}")
     def delete_config(config_id: str, user_id: Any = Depends(current_user_id)) -> dict[str, bool]:
+        # Intercept if deleting a config owned by admin/system
+        conn = state.auth_db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT owner_type FROM model_configs WHERE id = ?", (config_id,))
+        row = cursor.fetchone()
+        conn.close()
+        if row and row[0] in ("admin", "system"):
+            user = state.auth_db.get_user_by_id(user_id)
+            if not user or user.role != "admin":
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权删除管理员托管的配置。")
+                
         state.auth_db.delete_model_config(user_id, config_id)
         return {"deleted": True}
+
+    # ── Admin Console API Endpoints ──
+
+    @app.get("/api/admin/users")
+    def admin_list_users(admin_id: Any = Depends(current_admin_user)) -> dict[str, Any]:
+        users = state.auth_db.admin_list_users()
+        return {"users": users}
+
+    @app.get("/api/admin/model-configs")
+    def admin_list_model_configs(admin_id: Any = Depends(current_admin_user)) -> dict[str, Any]:
+        configs = state.auth_db.admin_list_model_configs()
+        return {"configs": configs}
+
+    @app.post("/api/admin/model-configs")
+    def admin_create_model_config(
+        payload: AdminModelConfigRequest,
+        admin_id: Any = Depends(current_admin_user)
+    ) -> dict[str, Any]:
+        safe_payload = payload.config_json or {}
+        new_id = state.auth_db.admin_create_model_config(
+            admin_user_id=admin_id,
+            provider=payload.provider,
+            model_id=payload.modelId,
+            display_name=payload.name,
+            api_key=payload.apiKey,
+            enabled=payload.enabled,
+            config_json=safe_payload
+        )
+        state.auth_db.log_admin_audit(
+            admin_user_id=admin_id,
+            action="CREATE_CONFIG",
+            target_resource_type="model_config",
+            target_resource_id=new_id,
+            metadata_json={"provider": payload.provider, "modelId": payload.modelId, "name": payload.name}
+        )
+        return {"id": new_id, "ok": True}
+
+    @app.patch("/api/admin/model-configs/{config_id}")
+    def admin_update_model_config(
+        config_id: str,
+        payload: AdminModelConfigRequest,
+        admin_id: Any = Depends(current_admin_user)
+    ) -> dict[str, Any]:
+        safe_payload = payload.config_json or {}
+        success = state.auth_db.admin_update_model_config(
+            config_id=config_id,
+            provider=payload.provider,
+            model_id=payload.modelId,
+            display_name=payload.name,
+            api_key=payload.apiKey,
+            enabled=payload.enabled,
+            config_json=safe_payload
+        )
+        if not success:
+            raise HTTPException(status_code=404, detail="未找到该管理员配置，或者该配置不属于管理员管理。")
+        state.auth_db.log_admin_audit(
+            admin_user_id=admin_id,
+            action="UPDATE_CONFIG",
+            target_resource_type="model_config",
+            target_resource_id=config_id,
+            metadata_json={"provider": payload.provider, "modelId": payload.modelId, "name": payload.name}
+        )
+        return {"ok": True}
+
+    @app.post("/api/admin/model-configs/{config_id}/assign")
+    def admin_assign_model_config(
+        config_id: str,
+        payload: AdminAssignRequest,
+        admin_id: Any = Depends(current_admin_user)
+    ) -> dict[str, Any]:
+        try:
+            state.auth_db.admin_assign_model_config(
+                admin_user_id=admin_id,
+                config_id=config_id,
+                target_user_ids=payload.userIds
+            )
+            state.auth_db.log_admin_audit(
+                admin_user_id=admin_id,
+                action="ASSIGN_CONFIG",
+                target_resource_type="model_config",
+                target_resource_id=config_id,
+                metadata_json={"assigned_users": payload.userIds}
+            )
+            return {"ok": True}
+        except ValueError as e:
+            if str(e) == "not_admin_managed_config":
+                raise HTTPException(status_code=400, detail="该配置不是管理员拥有的配置，无法分配。")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/api/admin/model-configs/{config_id}/revoke")
+    def admin_revoke_model_config(
+        config_id: str,
+        payload: AdminAssignRequest,
+        admin_id: Any = Depends(current_admin_user)
+    ) -> dict[str, Any]:
+        state.auth_db.admin_revoke_model_config(
+            config_id=config_id,
+            target_user_ids=payload.userIds
+        )
+        state.auth_db.log_admin_audit(
+            admin_user_id=admin_id,
+            action="REVOKE_CONFIG",
+            target_resource_type="model_config",
+            target_resource_id=config_id,
+            metadata_json={"revoked_users": payload.userIds}
+        )
+        return {"ok": True}
+
+    @app.get("/api/admin/model-configs/{config_id}/assignments")
+    def admin_get_assignments(
+        config_id: str,
+        admin_id: Any = Depends(current_admin_user)
+    ) -> dict[str, Any]:
+        assignments = state.auth_db.admin_get_assignments(config_id)
+        return {"assignments": assignments}
+
+    @app.get("/api/admin/model-usage/summary")
+    def admin_get_usage_summary(
+        startDate: Optional[str] = None,
+        endDate: Optional[str] = None,
+        provider: Optional[str] = None,
+        modelId: Optional[str] = None,
+        userId: Optional[str] = None,
+        admin_id: Any = Depends(current_admin_user)
+    ) -> dict[str, Any]:
+        summary = state.auth_db.admin_get_usage_summary(
+            start_date=startDate,
+            end_date=endDate,
+            provider=provider,
+            model_id=modelId,
+            user_id=userId
+        )
+        return {"summary": summary}
+
+    @app.get("/api/admin/model-usage/logs")
+    def admin_get_usage_logs(
+        startDate: Optional[str] = None,
+        endDate: Optional[str] = None,
+        provider: Optional[str] = None,
+        modelId: Optional[str] = None,
+        userId: Optional[str] = None,
+        success: Optional[bool] = None,
+        page: int = 1,
+        pageSize: int = 20,
+        admin_id: Any = Depends(current_admin_user)
+    ) -> dict[str, Any]:
+        result = state.auth_db.admin_get_usage_logs(
+            start_date=startDate,
+            end_date=endDate,
+            provider=provider,
+            model_id=modelId,
+            user_id=userId,
+            success=success,
+            page=page,
+            page_size=pageSize
+        )
+        return result
 
     return app
 

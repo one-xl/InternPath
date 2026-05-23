@@ -7,13 +7,14 @@ interface AppShellProps {
   activePage: PageKey;
   onNavigate: (page: PageKey) => void;
   onLogout?: () => void;
+  userRole?: string;
   children: ReactNode;
 }
 
-export function AppShell({ activePage, onNavigate, onLogout, children }: AppShellProps) {
+export function AppShell({ activePage, onNavigate, onLogout, userRole, children }: AppShellProps) {
   return (
     <div className="app-shell">
-      <Sidebar activePage={activePage} onNavigate={onNavigate} onLogout={onLogout} />
+      <Sidebar activePage={activePage} onNavigate={onNavigate} onLogout={onLogout} userRole={userRole} />
       <div className="app-main">
         <Header onNewAnalysis={() => onNavigate("new")} onHistory={() => onNavigate("history")} />
         {children}

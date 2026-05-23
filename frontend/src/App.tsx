@@ -1,5 +1,6 @@
 import { useMemo, useState, useEffect, useRef } from "react";
 import { AppShell } from "./components/layout/AppShell";
+import { ErrorBoundary } from "./components/ui/ErrorBoundary";
 import { useHistory } from "./hooks/useHistory";
 import { useJobAnalysis } from "./hooks/useJobAnalysis";
 import { useModelConfigs } from "./hooks/useModelConfigs";
@@ -13,6 +14,7 @@ import { ProfilePage } from "./pages/ProfilePage";
 import { ResultPage } from "./pages/ResultPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { LoginPage } from "./pages/LoginPage";
+import { AdminPage } from "./pages/AdminPage";
 import { createEmptyDraft } from "./services/mockAnalysis";
 import type { ApplicationStatus, HistoryRecord } from "./types/analysis";
 import type { JobDraft } from "./types/job";
@@ -37,7 +39,7 @@ export default function App() {
   const [draftSaveMessage, setDraftSaveMessage] = useState<string | null>(null);
 
   // Authentication State
-  const [currentUser, setCurrentUser] = useState<{ id: number; username: string } | null>(null);
+  const [currentUser, setCurrentUser] = useState<{ id: any; username: string; role?: string } | null>(null);
   const [checkingAuth, setCheckingAuth] = useState(true);
   const currentUserRef = useRef(currentUser);
   const authExpiredAlertShownRef = useRef(false);
@@ -56,7 +58,7 @@ export default function App() {
         const response = await fetch("/api/me");
         if (response.ok) {
           const user = await response.json();
-          setCurrentUser({ id: user.id, username: user.username });
+          setCurrentUser({ id: user.id, username: user.username, role: user.role });
         } else {
           setCurrentUser(null);
         }
@@ -128,6 +130,22 @@ export default function App() {
   const history = useHistory(isAuthenticated);
   const draftsControl = useAnalysisDrafts(isAuthenticated);
 
+  // Prevent accidental refresh/close during ongoing analysis
+  useEffect(() => {
+    if (!analysis.isAnalyzing) return;
+
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "正在进行岗位分析，刷新或关闭页面将中断当前分析进度，确定离开吗？";
+      return e.returnValue;
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+    };
+  }, [analysis.isAnalyzing]);
+
   const activeSavedRecord = useMemo(
     () => history.records.find((record) => record.id === analysis.result?.id),
     [analysis.result?.id, history.records],
@@ -139,6 +157,48 @@ export default function App() {
 
   async function runAnalysis() {
     setDraftSaveMessage(null);
+
+    // 1. Auto-create/save draft if not already working on an active draft
+    let draftId = activeDraftId;
+    if (!draftId && draft.jdText?.trim() && resumeUpload.resumeFile) {
+      try {
+        const saved = draftsControl.saveDraft({
+          companyName: draft.company,
+          jobTitle: draft.title,
+          jdText: draft.jdText,
+          targetType: draft.targetType,
+          jobDirection: draft.jobDirection,
+          notes: draft.candidateMaterial,
+          link: draft.link,
+          location: draft.location,
+          workMode: draft.workMode,
+          level: draft.level,
+          resumeFile: resumeUpload.resumeFile,
+          parsedResume: resumeUpload.parsedResume,
+          embeddingConfigId: modelConfigs.activeEmbeddingConfig?.id,
+          chatConfigId: modelConfigs.activeChatConfig?.id,
+        });
+        draftId = saved.id;
+        setActiveDraftId(draftId);
+      } catch (err) {
+        console.error("Auto-creating draft failed on start:", err);
+      }
+    }
+
+    // Save active session to localStorage for reload survival
+    try {
+      const session = {
+        draft,
+        resumeFile: resumeUpload.resumeFile,
+        parsedResume: resumeUpload.parsedResume,
+        activeDraftId: draftId,
+        timestamp: Date.now(),
+      };
+      localStorage.setItem("internpath:active-analysis-session", JSON.stringify(session));
+    } catch (e) {
+      console.warn("Failed to write active analysis session to localStorage:", e);
+    }
+
     const runResult = await analysis.runAnalysis({
       draft,
       resumeFile: resumeUpload.resumeFile,
@@ -148,33 +208,39 @@ export default function App() {
       chatConfig: modelConfigs.activeChatConfig,
       activeEmbeddingConfigId: modelConfigs.state.active.embeddingConfigId,
       activeChatConfigId: modelConfigs.state.active.chatConfigId,
-      sourceDraftId: activeDraftId || undefined,
+      sourceDraftId: draftId || undefined,
       onSaveHistory: (res) => {
         history.saveRecord(toHistoryRecord(res, "watching"));
       }
     });
 
     if (runResult.ok) {
-      // If successful, and we are working from a draft, mark the draft as converted to history
-      if (activeDraftId) {
-        draftsControl.updateDraftStatus(activeDraftId, "converted_to_history");
+      localStorage.removeItem("internpath:active-analysis-session");
+      // If successful, mark the draft as converted to history (completed status)
+      if (draftId) {
+        draftsControl.updateDraftStatus(draftId, "converted_to_history");
         setActiveDraftId(null);
       }
       setActivePage("result");
     } else {
+      localStorage.removeItem("internpath:active-analysis-session");
       // Analysis failed! Auto-save the input fields and context as a failed draft.
       try {
         const failedStepId = runResult.failedStep || "validate";
         const errorMsg = runResult.errorMessage || "未知分析错误";
 
         const saved = draftsControl.saveFailedAnalysisDraft({
-          id: activeDraftId || undefined,
+          id: draftId || undefined,
           companyName: draft.company,
           jobTitle: draft.title,
           jdText: draft.jdText,
           targetType: draft.targetType,
           jobDirection: draft.jobDirection,
           notes: draft.candidateMaterial,
+          link: draft.link,
+          location: draft.location,
+          workMode: draft.workMode,
+          level: draft.level,
           resumeFile: resumeUpload.resumeFile,
           parsedResume: resumeUpload.parsedResume,
           embeddingConfigId: modelConfigs.activeEmbeddingConfig?.id,
@@ -192,12 +258,84 @@ export default function App() {
 
         setActiveDraftId(saved.id);
         setDraftSaveMessage("已自动保存为草稿，可稍后继续分析。");
+
+        // Save a failed run history record
+        const failedResult: Omit<HistoryRecord, "status"> = {
+          id: saved.id,
+          createdAt: new Date().toISOString(),
+          draft: draft,
+          sourceDraftId: saved.id,
+          resumeFile: resumeUpload.resumeFile ? { ...resumeUpload.resumeFile, status: "error" } as any : undefined,
+          parsedResume: resumeUpload.parsedResume || undefined,
+          retrievedResumeChunks: [],
+          retrievalSummary: `分析中断于: ${failedStepId}。原因: ${errorMsg}`,
+          retrievalScore: 0,
+          decision: "no",
+          matchScore: 0,
+          riskLevel: "high",
+          priority: "P3",
+          oneLineReason: `分析中断于【${failedStepId}】: ${errorMsg}`,
+          detectedKeywords: [],
+          missingKeywords: [],
+          dimensions: [],
+          resumeAdvice: [],
+          learningSuggestions: [],
+          nextActions: ["检查模型配置或网络连接", "点击继续分析重新开始"],
+          citedResumeChunks: [],
+        };
+        await history.saveRecord(toHistoryRecord(failedResult, "watching"));
       } catch (err: any) {
         console.error("[draft] Failed to auto-save draft:", err);
         setDraftSaveMessage("分析失败，且草稿保存失败。请手动复制当前 JD 或稍后重试。");
       }
     }
   }
+
+  // Restore active analysis session on boot/login
+  useEffect(() => {
+    if (!currentUser) return;
+    // Only attempt recovery when model configurations have loaded so that runAnalysis won't fail validation immediately.
+    if (!modelConfigs.state.embeddingConfigs.length || !modelConfigs.state.chatConfigs.length) return;
+
+    const sessionStr = localStorage.getItem("internpath:active-analysis-session");
+    if (!sessionStr) return;
+
+    try {
+      const session = JSON.parse(sessionStr);
+      // Valid within 30 minutes
+      if (Date.now() - session.timestamp < 30 * 60 * 1000) {
+        // Clear session immediately to avoid infinite recovery loops if runAnalysis fails
+        localStorage.removeItem("internpath:active-analysis-session");
+        
+        const confirmRestore = window.confirm("检测到您有未完成的岗位分析，是否恢复并继续？");
+        if (confirmRestore) {
+          setDraft(normalizeDraft(session.draft));
+          if (session.resumeFile || session.parsedResume) {
+            resumeUpload.restoreResumeData(
+              session.resumeFile || null,
+              session.parsedResume || null,
+              session.parsedResume?.chunks || []
+            );
+          }
+          if (session.activeDraftId) {
+            setActiveDraftId(session.activeDraftId);
+          }
+          // Shift view to new analysis page to show progress
+          setActivePage("new");
+          
+          // Trigger the analysis after a short timeout so React state updates settle
+          setTimeout(() => {
+            void runAnalysis();
+          }, 600);
+        }
+      } else {
+        localStorage.removeItem("internpath:active-analysis-session");
+      }
+    } catch (e) {
+      console.warn("Failed to restore active analysis session:", e);
+      localStorage.removeItem("internpath:active-analysis-session");
+    }
+  }, [currentUser, modelConfigs.state.embeddingConfigs.length, modelConfigs.state.chatConfigs.length]);
 
   function startNewAnalysis() {
     setDraft(createEmptyDraft());
@@ -254,6 +392,10 @@ export default function App() {
         targetType: draft.targetType,
         jobDirection: draft.jobDirection,
         notes: draft.candidateMaterial,
+        link: draft.link,
+        location: draft.location,
+        workMode: draft.workMode,
+        level: draft.level,
         resumeFile: resumeUpload.resumeFile,
         parsedResume: resumeUpload.parsedResume,
         embeddingConfigId: modelConfigs.activeEmbeddingConfig?.id,
@@ -270,10 +412,10 @@ export default function App() {
     setDraft({
       company: targetDraft.companyName || "",
       title: targetDraft.jobTitle || "",
-      link: "",
-      location: "",
-      workMode: "unknown",
-      level: "unknown",
+      link: targetDraft.link || "",
+      location: targetDraft.location || "",
+      workMode: targetDraft.workMode || "unknown",
+      level: targetDraft.level || "unknown",
       jdText: targetDraft.jdText || "",
       targetType: targetDraft.targetType || "",
       jobDirection: targetDraft.jobDirection || "",
@@ -359,97 +501,102 @@ export default function App() {
   }
 
   return (
-    <AppShell activePage={activePage} onNavigate={setActivePage} onLogout={handleLogout}>
-      {activePage === "dashboard" && (
-        <DashboardPage
-          records={history.records}
-          latestResult={analysis.result ?? history.records[0] ?? null}
-          profile={profile}
-          onNewAnalysis={startNewAnalysis}
-          onOpenLatest={() => setActivePage("result")}
-          onHistory={() => setActivePage("history")}
-        />
-      )}
-      {activePage === "new" && (
-        <NewAnalysisPage
-          draft={draft}
-          resumeFile={resumeUpload.resumeFile}
-          parsedResume={resumeUpload.parsedResume}
-          resumeStatus={resumeUpload.status}
-          resumeError={resumeUpload.error}
-          resumeReady={resumeUpload.isReady}
-          isAnalyzing={analysis.isAnalyzing}
-          isRetrieving={analysis.analysisStatus === "retrieving"}
-          activeEmbeddingConfig={modelConfigs.activeEmbeddingConfig}
-          activeChatConfig={modelConfigs.activeChatConfig}
-          progressStep={analysis.progressStep}
-          steps={analysis.steps}
-          analysisStatus={analysis.analysisStatus}
-          error={formError}
-          onChangeDraft={updateDraft}
-          onSelectResume={resumeUpload.selectFile}
-          onRetryResume={resumeUpload.retry}
-          onRemoveResume={resumeUpload.removeFile}
-          onGoSettings={() => setActivePage("settings")}
-          onAnalyze={runAnalysis}
-          
-          latestDraft={draftsControl.latestDraft}
-          draftSaveMessage={draftSaveMessage}
-          onRestoreDraft={handleRestoreDraft}
-          onDeleteDraft={draftsControl.deleteDraft}
-          onSaveDraft={handleSaveDraft}
-          onViewDrafts={() => setActivePage("history")}
-          onClearForm={handleClearForm}
-        />
-      )}
-      {activePage === "result" && (
-        <ResultPage
-          result={analysis.result}
-          isSaved={Boolean(activeSavedRecord)}
-          onNewAnalysis={startNewAnalysis}
-          onSave={() => saveCurrent("watching")}
-          onCopyAdvice={copyAdvice}
-          onMarkApplied={() => markCurrent("applied")}
-          onAbandon={() => markCurrent("abandoned")}
-        />
-      )}
-      {activePage === "history" && (
-        <HistoryPage
-          records={history.filteredRecords}
-          query={history.query}
-          filter={history.filter}
-          sort={history.sort}
-          onQueryChange={history.setQuery}
-          onFilterChange={history.setFilter}
-          onSortChange={history.setSort}
-          onOpen={openHistoryRecord}
-          onDelete={history.deleteRecord}
-          onStatusChange={history.updateStatus}
-          onNewAnalysis={startNewAnalysis}
-          
-          drafts={draftsControl.drafts}
-          onRestoreDraft={handleRestoreDraft}
-          onCloneDraft={handleCloneDraft}
-          onDeleteDraft={draftsControl.deleteDraft}
-        />
-      )}
-      {activePage === "profile" && <ProfilePage profile={profile} savedAt={savedAt} onSave={saveProfile} />}
-      {activePage === "settings" && (
-        <SettingsPage
-          state={modelConfigs.state}
-          activeEmbeddingConfig={modelConfigs.activeEmbeddingConfig}
-          activeChatConfig={modelConfigs.activeChatConfig}
-          onSaveEmbedding={modelConfigs.saveEmbeddingConfig}
-          onSaveChat={modelConfigs.saveChatConfig}
-          onDeleteEmbedding={modelConfigs.deleteEmbeddingConfig}
-          onDeleteChat={modelConfigs.deleteChatConfig}
-          onSetActiveEmbedding={modelConfigs.setActiveEmbeddingConfig}
-          onSetActiveChat={modelConfigs.setActiveChatConfig}
-          onTestEmbedding={(config) => void modelConfigs.testEmbeddingConfig(config)}
-          onTestChat={(config) => void modelConfigs.testChatConfig(config)}
-          onClearAll={modelConfigs.clearAllConfigs}
-        />
-      )}
-    </AppShell>
+    <ErrorBoundary>
+      <AppShell activePage={activePage} onNavigate={setActivePage} onLogout={handleLogout} userRole={currentUser?.role}>
+        {activePage === "dashboard" && (
+          <DashboardPage
+            records={history.records}
+            latestResult={analysis.result ?? history.records[0] ?? null}
+            profile={profile}
+            onNewAnalysis={startNewAnalysis}
+            onOpenLatest={() => setActivePage("result")}
+            onHistory={() => setActivePage("history")}
+          />
+        )}
+        {activePage === "new" && (
+          <NewAnalysisPage
+            draft={draft}
+            resumeFile={resumeUpload.resumeFile}
+            parsedResume={resumeUpload.parsedResume}
+            resumeStatus={resumeUpload.status}
+            resumeError={resumeUpload.error}
+            resumeReady={resumeUpload.isReady}
+            isAnalyzing={analysis.isAnalyzing}
+            isRetrieving={analysis.analysisStatus === "retrieving"}
+            activeEmbeddingConfig={modelConfigs.activeEmbeddingConfig}
+            activeChatConfig={modelConfigs.activeChatConfig}
+            progressStep={analysis.progressStep}
+            steps={analysis.steps}
+            analysisStatus={analysis.analysisStatus}
+            error={formError}
+            onChangeDraft={updateDraft}
+            onSelectResume={resumeUpload.selectFile}
+            onRetryResume={resumeUpload.retry}
+            onRemoveResume={resumeUpload.removeFile}
+            onGoSettings={() => setActivePage("settings")}
+            onAnalyze={runAnalysis}
+            
+            latestDraft={draftsControl.latestDraft}
+            draftSaveMessage={draftSaveMessage}
+            onRestoreDraft={handleRestoreDraft}
+            onDeleteDraft={draftsControl.deleteDraft}
+            onSaveDraft={handleSaveDraft}
+            onViewDrafts={() => setActivePage("history")}
+            onClearForm={handleClearForm}
+          />
+        )}
+        {activePage === "result" && (
+          <ResultPage
+            result={analysis.result}
+            isSaved={Boolean(activeSavedRecord)}
+            onNewAnalysis={startNewAnalysis}
+            onSave={() => saveCurrent("watching")}
+            onCopyAdvice={copyAdvice}
+            onMarkApplied={() => markCurrent("applied")}
+            onAbandon={() => markCurrent("abandoned")}
+          />
+        )}
+        {activePage === "history" && (
+          <HistoryPage
+            records={history.filteredRecords}
+            query={history.query}
+            filter={history.filter}
+            sort={history.sort}
+            onQueryChange={history.setQuery}
+            onFilterChange={history.setFilter}
+            onSortChange={history.setSort}
+            onOpen={openHistoryRecord}
+            onDelete={history.deleteRecord}
+            onStatusChange={history.updateStatus}
+            onNewAnalysis={startNewAnalysis}
+            
+            drafts={draftsControl.drafts}
+            onRestoreDraft={handleRestoreDraft}
+            onCloneDraft={handleCloneDraft}
+            onDeleteDraft={draftsControl.deleteDraft}
+          />
+        )}
+        {activePage === "profile" && <ProfilePage profile={profile} savedAt={savedAt} onSave={saveProfile} />}
+        {activePage === "settings" && (
+          <SettingsPage
+            state={modelConfigs.state}
+            activeEmbeddingConfig={modelConfigs.activeEmbeddingConfig}
+            activeChatConfig={modelConfigs.activeChatConfig}
+            onSaveEmbedding={modelConfigs.saveEmbeddingConfig}
+            onSaveChat={modelConfigs.saveChatConfig}
+            onDeleteEmbedding={modelConfigs.deleteEmbeddingConfig}
+            onDeleteChat={modelConfigs.deleteChatConfig}
+            onSetActiveEmbedding={modelConfigs.setActiveEmbeddingConfig}
+            onSetActiveChat={modelConfigs.setActiveChatConfig}
+            onTestEmbedding={(config) => void modelConfigs.testEmbeddingConfig(config)}
+            onTestChat={(config) => void modelConfigs.testChatConfig(config)}
+            onClearAll={modelConfigs.clearAllConfigs}
+          />
+        )}
+        {activePage === "admin" && currentUser?.role === "admin" && (
+          <AdminPage />
+        )}
+      </AppShell>
+    </ErrorBoundary>
   );
 }

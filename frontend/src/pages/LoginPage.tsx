@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Button } from "../components/ui/Button";
 
 interface LoginPageProps {
-  onLoginSuccess: (user: { id: number; username: string }) => void;
+  onLoginSuccess: (user: { id: any; username: string; role?: string }) => void;
 }
 
 export function LoginPage({ onLoginSuccess }: LoginPageProps) {
@@ -73,12 +73,12 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
       return;
     }
 
-    if (!validateEmail(email)) {
+    if (!isLogin && !validateEmail(email)) {
       setError("请输入有效的电子邮箱地址。");
       return;
     }
 
-    if (password.length < 8) {
+    if (!isLogin && password.length < 8) {
       setError("密码长度必须至少为 8 位。");
       return;
     }
@@ -127,6 +127,7 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
       onLoginSuccess({
         id: user.id,
         username: user.username,
+        role: user.role,
       });
     } catch (err: any) {
       setError(err.message || "连接服务器失败，请稍后重试。");

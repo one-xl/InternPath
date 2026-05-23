@@ -46,10 +46,19 @@ interface RunAnalysisInput {
   onSaveHistory?: (result: AnalysisResult) => void | Promise<void>;
 }
 
-export function toUserFriendlyAnalysisError(error: any): string {
+export function toUserFriendlyAnalysisError(
+  error: any,
+  stepId?: AnalysisStepId,
+  embeddingConfig?: EmbeddingModelConfig | null,
+  chatConfig?: ChatModelConfig | null
+): string {
   if (!error) return "未知分析错误";
 
   const message = error.message || String(error);
+  if (stepId === "validate") {
+    return message;
+  }
+
   const lowercaseMsg = message.toLowerCase();
   const status = error.status;
   const responseBody = error.responseBody || "";
@@ -63,17 +72,51 @@ export function toUserFriendlyAnalysisError(error: any): string {
   if (errorType === "rate_limit" || status === 429 || lowercaseMsg.includes("rate_limit") || lowercaseMsg.includes("too many requests") || lowercaseMsg.includes("429")) {
     return "Gemini 请求限流，请稍后再试";
   }
-  if (errorType === "auth" || status === 401 || status === 403 || lowercaseMsg.includes("api key") || lowercaseMsg.includes("auth") || lowercaseMsg.includes("permission") || lowercaseMsg.includes("401") || lowercaseMsg.includes("403")) {
+  const isAuthError =
+    errorType === "auth" ||
+    status === 401 ||
+    status === 403 ||
+    (lowercaseMsg.includes("api key") && !lowercaseMsg.includes("为空")) ||
+    lowercaseMsg.includes("auth") ||
+    lowercaseMsg.includes("permission") ||
+    lowercaseMsg.includes("401") ||
+    lowercaseMsg.includes("403");
+
+  if (isAuthError) {
+    const isEmbeddingStep = stepId === "resume_embedding" || stepId === "jd_embedding" || stepId === "retrieve_chunks";
+    const isChatStep = stepId === "gemini_analysis";
+
+    if (isEmbeddingStep) {
+      const provider = embeddingConfig?.provider || "doubao-multimodal";
+      const configName = embeddingConfig?.name || "向量模型";
+      if (provider.includes("doubao")) {
+        return "Doubao API Key 无效或无权限，请确认您的 API Key 并重试";
+      }
+      return `${configName} API Key 无效或无权限，请确认您的 API Key 并重试`;
+    }
+
+    if (isChatStep) {
+      const provider = chatConfig?.provider || "gemini";
+      const configName = chatConfig?.name || "大语言模型";
+      if (provider === "gemini") {
+        return "Gemini API Key 无效或无权限，请检查配置";
+      }
+      return `${configName} API Key 无效或无权限，请确认您的 API Key 并重试`;
+    }
+
     if (lowercaseMsg.includes("gemini") || lowercaseMsg.includes("generative")) {
       return "Gemini API Key 无效或无权限，请检查配置";
     }
-    return "Doubao API Key 无效或无权限，请确认您的 API Key 并重试";
+    if (lowercaseMsg.includes("doubao") || lowercaseMsg.includes("ark")) {
+      return "Doubao API Key 无效或无权限，请确认您的 API Key 并重试";
+    }
+    return "API Key 无效或无权限，请确认您的 API Key 并重试";
   }
-  if (errorType === "output_truncated_by_thinking" || errorType === "invalid_json" || message.includes("MAX_TOKENS") || message.includes("被截断")) {
+  if (errorType === "output_truncated_by_thinking" || message.includes("MAX_TOKENS") || message.includes("被截断")) {
     return "Gemini 输出被截断，请提高 Max Output Tokens 或降低 thinking level";
   }
-  if (errorType === "invalid_json" || lowercaseMsg.includes("invalid_json") || lowercaseMsg.includes("非 json 内容") || lowercaseMsg.includes("invalid json")) {
-    return "Gemini 返回非 JSON 格式数据，请检查 JSON mode 或切换模型";
+  if (errorType === "invalid_json" || lowercaseMsg.includes("invalid_json") || lowercaseMsg.includes("非 json 内容") || lowercaseMsg.includes("invalid json") || lowercaseMsg.includes("自然语言")) {
+    return "Gemini 返回非 JSON 格式数据，请检查 JSON mode 或尝试切换模型";
   }
 
   // Doubao specific errors
@@ -160,22 +203,31 @@ export function useJobAnalysis() {
 
       // 7. Missing embedding config
       if (!input.embeddingConfig) {
-        throw new Error("请先配置 Doubao 多模态向量模型。");
+        throw new Error("请先配置向量模型。");
       }
 
       // 8. Missing chat config
       if (!input.chatConfig) {
-        throw new Error("请先配置 Gemini 模型。");
+        throw new Error("请先配置大语言模型。");
       }
 
-      // 9. API Key empty check
-      if (!input.embeddingConfig.apiKey.trim() || !input.chatConfig.apiKey.trim()) {
-        throw new Error("模型 API Key 为空，请先完成模型配置。");
+      // 10. Check if the embedding provider is supported
+      if (
+        input.embeddingConfig.provider !== "doubao-multimodal" &&
+        input.embeddingConfig.provider !== "doubao-text" &&
+        input.embeddingConfig.provider !== "openai-compatible" &&
+        input.embeddingConfig.provider !== "custom"
+      ) {
+        throw new Error("不支持的向量模型 Provider 配置。");
       }
 
-      // 10. Check if the embedding provider is doubao-multimodal
-      if (input.embeddingConfig.provider !== "doubao-multimodal") {
-        throw new Error("请先配置 Doubao 多模态向量模型。");
+      // 11. Check if the chat provider is supported
+      if (
+        input.chatConfig.provider !== "gemini" &&
+        input.chatConfig.provider !== "openai-compatible" &&
+        input.chatConfig.provider !== "custom"
+      ) {
+        throw new Error("不支持的大语言模型 Provider 配置。");
       }
 
       // Successfully validated
@@ -317,7 +369,7 @@ export function useJobAnalysis() {
       );
 
       const nextResult: AnalysisResult = {
-        id: safeUUID(),
+        id: input.sourceDraftId || safeUUID(),
         createdAt: new Date().toISOString(),
         draft: input.draft,
         sourceDraftId: input.sourceDraftId,
@@ -361,7 +413,7 @@ export function useJobAnalysis() {
       return { ok: true, result: nextResult };
     } catch (caught: any) {
       console.error("[analysis] failed", caught);
-      const friendlyError = toUserFriendlyAnalysisError(caught);
+      const friendlyError = toUserFriendlyAnalysisError(caught, currentStepId, input.embeddingConfig, input.chatConfig);
       
       progress.failStep(currentStepId, friendlyError);
       progress.setError(friendlyError);

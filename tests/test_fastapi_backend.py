@@ -40,7 +40,7 @@ def test_fastapi_auth_analyze_and_history_roundtrip(tmp_path, monkeypatch):
 
     register_response = client.post(
         "/api/auth/register",
-        json={"username": "demo", "password": "password123"},
+        json={"username": "demo@example.com", "password": "password123"},
     )
     assert register_response.status_code == 200
     token = register_response.json()["token"]

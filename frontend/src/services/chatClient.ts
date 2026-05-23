@@ -509,8 +509,12 @@ function asStringList(value: string[] | undefined): string[] {
 export async function analyzeJobWithChatConfig(
   input: ChatAnalysisInput
 ): Promise<Omit<AnalysisResult, "id" | "createdAt" | "draft"> & { chatModelId?: string }> {
-  if (input.config.provider !== "gemini") {
-    throw new Error("当前仅支持 Gemini 大语言模型配置");
+  if (
+    input.config.provider !== "gemini" &&
+    input.config.provider !== "custom" &&
+    input.config.provider !== "openai-compatible"
+  ) {
+    throw new Error("当前仅支持 Gemini 或自定义/OpenAI 兼容大语言模型配置");
   }
   
   const isMultiStage = Boolean(input.parsedJD && input.requirementMatches);

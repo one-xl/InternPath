@@ -5,7 +5,7 @@ export function MatchScorePanel({ result }: { result: AnalysisResult }) {
   return (
     <Card title="匹配分析" description="按技能、项目、背景、级别和关键词覆盖拆开看。">
       <div className="dimension-list">
-        {result.dimensions.map((dimension) => (
+        {(result.dimensions ?? []).map((dimension) => (
           <article key={dimension.id} className="dimension-row">
             <div>
               <strong>{dimension.label}</strong>

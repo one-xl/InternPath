@@ -59,13 +59,13 @@ function ResumeEvidenceCard({ result }: { result: AnalysisResult }) {
   return (
     <Card title="旧版文本输入记录" description="这条历史记录来自旧版手动输入材料流程，因此没有上传文件和 RAG 检索片段。">
       <Badge tone="info">兼容旧数据</Badge>
-      {result.candidateMaterial || result.draft.resumeText ? <p className="legacy-material">{result.candidateMaterial || result.draft.resumeText}</p> : null}
+      {result.candidateMaterial || result.draft?.resumeText ? <p className="legacy-material">{result.candidateMaterial || result.draft?.resumeText}</p> : null}
     </Card>
   );
 }
 
 function AdviceEvidenceCard({ result }: { result: AnalysisResult }) {
-  const linked = result.resumeAdvice.filter((item) => item.basedOnChunkIds?.length);
+  const linked = (result.resumeAdvice ?? []).filter((item) => item.basedOnChunkIds?.length);
   if (!linked.length) return null;
   return (
     <Card title="简历建议引用关系" description="Gemini 返回的简历建议与检索片段引用关系。">
@@ -102,20 +102,20 @@ export function ResultPage({ result, isSaved, onNewAnalysis, onSave, onCopyAdvic
       <div className="page-title">
         <span className="section-kicker">分析结果</span>
         <h2>
-          {result.draft.company || "未知公司"} · {result.draft.title || "未命名岗位"}
+          {result.draft?.company || "未知公司"} · {result.draft?.title || "未命名岗位"}
         </h2>
-        <p>{result.draft.location || "地点未注明"} · {result.detectedKeywords.join(" / ") || "未识别关键词"}</p>
+        <p>{result.draft?.location || "地点未注明"} · {(result.detectedKeywords ?? []).join(" / ") || "未识别关键词"}</p>
       </div>
       <DecisionCard result={result} />
       <MatchScorePanel result={result} />
       <ResumeEvidenceCard result={result} />
       <ResumeChunkPreview chunks={result.retrievedResumeChunks ?? []} />
-      <ResumeAdviceList advice={result.resumeAdvice} />
+      <ResumeAdviceList advice={result.resumeAdvice ?? []} />
       <AdviceEvidenceCard result={result} />
-      <LearningPlanPanel suggestions={result.learningSuggestions} />
+      <LearningPlanPanel suggestions={result.learningSuggestions ?? []} />
       <Card title="下一步行动">
         <ol className="action-list">
-          {result.nextActions.map((action) => (
+          {(result.nextActions ?? []).map((action) => (
             <li key={action}>{action}</li>
           ))}
         </ol>

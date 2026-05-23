@@ -160,6 +160,7 @@ export function NewAnalysisPage({
               error={error || null}
               onRetry={onAnalyze}
               draftSaveMessage={draftSaveMessage}
+              activeChatConfig={activeChatConfig}
             />
             <AnalysisDebugPanel
               jdText={draft.jdText}

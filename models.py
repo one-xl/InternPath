@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class User(BaseModel):
     id: Optional[Any] = None
     username: str
+    role: str = "user"
     created_at: datetime = Field(default_factory=datetime.now)
 
 

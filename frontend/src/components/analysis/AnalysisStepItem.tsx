@@ -1,13 +1,24 @@
-import React from "react";
 import type { AnalysisStep } from "../../types/analysis";
+import type { ChatModelConfig } from "../../types/modelConfig";
+import { getModelName } from "./AnalysisProgressPanel";
 
 interface AnalysisStepItemProps {
   step: AnalysisStep;
   index: number;
+  activeChatConfig?: ChatModelConfig;
 }
 
-export function AnalysisStepItem({ step, index }: AnalysisStepItemProps) {
+export function AnalysisStepItem({ step, index, activeChatConfig }: AnalysisStepItemProps) {
   const { status, title, description, durationMs, errorMessage, metadata } = step;
+
+  // Dynamically adapt Step 5 Gemini texts to the actual selected model
+  const modelName = getModelName(metadata?.chatModelId, activeChatConfig);
+  const displayTitle = step.id === "gemini_analysis"
+    ? `步骤 5：生成岗位匹配分析 (${modelName})`
+    : title;
+  const displayDescription = step.id === "gemini_analysis"
+    ? `使用 ${modelName} 基于 JD 和检索片段生成投递决策、匹配度和简历建议。`
+    : description;
 
   // Icon based on status
   const getIcon = () => {
@@ -131,7 +142,7 @@ export function AnalysisStepItem({ step, index }: AnalysisStepItemProps) {
       if (step.id === "gemini_analysis") {
         return (
           <p className="step-helper-text accent-text">
-            正在调用 Gemini 深度大模型生成结构化求职分析，这一阶段包含简历多角度交叉匹配和深度推理，可能需要几秒到几十秒，请耐心等待。
+            正在调用 {modelName} 深度大模型生成结构化求职分析，这一阶段包含简历多角度交叉匹配和深度推理，可能需要几秒到几十秒，请耐心等待。
           </p>
         );
       }
@@ -155,12 +166,12 @@ export function AnalysisStepItem({ step, index }: AnalysisStepItemProps) {
       </div>
       <div className="step-body">
         <div className="step-header">
-          <h4 className="step-title">{title}</h4>
+          <h4 className="step-title">{displayTitle}</h4>
           {durationMs !== undefined && durationMs > 0 && (
             <span className="step-duration">{(durationMs / 1000).toFixed(2)}s</span>
           )}
         </div>
-        <p className="step-description">{description}</p>
+        <p className="step-description">{displayDescription}</p>
         {renderExtraHelperInfo()}
         {renderMetadata()}
         {errorMessage && (

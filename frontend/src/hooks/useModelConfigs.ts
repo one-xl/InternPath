@@ -107,6 +107,7 @@ export function useModelConfigs(enabled = true) {
         modelId: stamped.modelId,
         name: stamped.name,
         apiKey: stamped.apiKey,
+        baseUrl: stamped.baseUrl,
         enabled: stamped.enabled,
         temperature: stamped.temperature,
         maxOutputTokens: stamped.maxOutputTokens,

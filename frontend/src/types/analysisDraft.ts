@@ -1,5 +1,6 @@
 import type { UploadedResumeFile, ParsedResume } from "./resume";
 import type { AnalysisRunStatus, AnalysisStep, AnalysisStepId } from "./analysis";
+import type { WorkMode, JobLevel } from "./job";
 
 export type AnalysisDraftStatus =
   | "draft"
@@ -20,6 +21,10 @@ export interface AnalysisDraft {
   targetType: string;
   jobDirection: string;
   notes?: string;
+  link?: string;
+  location?: string;
+  workMode?: WorkMode;
+  level?: JobLevel;
 
   // Uploaded resume data
   resumeFile?: UploadedResumeFile;

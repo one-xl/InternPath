@@ -126,9 +126,10 @@ export async function callGeminiWithConfig(input: {
   const timeout = window.setTimeout(() => controller.abort(), config.timeoutMs ?? 60000);
 
   try {
-    console.info("[chat] Gemini analysis request started", {
+    console.info("[chat] LLM analysis request started", {
       url,
       model: config.modelId.trim(),
+      provider: config.provider,
       generationConfig,
     });
 
@@ -139,7 +140,7 @@ export async function callGeminiWithConfig(input: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        provider: "gemini",
+        provider: config.provider,
         modelId: config.modelId.trim(),
         requestBody: requestBodyObj,
       }),
@@ -163,9 +164,10 @@ export async function callGeminiWithConfig(input: {
           debugCapture.rawRequestBody = JSON.stringify(fallbackRequestBodyObj, null, 2);
         }
 
-        console.info("[chat] Gemini analysis request retrying without thinkingConfig", {
+        console.info("[chat] LLM analysis request retrying without thinkingConfig", {
           url,
           model: config.modelId.trim(),
+          provider: config.provider,
           generationConfig,
         });
 
@@ -176,7 +178,7 @@ export async function callGeminiWithConfig(input: {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            provider: "gemini",
+            provider: config.provider,
             modelId: config.modelId.trim(),
             requestBody: fallbackRequestBodyObj,
           }),

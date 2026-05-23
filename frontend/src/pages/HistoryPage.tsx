@@ -45,8 +45,9 @@ export function HistoryPage({
   onDeleteDraft,
 }: HistoryPageProps) {
   const [activeTab, setActiveTab] = useState<"records" | "drafts">("records");
-  
-  const activeDraftsCount = drafts.filter((d) => d.status !== "converted_to_history").length;
+  const safeRecords = records ?? [];
+  const safeDrafts = drafts ?? [];
+  const activeDraftsCount = safeDrafts.filter((d) => d && d.status !== "converted_to_history").length;
 
   return (
     <div className="page-stack">
@@ -62,7 +63,7 @@ export function HistoryPage({
           className={`history-tab-btn ${activeTab === "records" ? "active" : ""}`}
           onClick={() => setActiveTab("records")}
         >
-          已完成分析 ({records.length})
+          已完成分析 ({safeRecords.length})
         </button>
         <button
           type="button"
@@ -86,7 +87,7 @@ export function HistoryPage({
             />
           </Card>
           <HistoryList
-            records={records}
+            records={safeRecords}
             onOpen={onOpen}
             onDelete={onDelete}
             onStatusChange={onStatusChange}
@@ -95,7 +96,7 @@ export function HistoryPage({
         </>
       ) : (
         <DraftsTab
-          drafts={drafts}
+          drafts={safeDrafts}
           onRestore={onRestoreDraft}
           onClone={onCloneDraft}
           onDelete={onDeleteDraft}

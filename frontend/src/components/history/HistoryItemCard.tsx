@@ -16,11 +16,11 @@ export function HistoryItemCard({ record, onOpen, onDelete, onStatusChange }: Hi
       <div className="history-main">
         <div>
           <h3>
-            {record.draft.company || "未知公司"} · {record.draft.title || "未命名岗位"}
+            {record.draft?.company || "未知公司"} · {record.draft?.title || "未命名岗位"}
           </h3>
-          <p>{record.oneLineReason}</p>
+          <p>{record.oneLineReason || "无摘要说明"}</p>
         </div>
-        <strong>{record.matchScore}</strong>
+        <strong>{record.matchScore ?? 0}</strong>
       </div>
       <div className="badge-row">
         <Badge tone={record.decision === "no" ? "danger" : record.decision === "maybe" ? "warning" : "success"}>
@@ -31,7 +31,7 @@ export function HistoryItemCard({ record, onOpen, onDelete, onStatusChange }: Hi
         <span className="history-time">{formatDateTime(record.createdAt)}</span>
       </div>
       <div className="tag-row">
-        {record.detectedKeywords.slice(0, 6).map((keyword) => (
+        {(record.detectedKeywords ?? []).slice(0, 6).map((keyword) => (
           <span key={keyword}>{keyword}</span>
         ))}
       </div>

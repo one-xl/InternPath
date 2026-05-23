@@ -69,7 +69,24 @@ const navItems: { key: PageKey; label: string; icon: React.ReactNode }[] = [
   },
 ];
 
-export function Sidebar({ activePage, onNavigate, onLogout }: { activePage: PageKey; onNavigate: (page: PageKey) => void; onLogout?: () => void }) {
+export function Sidebar({ activePage, onNavigate, onLogout, userRole }: { activePage: PageKey; onNavigate: (page: PageKey) => void; onLogout?: () => void; userRole?: string }) {
+  const visibleItems = userRole === "admin"
+    ? [
+        ...navItems,
+        {
+          key: "admin" as PageKey,
+          label: "管理员控制台",
+          icon: (
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+              <circle cx="12" cy="11" r="3" />
+              <path d="M12 14v4" />
+            </svg>
+          ),
+        },
+      ]
+    : navItems;
+
   return (
     <aside className="sidebar">
       <div className="sidebar-brand">
@@ -78,7 +95,7 @@ export function Sidebar({ activePage, onNavigate, onLogout }: { activePage: Page
       </div>
       <nav style={{ display: "flex", flexDirection: "column", height: "100%" }}>
         <div style={{ display: "flex", flexDirection: "column", gap: "2px", width: "100%" }}>
-          {navItems.map((item) => (
+          {visibleItems.map((item) => (
             <button
               key={item.key}
               type="button"

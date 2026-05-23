@@ -17,7 +17,8 @@ export function DraftsTab({
   onNewAnalysis,
 }: DraftsTabProps) {
   // Filter out successfully converted drafts from this view
-  const activeDrafts = drafts.filter((d) => d.status !== "converted_to_history");
+  const safeDrafts = drafts ?? [];
+  const activeDrafts = safeDrafts.filter((d) => d && d.status !== "converted_to_history");
 
   if (!activeDrafts.length) {
     return (

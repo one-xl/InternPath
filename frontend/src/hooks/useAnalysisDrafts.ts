@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AnalysisDraft, AnalysisDraftStatus } from "../types/analysisDraft";
 import type { AnalysisStep, AnalysisStepId } from "../types/analysis";
 import type { UploadedResumeFile, ParsedResume } from "../types/resume";
+import type { WorkMode, JobLevel } from "../types/job";
 import {
   fetchDrafts,
   saveDraftToServer,
@@ -44,6 +45,10 @@ export function useAnalysisDrafts(enabled = true) {
       targetType: string;
       jobDirection: string;
       notes?: string;
+      link?: string;
+      location?: string;
+      workMode?: WorkMode;
+      level?: JobLevel;
       resumeFile?: UploadedResumeFile | null;
       parsedResume?: ParsedResume | null;
       embeddingConfigId?: string;
@@ -64,6 +69,10 @@ export function useAnalysisDrafts(enabled = true) {
         targetType: input.targetType,
         jobDirection: input.jobDirection,
         notes: input.notes,
+        link: input.link,
+        location: input.location,
+        workMode: input.workMode,
+        level: input.level,
         resumeFile: input.resumeFile || undefined,
         parsedResume: input.parsedResume || undefined,
         embeddingConfigId: input.embeddingConfigId,
@@ -93,6 +102,10 @@ export function useAnalysisDrafts(enabled = true) {
       targetType: string;
       jobDirection: string;
       notes?: string;
+      link?: string;
+      location?: string;
+      workMode?: WorkMode;
+      level?: JobLevel;
       resumeFile?: UploadedResumeFile | null;
       parsedResume?: ParsedResume | null;
       embeddingConfigId?: string;
@@ -121,6 +134,10 @@ export function useAnalysisDrafts(enabled = true) {
         targetType: input.targetType,
         jobDirection: input.jobDirection,
         notes: input.notes,
+        link: input.link,
+        location: input.location,
+        workMode: input.workMode,
+        level: input.level,
         resumeFile: input.resumeFile || undefined,
         parsedResume: input.parsedResume || undefined,
         embeddingConfigId: input.embeddingConfigId,

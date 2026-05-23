@@ -19,6 +19,7 @@ export interface BaseModelConfig {
   name: string;
   provider: string;
   apiKey: string;
+  is_server_managed?: boolean;
   baseUrl?: string;
   modelId: string;
   enabled: boolean;

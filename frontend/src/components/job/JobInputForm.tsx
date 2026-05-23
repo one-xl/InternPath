@@ -224,7 +224,7 @@ export function JobInputForm({
         </Button>
         <span className="save-note">
           {missingModel
-            ? "请配置火山方舟向量与 Gemini 大模型"
+            ? "请配置向量与大语言模型"
             : !resumeFile
               ? "请上传简历文件"
               : !resumeReady

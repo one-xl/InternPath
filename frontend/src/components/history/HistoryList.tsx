@@ -11,7 +11,9 @@ interface HistoryListProps {
 }
 
 export function HistoryList({ records, onOpen, onDelete, onStatusChange, onNewAnalysis }: HistoryListProps) {
-  if (!records.length) {
+  const safeRecords = records ?? [];
+
+  if (!safeRecords.length) {
     return (
       <EmptyState
         title="暂无匹配的历史记录"
@@ -24,15 +26,18 @@ export function HistoryList({ records, onOpen, onDelete, onStatusChange, onNewAn
 
   return (
     <div className="history-list">
-      {records.map((record) => (
-        <HistoryItemCard
-          key={record.id}
-          record={record}
-          onOpen={onOpen}
-          onDelete={onDelete}
-          onStatusChange={onStatusChange}
-        />
-      ))}
+      {safeRecords.map((record) => {
+        if (!record || !record.id) return null;
+        return (
+          <HistoryItemCard
+            key={record.id}
+            record={record}
+            onOpen={onOpen}
+            onDelete={onDelete}
+            onStatusChange={onStatusChange}
+          />
+        );
+      })}
     </div>
   );
 }

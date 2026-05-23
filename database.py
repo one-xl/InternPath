@@ -251,12 +251,79 @@ class Database:
                     enabled BOOLEAN NOT NULL DEFAULT TRUE,
                     config_json TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    owner_type VARCHAR(50) NOT NULL DEFAULT 'user',
+                    created_by_admin_id UUID REFERENCES users(id) ON DELETE SET NULL
                 );
                 """
             )
             if not self._column_exists(cursor, "model_configs", "config_json"):
                 cursor.execute("ALTER TABLE model_configs ADD COLUMN config_json TEXT")
+            if not self._column_exists(cursor, "users", "role"):
+                cursor.execute("ALTER TABLE users ADD COLUMN role VARCHAR(50) DEFAULT 'user'")
+            if not self._column_exists(cursor, "model_configs", "owner_type"):
+                cursor.execute("ALTER TABLE model_configs ADD COLUMN owner_type VARCHAR(50) DEFAULT 'user'")
+            if not self._column_exists(cursor, "model_configs", "created_by_admin_id"):
+                cursor.execute("ALTER TABLE model_configs ADD COLUMN created_by_admin_id UUID REFERENCES users(id) ON DELETE SET NULL")
+
+            # 7b. Create model_config_assignments table
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS model_config_assignments (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    config_id UUID NOT NULL REFERENCES model_configs(id) ON DELETE CASCADE,
+                    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    assigned_by_admin_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (config_id, user_id)
+                );
+                """
+            )
+
+            # 7c. Create model_usage_logs table
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS model_usage_logs (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                    config_id UUID REFERENCES model_configs(id) ON DELETE SET NULL,
+                    assignment_id UUID REFERENCES model_config_assignments(id) ON DELETE SET NULL,
+                    analysis_id UUID,
+                    provider VARCHAR(50) NOT NULL,
+                    model_id VARCHAR(255) NOT NULL,
+                    usage_type VARCHAR(50),
+                    endpoint TEXT,
+                    success BOOLEAN NOT NULL,
+                    error_type TEXT,
+                    prompt_tokens INTEGER,
+                    completion_tokens INTEGER,
+                    total_tokens INTEGER,
+                    input_chars INTEGER,
+                    output_chars INTEGER,
+                    latency_ms INTEGER,
+                    cost_estimate NUMERIC,
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+
+            # 7d. Create admin_audit_logs table
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS admin_audit_logs (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    admin_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                    action VARCHAR(255) NOT NULL,
+                    target_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                    target_resource_type VARCHAR(255),
+                    target_resource_id VARCHAR(255),
+                    metadata_json JSONB,
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
 
             # 8. Create embeddings table
             embedding_type = "vector" if has_pgvector else "JSONB"
@@ -495,6 +562,13 @@ class Database:
 
             # 10. Indexes
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_model_configs_owner_type ON model_configs(owner_type, enabled);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_model_config_assignments_user ON model_config_assignments(user_id);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_model_config_assignments_config ON model_config_assignments(config_id);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_model_usage_logs_user ON model_usage_logs(user_id, created_at DESC);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_model_usage_logs_config ON model_usage_logs(config_id, created_at DESC);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_model_usage_logs_provider_model ON model_usage_logs(provider, model_id, created_at DESC);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_model_usage_logs_success ON model_usage_logs(success, created_at DESC);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_analysis_records_user_created ON analysis_records(user_id, created_at DESC);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_drafts_user_updated ON drafts(user_id, updated_at DESC);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_settings_user ON user_settings(user_id);")
@@ -854,12 +928,87 @@ class Database:
                     config_json TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    owner_type TEXT NOT NULL DEFAULT 'user',
+                    created_by_admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
                     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
                 )
                 """
             )
             if not self._column_exists(cursor, "model_configs", "config_json"):
                 cursor.execute("ALTER TABLE model_configs ADD COLUMN config_json TEXT")
+            if not self._column_exists(cursor, "users", "role"):
+                cursor.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'")
+            if not self._column_exists(cursor, "model_configs", "owner_type"):
+                cursor.execute("ALTER TABLE model_configs ADD COLUMN owner_type TEXT DEFAULT 'user'")
+            if not self._column_exists(cursor, "model_configs", "created_by_admin_id"):
+                cursor.execute("ALTER TABLE model_configs ADD COLUMN created_by_admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL")
+
+            # Create model_config_assignments in SQLite
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS model_config_assignments (
+                    id TEXT PRIMARY KEY,
+                    config_id TEXT NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    assigned_by_admin_id INTEGER,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (config_id) REFERENCES model_configs(id) ON DELETE CASCADE,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                    FOREIGN KEY (assigned_by_admin_id) REFERENCES users(id) ON DELETE SET NULL,
+                    UNIQUE (config_id, user_id)
+                )
+                """
+            )
+
+            # Create model_usage_logs in SQLite
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS model_usage_logs (
+                    id TEXT PRIMARY KEY,
+                    user_id INTEGER,
+                    config_id TEXT,
+                    assignment_id TEXT,
+                    analysis_id TEXT,
+                    provider TEXT NOT NULL,
+                    model_id TEXT NOT NULL,
+                    usage_type TEXT,
+                    endpoint TEXT,
+                    success INTEGER NOT NULL,
+                    error_type TEXT,
+                    prompt_tokens INTEGER,
+                    completion_tokens INTEGER,
+                    total_tokens INTEGER,
+                    input_chars INTEGER,
+                    output_chars INTEGER,
+                    latency_ms INTEGER,
+                    cost_estimate REAL,
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
+                    FOREIGN KEY (config_id) REFERENCES model_configs(id) ON DELETE SET NULL,
+                    FOREIGN KEY (assignment_id) REFERENCES model_config_assignments(id) ON DELETE SET NULL
+                )
+                """
+            )
+
+            # Create admin_audit_logs in SQLite
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS admin_audit_logs (
+                    id TEXT PRIMARY KEY,
+                    admin_user_id INTEGER,
+                    action TEXT NOT NULL,
+                    target_user_id INTEGER,
+                    target_resource_type TEXT,
+                    target_resource_id TEXT,
+                    metadata_json TEXT,
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (admin_user_id) REFERENCES users(id) ON DELETE SET NULL,
+                    FOREIGN KEY (target_user_id) REFERENCES users(id) ON DELETE SET NULL
+                )
+                """
+            )
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS email_verification_codes (
@@ -930,6 +1079,13 @@ class Database:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_analysis_records_user ON analysis_records(user_id, created_at DESC);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_model_configs_owner_type ON model_configs(owner_type, enabled);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_model_config_assignments_user ON model_config_assignments(user_id);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_model_config_assignments_config ON model_config_assignments(config_id);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_model_usage_logs_user ON model_usage_logs(user_id, created_at DESC);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_model_usage_logs_config ON model_usage_logs(config_id, created_at DESC);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_model_usage_logs_provider_model ON model_usage_logs(provider, model_id, created_at DESC);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_model_usage_logs_success ON model_usage_logs(success, created_at DESC);")
 
         conn.commit()
         conn.close()
@@ -1240,7 +1396,7 @@ class Database:
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT id, username, password_hash, created_at
+            SELECT id, username, password_hash, created_at, role
             FROM users
             WHERE username = ?
             """,
@@ -1254,14 +1410,14 @@ class Database:
         if not verify_password_hash(password, row[2]):
             return None
 
-        return User(id=row[0], username=row[1], created_at=datetime.fromisoformat(row[3]))
+        return User(id=row[0], username=row[1], role=row[4], created_at=datetime.fromisoformat(row[3]))
 
     def get_user_by_id(self, user_id: int) -> Optional[User]:
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT id, username, created_at
+            SELECT id, username, created_at, role
             FROM users
             WHERE id = ?
             """,
@@ -1271,7 +1427,7 @@ class Database:
         conn.close()
         if row is None:
             return None
-        return User(id=row[0], username=row[1], created_at=datetime.fromisoformat(row[2]))
+        return User(id=row[0], username=row[1], role=row[3], created_at=datetime.fromisoformat(row[2]))
 
     def get_user_by_username(self, username: str) -> Optional[User]:
         normalized = normalize_username(username)
@@ -1279,7 +1435,7 @@ class Database:
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT id, username, created_at
+            SELECT id, username, created_at, role
             FROM users
             WHERE username = ?
             """,
@@ -1289,7 +1445,7 @@ class Database:
         conn.close()
         if row is None:
             return None
-        return User(id=row[0], username=row[1], created_at=datetime.fromisoformat(row[2]))
+        return User(id=row[0], username=row[1], role=row[3], created_at=datetime.fromisoformat(row[2]))
 
     def list_users_with_devices(self) -> list[dict]:
         conn = self.get_connection()
@@ -2636,27 +2792,40 @@ class Database:
         new_id = draft_id or str(uuid4())
         
         if draft_id:
-            cursor.execute("SELECT 1 FROM drafts WHERE id = ? AND user_id = ?", (draft_id, user_id))
+            if self.is_postgres:
+                cursor.execute("SELECT 1 FROM drafts WHERE id = %s AND user_id = %s", (draft_id, user_id))
+            else:
+                cursor.execute("SELECT 1 FROM drafts WHERE id = ? AND user_id = ?", (draft_id, user_id))
             exists = cursor.fetchone() is not None
         else:
             exists = False
 
         if exists:
-            cursor.execute(
-                """
-                UPDATE drafts 
-                SET status = ?, input_json = ?, failed_step = ?, error_message = ?, updated_at = ?
-                WHERE id = ? AND user_id = ?
-                """,
-                (status, json.dumps(input_json, ensure_ascii=False), failed_step, error_message, now, draft_id, user_id)
-            )
+            if self.is_postgres:
+                cursor.execute(
+                    """
+                    UPDATE drafts 
+                    SET status = %s, input_json = %s, failed_step = %s, error_message = %s, updated_at = %s
+                    WHERE id = %s AND user_id = %s
+                    """,
+                    (status, json.dumps(input_json, ensure_ascii=False), failed_step, error_message, now, draft_id, user_id)
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE drafts 
+                    SET status = ?, input_json = ?, failed_step = ?, error_message = ?, updated_at = ?
+                    WHERE id = ? AND user_id = ?
+                    """,
+                    (status, json.dumps(input_json, ensure_ascii=False), failed_step, error_message, now, draft_id, user_id)
+                )
             ret_id = draft_id
         else:
             if self.is_postgres:
                 cursor.execute(
                     """
                     INSERT INTO drafts (user_id, status, input_json, failed_step, error_message, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """,
                     (user_id, status, json.dumps(input_json, ensure_ascii=False), failed_step, error_message, now, now)
                 )
@@ -2678,7 +2847,10 @@ class Database:
     def get_draft(self, user_id: Any, draft_id: Any) -> Optional[dict]:
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, user_id, status, input_json, failed_step, error_message, created_at, updated_at FROM drafts WHERE id = ? AND user_id = ?", (draft_id, user_id))
+        if self.is_postgres:
+            cursor.execute("SELECT id, user_id, status, input_json, failed_step, error_message, created_at, updated_at FROM drafts WHERE id = %s AND user_id = %s", (draft_id, user_id))
+        else:
+            cursor.execute("SELECT id, user_id, status, input_json, failed_step, error_message, created_at, updated_at FROM drafts WHERE id = ? AND user_id = ?", (draft_id, user_id))
         row = cursor.fetchone()
         conn.close()
         if not row:
@@ -2697,7 +2869,10 @@ class Database:
     def list_drafts(self, user_id: Any) -> List[dict]:
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, user_id, status, input_json, failed_step, error_message, created_at, updated_at FROM drafts WHERE user_id = ? ORDER BY updated_at DESC", (user_id,))
+        if self.is_postgres:
+            cursor.execute("SELECT id, user_id, status, input_json, failed_step, error_message, created_at, updated_at FROM drafts WHERE user_id = %s ORDER BY updated_at DESC", (user_id,))
+        else:
+            cursor.execute("SELECT id, user_id, status, input_json, failed_step, error_message, created_at, updated_at FROM drafts WHERE user_id = ? ORDER BY updated_at DESC", (user_id,))
         rows = cursor.fetchall()
         conn.close()
         return [
@@ -2716,7 +2891,10 @@ class Database:
     def delete_draft(self, user_id: Any, draft_id: Any) -> bool:
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM drafts WHERE id = ? AND user_id = ?", (draft_id, user_id))
+        if self.is_postgres:
+            cursor.execute("DELETE FROM drafts WHERE id = %s AND user_id = %s", (draft_id, user_id))
+        else:
+            cursor.execute("DELETE FROM drafts WHERE id = ? AND user_id = ?", (draft_id, user_id))
         conn.commit()
         conn.close()
         return True
@@ -2724,7 +2902,10 @@ class Database:
     def clear_converted_drafts(self, user_id: Any) -> None:
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM drafts WHERE user_id = ? AND status = 'converted_to_history'", (user_id,))
+        if self.is_postgres:
+            cursor.execute("DELETE FROM drafts WHERE user_id = %s AND status = 'converted_to_history'", (user_id,))
+        else:
+            cursor.execute("DELETE FROM drafts WHERE user_id = ? AND status = 'converted_to_history'", (user_id,))
         conn.commit()
         conn.close()
 
@@ -2889,19 +3070,19 @@ class Database:
                 cursor.execute(
                     """
                     UPDATE model_configs 
-                    SET display_name = ?, encrypted_api_key = ?, is_server_managed = ?, enabled = ?, config_json = ?, updated_at = ?
+                    SET provider = ?, model_id = ?, display_name = ?, encrypted_api_key = ?, is_server_managed = ?, enabled = ?, config_json = ?, updated_at = ?
                     WHERE id = ?
                     """,
-                    (display_name, encrypted_key, 1 if is_server_managed else 0, 1 if enabled else 0, cfg_json_str, now, existing_id)
+                    (provider, model_id, display_name, encrypted_key, 1 if is_server_managed else 0, 1 if enabled else 0, cfg_json_str, now, existing_id)
                 )
             else:
                 cursor.execute(
                     """
                     UPDATE model_configs 
-                    SET display_name = ?, is_server_managed = ?, enabled = ?, config_json = ?, updated_at = ?
+                    SET provider = ?, model_id = ?, display_name = ?, is_server_managed = ?, enabled = ?, config_json = ?, updated_at = ?
                     WHERE id = ?
                     """,
-                    (display_name, 1 if is_server_managed else 0, 1 if enabled else 0, cfg_json_str, now, existing_id)
+                    (provider, model_id, display_name, 1 if is_server_managed else 0, 1 if enabled else 0, cfg_json_str, now, existing_id)
                 )
             ret_id = existing_id
         else:
@@ -3077,22 +3258,56 @@ class Database:
         input_str = json.dumps(input_json or {}, ensure_ascii=False)
         result_str = json.dumps(result_json, ensure_ascii=False)
 
-        if self.is_postgres:
-            cursor.execute(
-                """
-                INSERT INTO analysis_records (id, user_id, status, input_json, result_json, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (new_id, user_id, status, input_str, result_str, now, now)
-            )
+        exists = False
+        if record_id:
+            if self.is_postgres:
+                cursor.execute(
+                    "SELECT 1 FROM analysis_records WHERE id = %s AND user_id = %s",
+                    (record_id, user_id)
+                )
+            else:
+                cursor.execute(
+                    "SELECT 1 FROM analysis_records WHERE id = ? AND user_id = ?",
+                    (record_id, user_id)
+                )
+            exists = cursor.fetchone() is not None
+
+        if exists:
+            if self.is_postgres:
+                cursor.execute(
+                    """
+                    UPDATE analysis_records 
+                    SET status = %s, input_json = %s, result_json = %s, updated_at = %s
+                    WHERE id = %s AND user_id = %s
+                    """,
+                    (status, input_str, result_str, now, record_id, user_id)
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE analysis_records 
+                    SET status = ?, input_json = ?, result_json = ?, updated_at = ?
+                    WHERE id = ? AND user_id = ?
+                    """,
+                    (status, input_str, result_str, now, record_id, user_id)
+                )
         else:
-            cursor.execute(
-                """
-                INSERT INTO analysis_records (id, user_id, status, input_json, result_json, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (new_id, user_id, status, input_str, result_str, now, now)
-            )
+            if self.is_postgres:
+                cursor.execute(
+                    """
+                    INSERT INTO analysis_records (id, user_id, status, input_json, result_json, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (new_id, user_id, status, input_str, result_str, now, now)
+                )
+            else:
+                cursor.execute(
+                    """
+                    INSERT INTO analysis_records (id, user_id, status, input_json, result_json, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (new_id, user_id, status, input_str, result_str, now, now)
+                )
         conn.commit()
         conn.close()
         return new_id
@@ -3100,10 +3315,16 @@ class Database:
     def list_analysis_records(self, user_id: Any, limit: int = 30) -> List[dict]:
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id, user_id, status, input_json, result_json, created_at, updated_at FROM analysis_records WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
-            (user_id, limit)
-        )
+        if self.is_postgres:
+            cursor.execute(
+                "SELECT id, user_id, status, input_json, result_json, created_at, updated_at FROM analysis_records WHERE user_id = %s ORDER BY created_at DESC LIMIT %s",
+                (user_id, limit)
+            )
+        else:
+            cursor.execute(
+                "SELECT id, user_id, status, input_json, result_json, created_at, updated_at FROM analysis_records WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
+                (user_id, limit)
+            )
         rows = cursor.fetchall()
         conn.close()
         out = []
@@ -3119,10 +3340,16 @@ class Database:
     def get_analysis_record(self, user_id: Any, record_id: Any) -> Optional[dict]:
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id, user_id, status, input_json, result_json, created_at, updated_at FROM analysis_records WHERE id = ? AND user_id = ?",
-            (record_id, user_id)
-        )
+        if self.is_postgres:
+            cursor.execute(
+                "SELECT id, user_id, status, input_json, result_json, created_at, updated_at FROM analysis_records WHERE id = %s AND user_id = %s",
+                (record_id, user_id)
+            )
+        else:
+            cursor.execute(
+                "SELECT id, user_id, status, input_json, result_json, created_at, updated_at FROM analysis_records WHERE id = ? AND user_id = ?",
+                (record_id, user_id)
+            )
         row = cursor.fetchone()
         conn.close()
         if not row:
@@ -3137,7 +3364,10 @@ class Database:
     def delete_analysis_record(self, user_id: Any, record_id: Any) -> bool:
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM analysis_records WHERE id = ? AND user_id = ?", (record_id, user_id))
+        if self.is_postgres:
+            cursor.execute("DELETE FROM analysis_records WHERE id = %s AND user_id = %s", (record_id, user_id))
+        else:
+            cursor.execute("DELETE FROM analysis_records WHERE id = ? AND user_id = ?", (record_id, user_id))
         deleted = cursor.rowcount > 0
         conn.commit()
         conn.close()
@@ -3147,10 +3377,16 @@ class Database:
         conn = self.get_connection()
         cursor = conn.cursor()
         now = datetime.now().isoformat()
-        cursor.execute(
-            "UPDATE analysis_records SET status = ?, updated_at = ? WHERE id = ? AND user_id = ?",
-            (status, now, record_id, user_id)
-        )
+        if self.is_postgres:
+            cursor.execute(
+                "UPDATE analysis_records SET status = %s, updated_at = %s WHERE id = %s AND user_id = %s",
+                (status, now, record_id, user_id)
+            )
+        else:
+            cursor.execute(
+                "UPDATE analysis_records SET status = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+                (status, now, record_id, user_id)
+            )
         conn.commit()
         conn.close()
 
@@ -3214,18 +3450,768 @@ class Database:
                 now = datetime.now().isoformat()
                 if self.is_postgres:
                     cursor.execute(
-                        "INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
-                        ("admin@example.com", hashed, now)
+                        "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
+                        ("admin@example.com", hashed, "admin", now)
                     )
                 else:
-                    from uuid import uuid4
                     cursor.execute(
-                        "INSERT INTO users (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)",
-                        (1, "admin@example.com", hashed, now)
+                        "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
+                        ("admin@example.com", hashed, "admin", now)
                     )
                 conn.commit()
                 print("【安全提示】本地默认账号仅用于开发，请在生产环境中修改密码。")
+            else:
+                cursor.execute("UPDATE users SET role = 'admin' WHERE username = ?", ("admin@example.com",))
+                conn.commit()
         except Exception as e:
             print(f"Error seeding user: {e}")
         finally:
             conn.close()
+
+    def list_user_available_configs(self, user_id: Any) -> List[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # 1. Fetch user-owned configs (owner_type = 'user' or null)
+        cursor.execute(
+            """
+            SELECT id, user_id, provider, model_id, display_name, encrypted_api_key, is_server_managed, enabled, config_json, created_at, updated_at, COALESCE(owner_type, 'user')
+            FROM model_configs
+            WHERE user_id = ? AND (owner_type IS NULL OR owner_type = 'user')
+            ORDER BY created_at ASC
+            """,
+            (user_id,)
+        )
+        owned_rows = cursor.fetchall()
+        
+        # 2. Fetch assigned admin-managed configs
+        cursor.execute(
+            """
+            SELECT c.id, c.user_id, c.provider, c.model_id, c.display_name, c.encrypted_api_key, c.is_server_managed, c.enabled, c.config_json, c.created_at, c.updated_at, c.owner_type
+            FROM model_configs c
+            JOIN model_config_assignments a ON c.id = a.config_id
+            WHERE a.user_id = ? AND a.enabled = ? AND c.enabled = ? AND c.owner_type IN ('admin', 'system')
+            ORDER BY c.created_at ASC
+            """,
+            (user_id, 1 if not self.is_postgres else True, 1 if not self.is_postgres else True)
+        )
+        assigned_rows = cursor.fetchall()
+        conn.close()
+        
+        configs = []
+        # Process user-owned configs
+        for r in owned_rows:
+            extra = json.loads(r[8]) if r[8] else {}
+            item = {
+                "id": r[0],
+                "user_id": r[1],
+                "provider": r[2],
+                "modelId": r[3],
+                "name": r[4] or extra.get("name") or extra.get("display_name") or "",
+                "apiKey": "••••••••" if r[5] else "",
+                "is_server_managed": bool(r[6]),
+                "enabled": bool(r[7]),
+                "created_at": r[9],
+                "updated_at": r[10],
+                "owner_type": r[11],
+                "source": "user_owned",
+                "editable": True
+            }
+            # Merge extra options
+            item.update({k: v for k, v in extra.items() if k not in item})
+            # Ensure keys correct
+            item["id"] = r[0]
+            item["provider"] = r[2]
+            item["modelId"] = r[3]
+            item["name"] = r[4] or extra.get("name") or extra.get("display_name") or ""
+            item["apiKey"] = "••••••••" if r[5] else ""
+            item["enabled"] = bool(r[7])
+            configs.append(item)
+            
+        # Process admin-assigned configs
+        for r in assigned_rows:
+            extra = json.loads(r[8]) if r[8] else {}
+            item = {
+                "id": r[0],
+                "user_id": r[1],
+                "provider": r[2],
+                "modelId": r[3],
+                "name": r[4] or extra.get("name") or extra.get("display_name") or "",
+                "apiKey": "服务器托管",
+                "is_server_managed": True,
+                "enabled": bool(r[7]),
+                "created_at": r[9],
+                "updated_at": r[10],
+                "owner_type": r[11],
+                "source": "admin_assigned",
+                "editable": False
+            }
+            # Merge extra options
+            item.update({k: v for k, v in extra.items() if k not in item})
+            item["id"] = r[0]
+            item["provider"] = r[2]
+            item["modelId"] = r[3]
+            item["name"] = r[4] or extra.get("name") or extra.get("display_name") or ""
+            item["apiKey"] = "服务器托管"
+            item["enabled"] = bool(r[7])
+            configs.append(item)
+            
+        return configs
+
+    def get_model_api_key_v2(self, user_id: Any, provider: str, model_id: str, config_id: Optional[str] = None) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # 1. Try resolving by config_id if provided
+        if config_id:
+            # Check user-owned
+            cursor.execute(
+                """
+                SELECT encrypted_api_key, id, owner_type
+                FROM model_configs
+                WHERE id = ? AND user_id = ? AND (owner_type IS NULL OR owner_type = 'user')
+                """,
+                (config_id, user_id)
+            )
+            row = cursor.fetchone()
+            if row:
+                conn.close()
+                key = self.decrypt_api_key(row[0]).strip() if row[0] else ""
+                return key, row[1], None
+                
+            # Check admin-assigned
+            cursor.execute(
+                """
+                SELECT c.encrypted_api_key, c.id, a.id
+                FROM model_configs c
+                JOIN model_config_assignments a ON c.id = a.config_id
+                WHERE c.id = ? AND a.user_id = ? AND a.enabled = ? AND c.enabled = ? AND c.owner_type IN ('admin', 'system')
+                """,
+                (config_id, user_id, 1 if not self.is_postgres else True, 1 if not self.is_postgres else True)
+            )
+            row = cursor.fetchone()
+            if row:
+                conn.close()
+                key = self.decrypt_api_key(row[0]).strip() if row[0] else ""
+                return key, row[1], row[2]
+                
+        # 2. Resolve by provider and model_id
+        # First try user-owned configs
+        cursor.execute(
+            """
+            SELECT encrypted_api_key, id
+            FROM model_configs
+            WHERE user_id = ? AND provider = ? AND model_id = ? AND (owner_type IS NULL OR owner_type = 'user') AND enabled = ?
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (user_id, provider, model_id, 1 if not self.is_postgres else True)
+        )
+        row = cursor.fetchone()
+        if row:
+            conn.close()
+            key = self.decrypt_api_key(row[0]).strip() if row[0] else ""
+            return key, row[1], None
+            
+        # Then try admin-assigned configs
+        cursor.execute(
+            """
+            SELECT c.encrypted_api_key, c.id, a.id
+            FROM model_configs c
+            JOIN model_config_assignments a ON c.id = a.config_id
+            WHERE a.user_id = ? AND c.provider = ? AND c.model_id = ? AND a.enabled = ? AND c.enabled = ? AND c.owner_type IN ('admin', 'system')
+            ORDER BY c.updated_at DESC
+            LIMIT 1
+            """,
+            (user_id, provider, model_id, 1 if not self.is_postgres else True, 1 if not self.is_postgres else True)
+        )
+        row = cursor.fetchone()
+        if row:
+            conn.close()
+            key = self.decrypt_api_key(row[0]).strip() if row[0] else ""
+            return key, row[1], row[2]
+            
+        conn.close()
+        return None, None, None
+
+    def log_model_usage(
+        self,
+        user_id: Any,
+        config_id: Optional[str],
+        assignment_id: Optional[str],
+        analysis_id: Optional[str],
+        provider: str,
+        model_id: str,
+        usage_type: str,
+        endpoint: Optional[str],
+        success: bool,
+        error_type: Optional[str],
+        prompt_tokens: Optional[int],
+        completion_tokens: Optional[int],
+        total_tokens: Optional[int],
+        input_chars: Optional[int],
+        output_chars: Optional[int],
+        latency_ms: int,
+        cost_estimate: Optional[float] = None
+    ) -> str:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        from uuid import uuid4
+        log_id = str(uuid4())
+        now = datetime.now().isoformat()
+        
+        db_success = 1 if success else 0
+        if self.is_postgres:
+            db_success = success
+            
+        cursor.execute(
+            """
+            INSERT INTO model_usage_logs (
+                id, user_id, config_id, assignment_id, analysis_id,
+                provider, model_id, usage_type, endpoint, success, error_type,
+                prompt_tokens, completion_tokens, total_tokens, input_chars, output_chars,
+                latency_ms, cost_estimate, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                log_id, user_id, config_id, assignment_id, analysis_id,
+                provider, model_id, usage_type, endpoint, db_success, error_type,
+                prompt_tokens, completion_tokens, total_tokens, input_chars, output_chars,
+                latency_ms, cost_estimate, now
+            )
+        )
+        conn.commit()
+        conn.close()
+        return log_id
+
+    def log_admin_audit(
+        self,
+        admin_user_id: Any,
+        action: str,
+        target_user_id: Optional[Any] = None,
+        target_resource_type: Optional[str] = None,
+        target_resource_id: Optional[str] = None,
+        metadata_json: Optional[dict] = None
+    ) -> str:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        from uuid import uuid4
+        audit_id = str(uuid4())
+        now = datetime.now().isoformat()
+        meta_str = json.dumps(metadata_json or {}, ensure_ascii=False)
+        
+        cursor.execute(
+            """
+            INSERT INTO admin_audit_logs (
+                id, admin_user_id, action, target_user_id,
+                target_resource_type, target_resource_id, metadata_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (audit_id, admin_user_id, action, target_user_id, target_resource_type, target_resource_id, meta_str, now)
+        )
+        conn.commit()
+        conn.close()
+        return audit_id
+
+    def admin_list_users(self) -> List[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, username, role, created_at
+            FROM users
+            ORDER BY created_at DESC
+            """
+        )
+        users = []
+        for row in cursor.fetchall():
+            u_id = row[0]
+            # Get assignment count
+            cursor.execute("SELECT COUNT(*) FROM model_config_assignments WHERE user_id = ?", (u_id,))
+            assign_count = cursor.fetchone()[0]
+            # Get usage count
+            cursor.execute("SELECT COUNT(*) FROM model_usage_logs WHERE user_id = ?", (u_id,))
+            usage_count = cursor.fetchone()[0]
+            
+            # Find last login / last active time if available (from sessions table)
+            cursor.execute("SELECT MAX(created_at) FROM sessions WHERE user_id = ?", (u_id,))
+            last_login_row = cursor.fetchone()
+            last_login = last_login_row[0] if last_login_row and last_login_row[0] else None
+            
+            # Find assigned model configurations displays
+            cursor.execute(
+                """
+                SELECT c.display_name
+                FROM model_configs c
+                JOIN model_config_assignments a ON c.id = a.config_id
+                WHERE a.user_id = ? AND a.enabled = ?
+                """,
+                (u_id, 1 if not self.is_postgres else True)
+            )
+            assigned_models = [r[0] or "未命名" for r in cursor.fetchall()]
+            
+            users.append({
+                "id": u_id,
+                "username": row[1],
+                "role": row[2],
+                "created_at": row[3],
+                "assignment_count": assign_count,
+                "usage_count": usage_count,
+                "last_login": last_login,
+                "assigned_models": assigned_models
+            })
+        conn.close()
+        return users
+
+    def admin_list_model_configs(self) -> List[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, user_id, provider, model_id, display_name, encrypted_api_key, is_server_managed, enabled, config_json, created_at, updated_at, owner_type
+            FROM model_configs
+            WHERE owner_type IN ('admin', 'system')
+            ORDER BY created_at DESC
+            """
+        )
+        configs = []
+        for r in cursor.fetchall():
+            cfg_id = r[0]
+            cursor.execute("SELECT COUNT(*) FROM model_config_assignments WHERE config_id = ?", (cfg_id,))
+            assign_count = cursor.fetchone()[0]
+            
+            extra = json.loads(r[8]) if r[8] else {}
+            item = {
+                "id": cfg_id,
+                "user_id": r[1],
+                "provider": r[2],
+                "modelId": r[3],
+                "name": r[4] or extra.get("name") or extra.get("display_name") or "",
+                "apiKey": "••••••••" if r[5] else "",
+                "is_server_managed": bool(r[6]),
+                "enabled": bool(r[7]),
+                "created_at": r[9],
+                "updated_at": r[10],
+                "owner_type": r[11],
+                "assignment_count": assign_count
+            }
+            item.update({k: v for k, v in extra.items() if k not in item})
+            item["id"] = cfg_id
+            item["provider"] = r[2]
+            item["modelId"] = r[3]
+            item["name"] = r[4] or extra.get("name") or extra.get("display_name") or ""
+            item["apiKey"] = "••••••••" if r[5] else ""
+            item["enabled"] = bool(r[7])
+            configs.append(item)
+        conn.close()
+        return configs
+
+    def admin_create_model_config(
+        self,
+        admin_user_id: Any,
+        provider: str,
+        model_id: str,
+        display_name: str,
+        api_key: str,
+        enabled: bool = True,
+        config_json: Optional[dict] = None
+    ) -> str:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        from uuid import uuid4
+        new_id = str(uuid4())
+        now = datetime.now().isoformat()
+        
+        encrypted_key = self.encrypt_api_key(api_key) if api_key else None
+        cfg_json_str = json.dumps(config_json or {}, ensure_ascii=False)
+        
+        if self.is_postgres:
+            cursor.execute(
+                """
+                INSERT INTO model_configs (
+                    id, user_id, provider, model_id, display_name, encrypted_api_key,
+                    is_server_managed, enabled, config_json, created_at, updated_at,
+                    owner_type, created_by_admin_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    new_id, admin_user_id, provider, model_id, display_name, encrypted_key,
+                    True, enabled, cfg_json_str, now, now, 'admin', admin_user_id
+                )
+            )
+        else:
+            cursor.execute(
+                """
+                INSERT INTO model_configs (
+                    id, user_id, provider, model_id, display_name, encrypted_api_key,
+                    is_server_managed, enabled, config_json, created_at, updated_at,
+                    owner_type, created_by_admin_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    new_id, admin_user_id, provider, model_id, display_name, encrypted_key,
+                    1, 1 if enabled else 0, cfg_json_str, now, now, 'admin', admin_user_id
+                )
+            )
+        conn.commit()
+        conn.close()
+        return new_id
+
+    def admin_update_model_config(
+        self,
+        config_id: str,
+        provider: str,
+        model_id: str,
+        display_name: str,
+        api_key: Optional[str] = None,
+        enabled: Optional[bool] = None,
+        config_json: Optional[dict] = None
+    ) -> bool:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT owner_type FROM model_configs WHERE id = ?", (config_id,))
+        row = cursor.fetchone()
+        if not row or row[0] not in ('admin', 'system'):
+            conn.close()
+            return False
+            
+        now = datetime.now().isoformat()
+        
+        updates = ["provider = ?", "model_id = ?", "display_name = ?", "updated_at = ?"]
+        params = [provider, model_id, display_name, now]
+        
+        if api_key and not self._is_api_key_placeholder(api_key):
+            updates.append("encrypted_api_key = ?")
+            params.append(self.encrypt_api_key(api_key))
+            
+        if enabled is not None:
+            updates.append("enabled = ?")
+            params.append((1 if enabled else 0) if not self.is_postgres else enabled)
+            
+        if config_json is not None:
+            updates.append("config_json = ?")
+            params.append(json.dumps(config_json, ensure_ascii=False))
+            
+        params.append(config_id)
+        
+        query = f"UPDATE model_configs SET {', '.join(updates)} WHERE id = ?"
+        cursor.execute(query, tuple(params))
+        conn.commit()
+        conn.close()
+        return True
+
+    def admin_assign_model_config(
+        self,
+        admin_user_id: Any,
+        config_id: str,
+        target_user_ids: List[Any]
+    ) -> None:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT owner_type FROM model_configs WHERE id = ?", (config_id,))
+        row = cursor.fetchone()
+        if not row or row[0] not in ('admin', 'system'):
+            conn.close()
+            raise ValueError("not_admin_managed_config")
+            
+        now = datetime.now().isoformat()
+        from uuid import uuid4
+        
+        for user_id in target_user_ids:
+            cursor.execute("SELECT id FROM model_config_assignments WHERE config_id = ? AND user_id = ?", (config_id, user_id))
+            exist_row = cursor.fetchone()
+            if exist_row:
+                if self.is_postgres:
+                    cursor.execute(
+                        "UPDATE model_config_assignments SET enabled = TRUE, updated_at = ? WHERE id = ?",
+                        (now, exist_row[0])
+                    )
+                else:
+                    cursor.execute(
+                        "UPDATE model_config_assignments SET enabled = 1, updated_at = ? WHERE id = ?",
+                        (now, exist_row[0])
+                    )
+            else:
+                new_id = str(uuid4())
+                if self.is_postgres:
+                    cursor.execute(
+                        """
+                        INSERT INTO model_config_assignments (id, config_id, user_id, assigned_by_admin_id, enabled, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, TRUE, ?, ?)
+                        """,
+                        (new_id, config_id, user_id, admin_user_id, now, now)
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        INSERT INTO model_config_assignments (id, config_id, user_id, assigned_by_admin_id, enabled, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, 1, ?, ?)
+                        """,
+                        (new_id, config_id, user_id, admin_user_id, now, now)
+                    )
+        conn.commit()
+        conn.close()
+
+    def admin_revoke_model_config(
+        self,
+        config_id: str,
+        target_user_ids: List[Any]
+    ) -> None:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        for user_id in target_user_ids:
+            cursor.execute("DELETE FROM model_config_assignments WHERE config_id = ? AND user_id = ?", (config_id, user_id))
+        conn.commit()
+        conn.close()
+
+    def admin_get_assignments(self, config_id: str) -> List[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT a.id, a.user_id, u.username, a.enabled, a.created_at
+            FROM model_config_assignments a
+            JOIN users u ON a.user_id = u.id
+            WHERE a.config_id = ?
+            ORDER BY a.created_at DESC
+            """,
+            (config_id,)
+        )
+        assignments = []
+        for r in cursor.fetchall():
+            assignments.append({
+                "id": r[0],
+                "user_id": r[1],
+                "username": r[2],
+                "enabled": bool(r[3]),
+                "created_at": r[4]
+            })
+        conn.close()
+        return assignments
+
+    def admin_get_usage_summary(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        provider: Optional[str] = None,
+        model_id: Optional[str] = None,
+        user_id: Optional[Any] = None
+    ) -> dict:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        filters = []
+        params = []
+        
+        if start_date:
+            filters.append("created_at >= ?")
+            params.append(start_date)
+        if end_date:
+            filters.append("created_at <= ?")
+            params.append(end_date)
+        if provider:
+            filters.append("provider = ?")
+            params.append(provider)
+        if model_id:
+            filters.append("model_id = ?")
+            params.append(model_id)
+        if user_id:
+            filters.append("user_id = ?")
+            params.append(user_id)
+            
+        where_clause = ""
+        if filters:
+            where_clause = "WHERE " + " AND ".join(filters)
+            
+        success_check = "success = TRUE" if self.is_postgres else "success = 1"
+        fail_check = "success = FALSE" if self.is_postgres else "success = 0"
+        
+        cursor.execute(
+            f"""
+            SELECT 
+                COUNT(*) as total_calls,
+                SUM(CASE WHEN {success_check} THEN 1 ELSE 0 END) as success_calls,
+                SUM(CASE WHEN {fail_check} THEN 1 ELSE 0 END) as failed_calls,
+                AVG(latency_ms) as avg_latency,
+                SUM(prompt_tokens) as total_prompt_tokens,
+                SUM(completion_tokens) as total_completion_tokens,
+                SUM(total_tokens) as total_tokens
+            FROM model_usage_logs
+            {where_clause}
+            """,
+            tuple(params)
+        )
+        row = cursor.fetchone()
+        
+        summary = {
+            "totalCalls": row[0] or 0,
+            "successCalls": row[1] or 0,
+            "failedCalls": row[2] or 0,
+            "avgLatency": round(row[3], 2) if row[3] is not None else 0,
+            "totalPromptTokens": row[4] or 0,
+            "totalCompletionTokens": row[5] or 0,
+            "totalTokens": row[6] or 0
+        }
+        
+        # Group by User
+        cursor.execute(
+            f"""
+            SELECT u.username, COUNT(*) as count
+            FROM model_usage_logs l
+            LEFT JOIN users u ON l.user_id = u.id
+            {where_clause}
+            GROUP BY u.username
+            ORDER BY count DESC
+            """,
+            tuple(params)
+        )
+        summary["byUser"] = [{"username": r[0] or "未知用户", "count": r[1]} for r in cursor.fetchall()]
+        
+        # Group by Model
+        cursor.execute(
+            f"""
+            SELECT model_id, COUNT(*) as count
+            FROM model_usage_logs
+            {where_clause}
+            GROUP BY model_id
+            ORDER BY count DESC
+            """,
+            tuple(params)
+        )
+        summary["byModel"] = [{"modelId": r[0], "count": r[1]} for r in cursor.fetchall()]
+        
+        # Group by Provider
+        cursor.execute(
+            f"""
+            SELECT provider, COUNT(*) as count
+            FROM model_usage_logs
+            {where_clause}
+            GROUP BY provider
+            ORDER BY count DESC
+            """,
+            tuple(params)
+        )
+        summary["byProvider"] = [{"provider": r[0], "count": r[1]} for r in cursor.fetchall()]
+        
+        # Group by Day
+        date_expr = "DATE(created_at)" if not self.is_postgres else "TO_CHAR(created_at, 'YYYY-MM-DD')"
+        cursor.execute(
+            f"""
+            SELECT {date_expr} as day, COUNT(*) as count
+            FROM model_usage_logs
+            {where_clause}
+            GROUP BY day
+            ORDER BY day ASC
+            """,
+            tuple(params)
+        )
+        summary["byDay"] = [{"day": r[0], "count": r[1]} for r in cursor.fetchall()]
+        
+        conn.close()
+        return summary
+
+    def admin_get_usage_logs(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        provider: Optional[str] = None,
+        model_id: Optional[str] = None,
+        user_id: Optional[Any] = None,
+        success: Optional[bool] = None,
+        page: int = 1,
+        page_size: int = 20
+    ) -> dict:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        filters = []
+        params = []
+        
+        if start_date:
+            filters.append("l.created_at >= ?")
+            params.append(start_date)
+        if end_date:
+            filters.append("l.created_at <= ?")
+            params.append(end_date)
+        if provider:
+            filters.append("l.provider = ?")
+            params.append(provider)
+        if model_id:
+            filters.append("l.model_id = ?")
+            params.append(model_id)
+        if user_id:
+            filters.append("l.user_id = ?")
+            params.append(user_id)
+        if success is not None:
+            if self.is_postgres:
+                filters.append("l.success = ?")
+                params.append(success)
+            else:
+                filters.append("l.success = ?")
+                params.append(1 if success else 0)
+                
+        where_clause = ""
+        if filters:
+            where_clause = "WHERE " + " AND ".join(filters)
+            
+        cursor.execute(f"SELECT COUNT(*) FROM model_usage_logs l {where_clause}", tuple(params))
+        total_count = cursor.fetchone()[0]
+        
+        offset = (page - 1) * page_size
+        
+        # In SQLite/Postgres we append limit and offset. In psycopg2 or sqlite3 standard SQL we can do LIMIT ? OFFSET ?
+        limit_offset_clause = "LIMIT ? OFFSET ?"
+        # We need to copy params list so we don't pollute the counting query
+        log_params = list(params)
+        log_params.extend([page_size, offset])
+        
+        cursor.execute(
+            f"""
+            SELECT 
+                l.id, l.user_id, u.username, l.config_id, c.display_name as config_name,
+                l.provider, l.model_id, l.usage_type, l.endpoint, l.success, l.error_type,
+                l.prompt_tokens, l.completion_tokens, l.total_tokens, l.input_chars, l.output_chars,
+                l.latency_ms, l.created_at
+            FROM model_usage_logs l
+            LEFT JOIN users u ON l.user_id = u.id
+            LEFT JOIN model_configs c ON l.config_id = c.id
+            {where_clause}
+            ORDER BY l.created_at DESC
+            {limit_offset_clause}
+            """,
+            tuple(log_params)
+        )
+        
+        logs = []
+        for r in cursor.fetchall():
+            logs.append({
+                "id": r[0],
+                "userId": r[1],
+                "username": r[2] or "未知用户",
+                "configId": r[3],
+                "configName": r[4] or "默认/未知",
+                "provider": r[5],
+                "modelId": r[6],
+                "usageType": r[7],
+                "endpoint": r[8],
+                "success": bool(r[9]),
+                "errorType": r[10],
+                "promptTokens": r[11],
+                "completionTokens": r[12],
+                "totalTokens": r[13],
+                "inputChars": r[14],
+                "outputChars": r[15],
+                "latencyMs": r[16],
+                "createdAt": r[17]
+            })
+            
+        conn.close()
+        return {
+            "logs": logs,
+            "totalCount": total_count,
+            "page": page,
+            "pageSize": page_size,
+            "totalPages": (total_count + page_size - 1) // page_size if page_size > 0 else 1
+        }

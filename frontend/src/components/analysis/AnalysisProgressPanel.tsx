@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import type { AnalysisRunStatus, AnalysisStep } from "../../types/analysis";
+import type { ChatModelConfig } from "../../types/modelConfig";
 import { AnalysisStepItem } from "./AnalysisStepItem";
 
 interface AnalysisProgressPanelProps {
@@ -8,6 +9,20 @@ interface AnalysisProgressPanelProps {
   error: string | null;
   onRetry?: () => void;
   draftSaveMessage?: string | null;
+  activeChatConfig?: ChatModelConfig;
+}
+
+export function getModelName(chatModelId?: string, activeChatConfig?: ChatModelConfig | null): string {
+  const modelId = chatModelId || activeChatConfig?.modelId || "";
+  const provider = activeChatConfig?.provider || "";
+  if (!modelId) return "大语言模型";
+  
+  if (modelId.toLowerCase().includes("gemini")) return "Gemini";
+  if (modelId.toLowerCase().includes("deepseek")) return "DeepSeek";
+  if (modelId.toLowerCase().includes("doubao") || modelId.toLowerCase().includes("ark")) return "豆包 Ark";
+  if (provider === "gemini") return "Gemini";
+  
+  return modelId;
 }
 
 export function AnalysisProgressPanel({
@@ -16,6 +31,7 @@ export function AnalysisProgressPanel({
   error,
   onRetry,
   draftSaveMessage,
+  activeChatConfig,
 }: AnalysisProgressPanelProps) {
   const [showDebug, setShowDebug] = useState(false);
 
@@ -33,7 +49,8 @@ export function AnalysisProgressPanel({
       case "retrieving":
         return "正在检索相关简历片段";
       case "analyzing":
-        return "正在调用 Gemini 生成分析结果";
+        const name = getModelName(undefined, activeChatConfig);
+        return `正在调用 ${name} 生成分析结果`;
       case "saving":
         return "正在保存分析记录";
       case "success":
@@ -79,7 +96,7 @@ export function AnalysisProgressPanel({
 
       <div className="steps-container">
         {steps.map((step, index) => (
-          <AnalysisStepItem key={step.id} step={step} index={index} />
+          <AnalysisStepItem key={step.id} step={step} index={index} activeChatConfig={activeChatConfig} />
         ))}
       </div>
 

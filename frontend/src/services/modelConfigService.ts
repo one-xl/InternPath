@@ -53,7 +53,9 @@ export async function testChatModelConfig(
   const started = nowMs();
   const modelId = config.testModelId?.trim() || config.modelId;
   const baseUrl = config.baseUrl?.trim() || "https://generativelanguage.googleapis.com/v1beta";
-  const url = `${baseUrl.replace(/\/$/, "")}/models/${encodeURIComponent(modelId)}:generateContent`;
+  const url = config.provider === "gemini"
+    ? `${baseUrl.replace(/\/$/, "")}/models/${encodeURIComponent(modelId)}:generateContent`
+    : `${baseUrl.replace(/\/$/, "")}/chat/completions`;
 
   if (onProgress) {
     onProgress("正在向服务器发起测试连接请求...");
@@ -66,6 +68,7 @@ export async function testChatModelConfig(
       },
       body: JSON.stringify({
         provider: config.provider,
+        type: "chat",
         modelId,
       }),
     });

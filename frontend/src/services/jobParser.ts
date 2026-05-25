@@ -107,22 +107,43 @@ ${jdText}
 
     const parsed = safeParseModelJson<any>(rawResult);
 
-    // Normalize and fallback if necessary
+    // Normalize requirements robustly
+    let requirements = Array.isArray(parsed.requirements)
+      ? parsed.requirements
+          .map((req: any, index: number) => ({
+            id: req.id || `req_${String(index + 1).padStart(3, "0")}`,
+            text: (req.text || req.requirement || req.description || "").trim(),
+            category: req.category || "other",
+            priority: req.priority || "unknown",
+            is_hard_requirement: Boolean(req.is_hard_requirement),
+            keywords: Array.isArray(req.keywords) ? req.keywords : [],
+            reason: req.reason || ""
+          }))
+          .filter((req: any) => req.text.length > 0)
+      : [];
+
+    if (requirements.length === 0) {
+      console.warn("[jobParser] Requirements list is empty. Using default requirement fallback.");
+      requirements = [
+        {
+          id: "req_001",
+          text: jdText.substring(0, 300).trim() + "...",
+          category: "other",
+          priority: "must_have",
+          is_hard_requirement: false,
+          keywords: [],
+          reason: "JD 结构化提取未识别到要求，降级为全文模糊匹配"
+        }
+      ];
+    }
+
     return {
       job_title: parsed.job_title || "未知岗位",
       company: parsed.company || "未知公司",
       location: parsed.location || "未注明地点",
       employment_type: parsed.employment_type || "unknown",
       work_mode: parsed.work_mode || "unknown",
-      requirements: Array.isArray(parsed.requirements) ? parsed.requirements.map((req: any, index: number) => ({
-        id: req.id || `req_${String(index + 1).padStart(3, "0")}`,
-        text: req.text || "",
-        category: req.category || "other",
-        priority: req.priority || "unknown",
-        is_hard_requirement: Boolean(req.is_hard_requirement),
-        keywords: Array.isArray(req.keywords) ? req.keywords : [],
-        reason: req.reason || ""
-      })) : [],
+      requirements,
       responsibilities: Array.isArray(parsed.responsibilities) ? parsed.responsibilities : [],
       hard_constraints: Array.isArray(parsed.hard_constraints) ? parsed.hard_constraints.map((hc: any) => ({
         type: hc.type || "other",

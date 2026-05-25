@@ -75,6 +75,7 @@ async function postEmbedding(url: string, config: EmbeddingModelConfig, body: un
         modelId: config.modelId,
         requestBody: body,
         endpoint: config.endpoint || DOUBAO_MULTIMODAL_EMBEDDING_ENDPOINT,
+        configId: config.id,
       }),
     },
     config.timeoutMs ?? 60000,

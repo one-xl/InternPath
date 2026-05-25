@@ -7,6 +7,7 @@ from email.message import EmailMessage
 import hashlib
 import hmac
 import json
+import asyncio
 import os
 from pathlib import Path
 import re
@@ -23,11 +24,12 @@ from pydantic import BaseModel, Field
 
 from database import Database
 from document_parser import DocumentParseError
-from models import JobAnalysis
+from models import JobAnalysis, StarStory
 from backend.doubao_job_rag import DoubaoAnalysisError, analyze_job_with_doubao, PLACEHOLDER_KEYS
 from backend.resume_rag import parse_resume, retrieve_chunks
 from service import CareerPathAIService
 from config import Config
+from auth import hash_password
 import httpx
 
 
@@ -44,6 +46,32 @@ class EmailCodeRequest(BaseModel):
     username: str = Field(..., min_length=1)
 
 
+class GenerateTempUsersRequest(BaseModel):
+    duration_hours: float
+    quantity: int
+
+
+class UpdateUserStatusRequest(BaseModel):
+    is_active: bool
+
+
+class UpdateUserExpiryRequest(BaseModel):
+    expires_at: Optional[str] = None
+
+
+class UpdateUserGenerationLimitRequest(BaseModel):
+    generation_limit: int = Field(..., ge=0)
+
+
+class UpdateUsernameRequest(BaseModel):
+    username: str = Field(..., min_length=1)
+
+
+class UpdateUserRemarkRequest(BaseModel):
+    remark: str
+
+
+
 class AnalyzeRequest(BaseModel):
     jd_text: str = Field(..., min_length=20)
     resume_text: str = ""
@@ -54,6 +82,35 @@ class AnalyzeRequest(BaseModel):
 
 class RenameRecordRequest(BaseModel):
     display_name: str = ""
+
+
+class StarStorySegmentRequest(BaseModel):
+    segment_type: str = Field(..., min_length=1)
+    input_text: str = Field("", max_length=4000)
+    jd_text: Optional[str] = Field(None, max_length=4000)
+    resume_text: Optional[str] = Field(None, max_length=4000)
+    current_star: Optional[dict[str, str]] = None
+    config_id: Optional[str] = Field(None, max_length=100)
+
+
+class StarStoryPolishRequest(BaseModel):
+    situation: str = Field("", max_length=4000)
+    task: str = Field("", max_length=4000)
+    action: str = Field("", max_length=4000)
+    result: str = Field("", max_length=4000)
+    style: str = Field("standard", max_length=50)
+    jd_text: Optional[str] = Field(None, max_length=4000)
+    config_id: Optional[str] = Field(None, max_length=100)
+
+
+class StarStoryCreateRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=100)
+    situation: str = Field("", max_length=4000)
+    task: str = Field("", max_length=4000)
+    action: str = Field("", max_length=4000)
+    result: str = Field("", max_length=4000)
+    full_text: str = Field("", max_length=16000)
+    style: str = Field("standard", max_length=50)
 
 
 class ResumeRetrieveRequest(BaseModel):
@@ -80,6 +137,10 @@ class UserResponse(BaseModel):
     username: str
     role: str = "user"
     created_at: datetime
+    is_active: bool = True
+    expires_at: Optional[datetime] = None
+    generation_limit: int = 5
+
 
 
 class ModelProxyRequest(BaseModel):
@@ -240,16 +301,35 @@ def chat_base_url(user_id: Any, provider: str, model_id: str) -> str:
     db = Database()
     conn = db.get_connection()
     cursor = conn.cursor()
+    
+    # 1. Try user-owned config
     cursor.execute(
         """
         SELECT config_json 
         FROM model_configs 
-        WHERE user_id = ? AND provider = ? AND model_id = ? AND enabled = ?
+        WHERE user_id = ? AND provider = ? AND model_id = ? AND (owner_type IS NULL OR owner_type = 'user') AND enabled = ?
+        ORDER BY updated_at DESC
         LIMIT 1
         """,
         (user_id, provider, model_id, 1 if not db.is_postgres else True)
     )
     row = cursor.fetchone()
+    
+    # 2. Try admin-assigned config
+    if not row:
+        cursor.execute(
+            """
+            SELECT c.config_json
+            FROM model_configs c
+            JOIN model_config_assignments a ON c.id = a.config_id
+            WHERE a.user_id = ? AND c.provider = ? AND c.model_id = ? AND a.enabled = ? AND c.enabled = ? AND c.owner_type IN ('admin', 'system')
+            ORDER BY c.updated_at DESC
+            LIMIT 1
+            """,
+            (user_id, provider, model_id, 1 if not db.is_postgres else True, 1 if not db.is_postgres else True)
+        )
+        row = cursor.fetchone()
+        
     conn.close()
     
     if row and row[0]:
@@ -266,11 +346,24 @@ def chat_base_url(user_id: Any, provider: str, model_id: str) -> str:
 
 
 def openai_chat_url(base_url: str) -> str:
+    import urllib.parse
+    import re
+    
     base = base_url.rstrip("/")
     if base.endswith("/chat/completions"):
         return base
     if base.endswith("/chat"):
         return f"{base}/completions"
+        
+    try:
+        parsed = urllib.parse.urlparse(base)
+        path = parsed.path.rstrip("/")
+        # If path does not end with version prefix (e.g. v1, v2, v1beta, v3)
+        if not path or not re.search(r"/(v\d+[^/]*)$", path):
+            base = f"{base}/v1"
+    except Exception:
+        pass
+        
     return f"{base}/chat/completions"
 
 
@@ -349,7 +442,30 @@ def create_app(
         user_id = state.auth_db.get_session_user_id(token)
         if user_id is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="登录状态已过期，请重新登录。")
+            
+        user = state.auth_db.get_user_by_id(user_id)
+        if user is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在。")
+
+        if user.role != "admin":
+            # Strip timezone to safely compare naive datetime.now() with potentially aware user.expires_at
+            user_expires = user.expires_at.replace(tzinfo=None) if user.expires_at else None
+            if user_expires and datetime.now() > user_expires:
+                if user.is_active:
+                    try:
+                        state.auth_db.admin_update_user_status(user_id, False)
+                        state.auth_db.delete_user_sessions(user_id)
+                    except Exception as exc:
+                        print(f"[WARNING] Concurrent expiry update for user_id={user_id}: {exc}")
+                    user.is_active = False
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="该测试账号已过期停用，请联系管理员。")
+            
+            if not user.is_active:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="该账号已被停用，请联系管理员。")
+                
         return user_id
+
+
 
     def current_admin_user(
         user_id: Any = Depends(current_user_id)
@@ -383,8 +499,11 @@ def create_app(
                 username=user.username,
                 role=user.role,
                 created_at=user.created_at,
+                is_active=user.is_active,
+                expires_at=user.expires_at,
             ).model_dump(mode="json"),
         }
+
 
     def model_api_key(user_id: Any, provider: str, model_id: str, env_key: str) -> str:
         saved_key = state.auth_db.get_model_api_key(user_id, provider, model_id)
@@ -623,9 +742,27 @@ def create_app(
             limiter.requests[key_user].append(time.time())
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="邮箱或密码错误，请重新输入。")
             
+        if user.role != "admin":
+            # Strip timezone to safely compare naive datetime.now() with potentially aware user.expires_at
+            user_expires = user.expires_at.replace(tzinfo=None) if user.expires_at else None
+            if user_expires and datetime.now() > user_expires:
+                if user.is_active:
+                    try:
+                        state.auth_db.admin_update_user_status(user.id, False)
+                        state.auth_db.delete_user_sessions(user.id)
+                    except Exception as exc:
+                        print(f"[WARNING] Concurrent login expiry update for user_id={user.id}: {exc}")
+                    user.is_active = False
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="该测试账号已过期停用，请联系管理员。")
+            
+            if not user.is_active:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="该账号已被停用，请联系管理员。")
+
+                
         token = issue_token(user.id)
         set_session_cookie(response, token)
         return auth_payload(user.id, token)
+
 
     @app.post("/api/auth/logout")
     def logout(response: Response, user_id: Any = Depends(current_user_id)) -> dict[str, bool]:
@@ -638,6 +775,14 @@ def create_app(
         payload: ModelProxyRequest,
         user_id: Any = Depends(current_user_id)
     ) -> Response:
+        user = state.auth_db.get_user_by_id(user_id)
+        if user and user.role != "admin":
+            if user.generation_limit is None or user.generation_limit <= 0:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="您的账号生成额度已用尽，请联系管理员增加次数。"
+                )
+
         if payload.provider not in {"gemini", "openai-compatible", "custom"}:
             raise HTTPException(status_code=400, detail="Unsupported chat provider")
             
@@ -685,8 +830,15 @@ def create_app(
                 res = await client.post(url, headers=headers, json=request_json, timeout=120.0)
                 success = res.status_code == 200
                 if wrap_openai and res.status_code == 200:
+                    try:
+                        res_json = res.json()
+                    except Exception:
+                        raise HTTPException(
+                            status_code=502,
+                            detail=f"Failed to communicate with LLM provider: Expected JSON but got text/html. Upstream response preview: {res.text[:500]}"
+                        )
                     return Response(
-                        content=json.dumps(wrap_openai_chat_response(res.json()), ensure_ascii=False),
+                        content=json.dumps(wrap_openai_chat_response(res_json), ensure_ascii=False),
                         status_code=200,
                         media_type="application/json"
                     )
@@ -774,6 +926,14 @@ def create_app(
         payload: ModelProxyRequest,
         user_id: Any = Depends(current_user_id)
     ) -> Response:
+        user = state.auth_db.get_user_by_id(user_id)
+        if user and user.role != "admin":
+            if user.generation_limit is None or user.generation_limit <= 0:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="您的账号生成额度已用尽，请联系管理员增加次数。"
+                )
+
         if "doubao" not in payload.provider and "volc" not in payload.provider and payload.provider != "openai-compatible" and payload.provider != "custom":
             raise HTTPException(status_code=400, detail="Unsupported embedding provider")
             
@@ -1051,7 +1211,16 @@ def create_app(
         user = state.auth_db.get_user_by_id(user_id)
         if user is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="user_not_found")
-        return UserResponse(id=user.id or user_id, username=user.username, role=user.role, created_at=user.created_at).model_dump(mode="json")
+        return UserResponse(
+            id=user.id or user_id,
+            username=user.username,
+            role=user.role,
+            created_at=user.created_at,
+            is_active=user.is_active,
+            expires_at=user.expires_at,
+            generation_limit=user.generation_limit
+        ).model_dump(mode="json")
+
 
     @app.get("/api/materials")
     def list_materials(user_id: Any = Depends(current_user_id)) -> dict[str, Any]:
@@ -1076,6 +1245,121 @@ def create_app(
     def delete_material(document_id: int, user_id: Any = Depends(current_user_id)) -> dict[str, bool]:
         return {"deleted": state.service.delete_knowledge_document(user_id, document_id)}
 
+    # ── STAR Story Builder routes ──
+
+    @app.post("/api/star/generate-segment")
+    def generate_star_segment(
+        payload: StarStorySegmentRequest,
+        user_id: Any = Depends(current_user_id)
+    ) -> dict[str, Any]:
+        try:
+            suggestion = state.service.generate_star_segment_suggestion(
+                segment_type=payload.segment_type,
+                input_text=payload.input_text,
+                jd_text=payload.jd_text,
+                resume_text=payload.resume_text,
+                current_star=payload.current_star,
+                user_id=user_id,
+                config_id=payload.config_id,
+            )
+            return {"suggestion": suggestion}
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+
+    @app.post("/api/star/polish")
+    def polish_star(
+        payload: StarStoryPolishRequest,
+        user_id: Any = Depends(current_user_id)
+    ) -> dict[str, Any]:
+        user = state.auth_db.get_user_by_id(user_id)
+        if user and user.role != "admin":
+            if user.generation_limit is None or user.generation_limit <= 0:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="您的账号生成额度已用尽，请联系管理员增加次数。"
+                )
+        try:
+            polished_text = state.service.polish_star_story(
+                situation=payload.situation,
+                task=payload.task,
+                action=payload.action,
+                result=payload.result,
+                style=payload.style,
+                jd_text=payload.jd_text,
+                user_id=user_id,
+                config_id=payload.config_id,
+            )
+            if user and user.role != "admin":
+                state.auth_db.decrement_user_generation_limit(user_id)
+            return {"polishedText": polished_text}
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+
+    @app.get("/api/star/stories")
+    def list_star_stories(user_id: Any = Depends(current_user_id)) -> dict[str, Any]:
+        stories = state.service.list_star_stories(user_id)
+        return {"stories": stories}
+
+    @app.post("/api/star/stories")
+    def create_star_story(
+        payload: StarStoryCreateRequest,
+        user_id: Any = Depends(current_user_id)
+    ) -> dict[str, Any]:
+        try:
+            story = StarStory(
+                title=payload.title,
+                situation=payload.situation,
+                task=payload.task,
+                action=payload.action,
+                result=payload.result,
+                full_text=payload.full_text,
+                style=payload.style,
+            )
+            story_id = state.service.save_star_story(user_id, story)
+            return {"id": str(story_id), "ok": True}
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+
+    @app.put("/api/star/stories/{story_id}")
+    def update_star_story(
+        story_id: str,
+        payload: StarStoryCreateRequest,
+        user_id: Any = Depends(current_user_id)
+    ) -> dict[str, Any]:
+        try:
+            story = StarStory(
+                title=payload.title,
+                situation=payload.situation,
+                task=payload.task,
+                action=payload.action,
+                result=payload.result,
+                full_text=payload.full_text,
+                style=payload.style,
+            )
+            ok = state.service.update_star_story(user_id, story_id, story)
+            if not ok:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="故事不存在或无权修改。")
+            return {"ok": True}
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+
+    @app.delete("/api/star/stories/{story_id}")
+    def delete_star_story(
+        story_id: str,
+        user_id: Any = Depends(current_user_id)
+    ) -> dict[str, Any]:
+        try:
+            ok = state.service.delete_star_story(user_id, story_id)
+            if not ok:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="故事不存在或无权删除。")
+            return {"ok": True}
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+
     # ── History routes (record_id uses str for UUID compat) ──
 
     @app.get("/api/history")
@@ -1085,8 +1369,26 @@ def create_app(
 
     @app.post("/api/history")
     def save_history_record(payload: dict[str, Any], user_id: Any = Depends(current_user_id)) -> dict[str, Any]:
+        user = state.auth_db.get_user_by_id(user_id)
+        
         result = payload.get("result") or payload
+        is_failed = False
+        if isinstance(result, dict) and (result.get("is_failed") or result.get("isFailed")):
+            is_failed = True
+        elif isinstance(payload, dict) and (payload.get("is_failed") or payload.get("isFailed")):
+            is_failed = True
+
         status_val = payload.get("status") or result.get("status") or "watching"
+        if status_val == "failed":
+            is_failed = True
+
+        if user and user.role != "admin" and not is_failed:
+            if user.generation_limit is None or user.generation_limit <= 0:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="您的账号生成额度已用尽，请联系管理员增加次数。"
+                )
+
         record_id = payload.get("id") or result.get("id")
         new_id = state.auth_db.save_analysis_record(
             user_id=user_id,
@@ -1095,6 +1397,11 @@ def create_app(
             input_json=result.get("draft"),
             record_id=record_id,
         )
+        
+        # Decrement limit for standard users after successful save
+        if user and user.role != "admin" and not is_failed:
+            state.auth_db.decrement_user_generation_limit(user_id)
+            
         return {"id": new_id, "ok": True}
 
     @app.get("/api/history/{record_id}")
@@ -1124,6 +1431,14 @@ def create_app(
 
     @app.post("/api/analyze")
     def analyze(payload: AnalyzeRequest, user_id: Any = Depends(current_user_id)) -> dict[str, Any]:
+        user = state.auth_db.get_user_by_id(user_id)
+        if user and user.role != "admin":
+            if user.generation_limit is None or user.generation_limit <= 0:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="您的账号生成额度已用尽，请联系管理员增加次数。"
+                )
+
         check_rate_limit(f"analyze:{user_id}", 10, 3600)
         if len(payload.jd_text) > 5000:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="输入内容过长，请减少无关内容后再分析。")
@@ -1173,6 +1488,11 @@ def create_app(
             status="watching",
             result_json=analysis_result,
         )
+
+        # Decrement limit for standard users after successful analyze
+        if user and user.role != "admin":
+            state.auth_db.decrement_user_generation_limit(user_id)
+
         return {
             "record": record.model_dump(mode="json") if record else None,
             "analysis": analysis.model_dump(mode="json"),
@@ -1249,17 +1569,21 @@ def create_app(
         enabled = payload.get("enabled", True)
         config_id = payload.get("id")
         
-        # Intercept if updating a config owned by admin/system
+        # Intercept if updating a config owned by admin/system, or owned by another user (IDOR prevention)
         if config_id:
             conn = state.auth_db.get_connection()
             cursor = conn.cursor()
-            cursor.execute("SELECT owner_type FROM model_configs WHERE id = ?", (config_id,))
+            cursor.execute("SELECT user_id, owner_type FROM model_configs WHERE id = ?", (config_id,))
             row = cursor.fetchone()
             conn.close()
-            if row and row[0] in ("admin", "system"):
-                user = state.auth_db.get_user_by_id(user_id)
-                if not user or user.role != "admin":
-                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权修改管理员托管的配置。")
+            if row:
+                config_user_id, owner_type = row
+                if owner_type in ("admin", "system"):
+                    user = state.auth_db.get_user_by_id(user_id)
+                    if not user or user.role != "admin":
+                        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权修改管理员托管的配置。")
+                elif config_user_id is not None and str(config_user_id) != str(user_id):
+                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权修改其他用户的配置。")
                     
         # Store full config object (minus sensitive apiKey) as config_json
         safe_payload = {k: v for k, v in payload.items() if k not in ("apiKey", "api_key")}
@@ -1297,6 +1621,256 @@ def create_app(
     def admin_list_users(admin_id: Any = Depends(current_admin_user)) -> dict[str, Any]:
         users = state.auth_db.admin_list_users()
         return {"users": users}
+
+    @app.post("/api/admin/users/generate-temp")
+    async def admin_generate_temp_users(
+        payload: GenerateTempUsersRequest,
+        admin_id: Any = Depends(current_admin_user)
+    ) -> dict[str, Any]:
+        if payload.quantity < 1 or payload.quantity > 50:
+            raise HTTPException(status_code=400, detail="生成数量必须在 1 到 50 之间。")
+        if payload.duration_hours <= 0 or payload.duration_hours > 876000:
+            raise HTTPException(status_code=400, detail="有效时间必须大于 0 且不能超过 100 年（876000小时）。")
+
+
+        import string
+        import secrets
+        def generate_password(length=12):
+            alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
+            while True:
+                password = ''.join(secrets.choice(alphabet) for _ in range(length))
+                if (any(c.islower() for c in password)
+                        and any(c.isupper() for c in password)
+                        and any(c.isdigit() for c in password)
+                        and any(c in "!@#$%^&*" for c in password)):
+                    return password
+
+        expires_at = datetime.now() + timedelta(hours=payload.duration_hours)
+        expires_at_str = expires_at.isoformat()
+        
+        generated = []
+        for _ in range(payload.quantity):
+            username = f"temp_{uuid4().hex[:6]}@internpath.temp"
+            password = generate_password()
+            password_hash = await asyncio.to_thread(hash_password, password)
+            await asyncio.to_thread(state.auth_db.admin_create_temp_user, username, password_hash, expires_at_str)
+            generated.append({
+                "username": username,
+                "password": password,
+                "expires_at": expires_at_str
+            })
+
+        state.auth_db.log_admin_audit(
+            admin_user_id=admin_id,
+            action="GENERATE_TEMP_USERS",
+            metadata_json={"quantity": payload.quantity, "duration_hours": payload.duration_hours}
+        )
+        return {"ok": True, "generated_accounts": generated}
+
+
+    @app.patch("/api/admin/users/{user_id}/status")
+    def admin_update_user_status(
+        user_id: str,
+        payload: UpdateUserStatusRequest,
+        admin_id: Any = Depends(current_admin_user)
+    ) -> dict[str, Any]:
+        if str(user_id) == str(admin_id):
+            raise HTTPException(status_code=400, detail="管理员不能禁用/修改自己的账户状态。")
+        
+        user = state.auth_db.get_user_by_id(user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="用户不存在。")
+            
+        state.auth_db.admin_update_user_status(user_id, payload.is_active)
+        if not payload.is_active:
+            state.auth_db.delete_user_sessions(user_id)
+            
+        state.auth_db.log_admin_audit(
+            admin_user_id=admin_id,
+            action="UPDATE_USER_STATUS",
+            target_user_id=user_id,
+            metadata_json={"is_active": payload.is_active}
+        )
+        return {"ok": True}
+
+    @app.patch("/api/admin/users/{user_id}/expiry")
+    def admin_update_user_expiry(
+        user_id: str,
+        payload: UpdateUserExpiryRequest,
+        admin_id: Any = Depends(current_admin_user)
+    ) -> dict[str, Any]:
+        if str(user_id) == str(admin_id):
+            raise HTTPException(status_code=400, detail="管理员不能修改自己的账户过期时间。")
+            
+        user = state.auth_db.get_user_by_id(user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="用户不存在。")
+
+        # Parse expires_at if set, otherwise None
+        expires_at_str = None
+        if payload.expires_at:
+            try:
+                dt_str = payload.expires_at.replace("Z", "+00:00")
+                parsed = datetime.fromisoformat(dt_str)
+                expires_at_str = parsed.isoformat()
+                
+                # Proactive session revocation if expiry is in the past
+                if parsed.replace(tzinfo=None) <= datetime.now():
+                    state.auth_db.admin_update_user_status(user_id, False)
+                    state.auth_db.delete_user_sessions(user_id)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="到期时间格式无效，必须为 ISO 8601 格式。")
+
+        state.auth_db.admin_update_user_expiry(user_id, expires_at_str)
+        state.auth_db.log_admin_audit(
+            admin_user_id=admin_id,
+            action="UPDATE_USER_EXPIRY",
+            target_user_id=user_id,
+            metadata_json={"expires_at": expires_at_str}
+        )
+        return {"ok": True}
+
+    @app.patch("/api/admin/users/{user_id}/generation-limit")
+    def admin_update_user_generation_limit(
+        user_id: str,
+        payload: UpdateUserGenerationLimitRequest,
+        admin_id: Any = Depends(current_admin_user)
+    ) -> dict[str, Any]:
+        if str(user_id) == str(admin_id):
+            raise HTTPException(status_code=400, detail="管理员不能修改自己的生成次数（管理员默认无限次）。")
+
+        user = state.auth_db.get_user_by_id(user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="用户不存在。")
+
+        state.auth_db.admin_update_user_generation_limit(user_id, payload.generation_limit)
+        state.auth_db.log_admin_audit(
+            admin_user_id=admin_id,
+            action="UPDATE_USER_GENERATION_LIMIT",
+            target_user_id=user_id,
+            metadata_json={"generation_limit": payload.generation_limit}
+        )
+        return {"ok": True}
+
+
+    @app.patch("/api/admin/users/{user_id}/username")
+    def admin_update_username(
+        user_id: str,
+        payload: UpdateUsernameRequest,
+        admin_id: Any = Depends(current_admin_user)
+    ) -> dict[str, Any]:
+        if str(user_id) == str(admin_id):
+            raise HTTPException(status_code=400, detail="管理员不能修改自己的用户名。")
+            
+        try:
+            target_id = int(user_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="无效的用户 ID。")
+
+        user = state.auth_db.get_user_by_id(target_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="用户不存在。")
+
+        new_username = payload.username.strip()
+        if not new_username:
+            raise HTTPException(status_code=400, detail="用户名不能为空。")
+
+        try:
+            state.auth_db.admin_update_username(target_id, new_username)
+        except ValueError as exc:
+            if str(exc) == "username_taken":
+                raise HTTPException(status_code=400, detail="该用户名已被占用。")
+            raise HTTPException(status_code=400, detail=str(exc))
+
+        state.auth_db.log_admin_audit(
+            admin_user_id=admin_id,
+            action="UPDATE_USERNAME",
+            target_user_id=user_id,
+            metadata_json={"new_username": new_username}
+        )
+        return {"ok": True}
+
+
+    @app.patch("/api/admin/users/{user_id}/remark")
+    def admin_update_user_remark(
+        user_id: str,
+        payload: UpdateUserRemarkRequest,
+        admin_id: Any = Depends(current_admin_user)
+    ) -> dict[str, Any]:
+        try:
+            target_id = int(user_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="无效的用户 ID。")
+
+        user = state.auth_db.get_user_by_id(target_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="用户不存在。")
+
+        remark = payload.remark.strip()
+        state.auth_db.admin_update_remark(target_id, remark)
+        state.auth_db.log_admin_audit(
+            admin_user_id=admin_id,
+            action="UPDATE_USER_REMARK",
+            target_user_id=user_id,
+            metadata_json={"remark": remark}
+        )
+        return {"ok": True}
+
+
+    @app.delete("/api/admin/users/expired")
+    def admin_delete_expired_users(
+        admin_id: Any = Depends(current_admin_user)
+    ) -> dict[str, Any]:
+        users = state.auth_db.admin_list_users()
+        now = datetime.now()
+        deleted_count = 0
+        for u in users:
+            if str(u["id"]) == str(admin_id):
+                continue
+            if u.get("expires_at"):
+                try:
+                    exp_dt = datetime.fromisoformat(u["expires_at"].replace("Z", "+00:00")).replace(tzinfo=None)
+                    if exp_dt <= now:
+                        state.auth_db.delete_user(int(u["id"]))
+                        state.auth_db.delete_user_sessions(u["id"])
+                        deleted_count += 1
+                except Exception as e:
+                    print(f"Error parsing expiry for user {u['id']}: {e}")
+        
+        state.auth_db.log_admin_audit(
+            admin_user_id=admin_id,
+            action="DELETE_EXPIRED_USERS",
+            metadata_json={"deleted_count": deleted_count}
+        )
+        return {"ok": True, "deleted_count": deleted_count}
+
+
+    @app.delete("/api/admin/users/{user_id}")
+    def admin_delete_user(
+        user_id: str,
+        admin_id: Any = Depends(current_admin_user)
+    ) -> dict[str, Any]:
+        if str(user_id) == str(admin_id):
+            raise HTTPException(status_code=400, detail="管理员不能删除自己的账户。")
+            
+        try:
+            target_id = int(user_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="无效的用户 ID。")
+
+        user = state.auth_db.get_user_by_id(target_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="用户不存在。")
+
+        state.auth_db.delete_user(target_id)
+        state.auth_db.delete_user_sessions(target_id)
+        state.auth_db.log_admin_audit(
+            admin_user_id=admin_id,
+            action="DELETE_USER",
+            target_user_id=user_id
+        )
+        return {"ok": True}
+
 
     @app.get("/api/admin/model-configs")
     def admin_list_model_configs(admin_id: Any = Depends(current_admin_user)) -> dict[str, Any]:

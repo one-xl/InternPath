@@ -5,11 +5,16 @@ export interface AdminUser {
   username: string;
   role: string;
   created_at: string;
+  is_active?: boolean;
+  expires_at?: string | null;
+  generation_limit?: number;
+  remark?: string;
   assignment_count: number;
   usage_count: number;
   last_login?: string;
   assigned_models: string[];
 }
+
 
 export interface AdminModelConfig {
   id: string;
@@ -176,3 +181,65 @@ export async function adminGetUsageLogs(params: {
 
   return apiFetch<UsageLogsResponse>(`/api/admin/model-usage/logs?${query.toString()}`);
 }
+
+export interface GeneratedAccount {
+  username: string;
+  password: string;
+  expires_at: string;
+}
+
+export async function adminGenerateTempAccounts(durationHours: number, quantity: number): Promise<GeneratedAccount[]> {
+  const data = await apiFetch<{ ok: boolean; generated_accounts: GeneratedAccount[] }>("/api/admin/users/generate-temp", {
+    method: "POST",
+    body: JSON.stringify({ duration_hours: durationHours, quantity }),
+  });
+  return data.generated_accounts || [];
+}
+
+export async function adminUpdateUserStatus(userId: string | number, isActive: boolean): Promise<{ ok: boolean }> {
+  return apiFetch<{ ok: boolean }>(`/api/admin/users/${encodeURIComponent(String(userId))}/status`, {
+    method: "PATCH",
+    body: JSON.stringify({ is_active: isActive }),
+  });
+}
+
+export async function adminUpdateUserExpiry(userId: string | number, expiresAt: string | null): Promise<{ ok: boolean }> {
+  return apiFetch<{ ok: boolean }>(`/api/admin/users/${encodeURIComponent(String(userId))}/expiry`, {
+    method: "PATCH",
+    body: JSON.stringify({ expires_at: expiresAt }),
+  });
+}
+
+export async function adminUpdateUserGenerationLimit(userId: string | number, limit: number): Promise<{ ok: boolean }> {
+  return apiFetch<{ ok: boolean }>(`/api/admin/users/${encodeURIComponent(String(userId))}/generation-limit`, {
+    method: "PATCH",
+    body: JSON.stringify({ generation_limit: limit }),
+  });
+}
+
+export async function adminDeleteUser(userId: string | number): Promise<{ ok: boolean }> {
+  return apiFetch<{ ok: boolean }>(`/api/admin/users/${encodeURIComponent(String(userId))}`, {
+    method: "DELETE",
+  });
+}
+
+export async function adminDeleteExpiredUsers(): Promise<{ ok: boolean; deleted_count: number }> {
+  return apiFetch<{ ok: boolean; deleted_count: number }>("/api/admin/users/expired", {
+    method: "DELETE",
+  });
+}
+
+export async function adminUpdateUsername(userId: string | number, username: string): Promise<{ ok: boolean }> {
+  return apiFetch<{ ok: boolean }>(`/api/admin/users/${encodeURIComponent(String(userId))}/username`, {
+    method: "PATCH",
+    body: JSON.stringify({ username }),
+  });
+}
+
+export async function adminUpdateUserRemark(userId: string | number, remark: string): Promise<{ ok: boolean }> {
+  return apiFetch<{ ok: boolean }>(`/api/admin/users/${encodeURIComponent(String(userId))}/remark`, {
+    method: "PATCH",
+    body: JSON.stringify({ remark }),
+  });
+}
+

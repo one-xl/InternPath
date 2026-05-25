@@ -558,7 +558,7 @@ export async function analyzeJobWithChatConfig(
           throw error;
         }
       } catch (error: any) {
-        const classification = classifyGeminiError(error);
+        const classification = classifyGeminiError(error, undefined, input.config.name || input.config.modelId);
 
         if (classification.errorType === "high_demand" && input.config.fallbackModelId?.trim() && !isFallback) {
           throw error;
@@ -579,7 +579,7 @@ export async function analyzeJobWithChatConfig(
     try {
       text = await runWithRetryAndFallback(input.config.modelId, false);
     } catch (primaryError: any) {
-      const primaryClassification = classifyGeminiError(primaryError);
+      const primaryClassification = classifyGeminiError(primaryError, undefined, input.config.name || input.config.modelId);
       
       if (primaryClassification.errorType === "high_demand" && input.config.fallbackModelId?.trim()) {
         finalModelId = input.config.fallbackModelId.trim();
@@ -589,7 +589,7 @@ export async function analyzeJobWithChatConfig(
       }
     }
   } catch (finalError: any) {
-    const classification = classifyGeminiError(finalError);
+    const classification = classifyGeminiError(finalError, undefined, input.config.name || input.config.modelId);
     const error = new Error(classification.message);
     (error as any).errorType = classification.errorType;
     (error as any).status = classification.status;
@@ -636,15 +636,48 @@ export async function analyzeJobWithChatConfig(
   if (isMultiStage && Array.isArray(parsed.resume_rewrite_suggestions)) {
     // Construct rich compatible advice
     advice = parsed.resume_rewrite_suggestions.slice(0, 8).map((s: any, idx: number) => {
-      // Find corresponding chunks if referenced by id, or keep empty
-      const basedOnChunkIds = s.target_requirement_id ? [s.target_requirement_id] : [];
+      // Find corresponding chunks from assessments
+      let basedOnChunkIds: string[] = [];
+      if (s.target_requirement_id && Array.isArray(parsed.requirement_assessments)) {
+        const matchingAss = parsed.requirement_assessments.find(
+          (ass: any) => ass && ass.requirement_id === s.target_requirement_id
+        );
+        if (matchingAss && Array.isArray(matchingAss.evidence_used)) {
+          basedOnChunkIds = matchingAss.evidence_used.filter(Boolean);
+        }
+      }
+
+      // Look up JD requirement priority from requirementMatches
+      let reqPriority: string = "unknown";
+      if (s.target_requirement_id && input.requirementMatches?.requirement_matches) {
+        const match = input.requirementMatches.requirement_matches.find(
+          (m: any) => m && m.requirement_id === s.target_requirement_id
+        );
+        if (match) {
+          reqPriority = match.priority; // "must_have" or "nice_to_have"
+        }
+      }
+
+      // Calculate priority:
+      // - "needs_more_evidence" -> high
+      // - "safe_to_rewrite" -> high if core must_have, otherwise medium
+      // - other -> medium if core must_have, otherwise low
+      let priority: "high" | "medium" | "low" = "low";
+      if (s.risk === "needs_more_evidence") {
+        priority = "high";
+      } else if (s.risk === "safe_to_rewrite") {
+        priority = reqPriority === "must_have" ? "high" : "medium";
+      } else {
+        priority = reqPriority === "must_have" ? "medium" : "low";
+      }
+
       return {
         id: `advice-${idx}`,
-        priority: s.risk === "safe_to_rewrite" ? "medium" : s.risk === "needs_more_evidence" ? "high" : "low",
+        priority,
         issue: `【${s.resume_section || "简历表达"}】针对岗位要求 ID "${s.target_requirement_id || "未知要求"}" 的不足之处：${s.current_problem}`,
         suggestion: s.rewrite_strategy,
         example: s.example_rewrite,
-        impact: s.risk === "safe_to_rewrite" ? "安全改写，显著提升简历契合度" : "需真实补充经历/证书证据，避免夸大虚构",
+        impact: priority === "high" ? "需补充强力真实经历/证书证据，避免虚构" : priority === "medium" ? "安全改写表述，大幅提升简历契合度" : "细节微调润色，提供更丰富的量化支撑",
         basedOnChunkIds,
         target_requirement_id: s.target_requirement_id,
         resume_section: s.resume_section,

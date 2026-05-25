@@ -185,3 +185,137 @@ def test_admin_console_flow(tmp_path, monkeypatch):
         assert "jd" not in log
         assert "api_key" not in log
         assert "apiKey" not in log
+
+
+def test_admin_temporary_and_lifecycle_management_flow(tmp_path, monkeypatch):
+    client, db = _make_app(tmp_path, monkeypatch)
+    db.seed_db()
+    token_admin = _login(client, "admin@example.com", "ChangeMe123!")
+    headers_admin = {"Authorization": f"Bearer {token_admin}"}
+
+    # 1. Non-admin cannot generate temp users
+    token_user = _register(client, "normal@user.com")
+    headers_user = {"Authorization": f"Bearer {token_user}"}
+    resp = client.post("/api/admin/users/generate-temp", headers=headers_user, json={"duration_hours": 12.0, "quantity": 2})
+    assert resp.status_code == 403
+
+    # 2. Admin can generate temp users
+    resp = client.post("/api/admin/users/generate-temp", headers=headers_admin, json={"duration_hours": 1.0, "quantity": 2})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+    accounts = data["generated_accounts"]
+    assert len(accounts) == 2
+    assert "@internpath.temp" in accounts[0]["username"]
+    assert len(accounts[0]["password"]) >= 8
+
+    # 3. Temp user can login successfully
+    temp_email = accounts[0]["username"]
+    temp_pass = accounts[0]["password"]
+    temp_token = _login(client, temp_email, temp_pass)
+    headers_temp = {"Authorization": f"Bearer {temp_token}"}
+
+    # Verify temp user profile details
+    resp = client.get("/api/me", headers=headers_temp)
+    assert resp.status_code == 200
+    profile = resp.json()
+    assert profile["username"] == temp_email
+    assert profile["is_active"] is True
+    assert profile["expires_at"] is not None
+
+    # Fetch User from db to get user_id
+    user_in_db = db.get_user_by_username(temp_email)
+    assert user_in_db is not None
+    user_id = user_in_db.id
+
+    # 4. Admin updates user expiry to a date in the past
+    from datetime import datetime, timedelta
+    past_expiry = (datetime.now() - timedelta(minutes=5)).isoformat()
+    resp = client.patch(f"/api/admin/users/{user_id}/expiry", headers=headers_admin, json={"expires_at": past_expiry})
+    assert resp.status_code == 200
+
+    # 5. User tries to access api: self-healing check triggers, updates user status in DB, and throws 401
+    resp = client.get("/api/me", headers=headers_temp)
+    assert resp.status_code == 401
+    assert "过期" in resp.json()["detail"] or "已停用" in resp.json()["detail"]
+
+    # Verify user record is now is_active = False in database
+    user_after = db.get_user_by_id(user_id)
+    assert user_after.is_active is False
+
+    # 6. Admin updates status to True and sets expiry to permanent (None)
+    resp = client.patch(f"/api/admin/users/{user_id}/status", headers=headers_admin, json={"is_active": True})
+    assert resp.status_code == 200
+    resp = client.patch(f"/api/admin/users/{user_id}/expiry", headers=headers_admin, json={"expires_at": None})
+    assert resp.status_code == 200
+
+    # User can login again
+    new_token = _login(client, temp_email, temp_pass)
+    headers_new = {"Authorization": f"Bearer {new_token}"}
+    resp = client.get("/api/me", headers=headers_new)
+    assert resp.status_code == 200
+    assert resp.json()["is_active"] is True
+    assert resp.json()["expires_at"] is None
+
+    # 7. Admin manually disables user
+    resp = client.patch(f"/api/admin/users/{user_id}/status", headers=headers_admin, json={"is_active": False})
+    assert resp.status_code == 200
+
+    # User login or API request rejected
+    resp = client.get("/api/me", headers=headers_new)
+    assert resp.status_code == 401
+
+    # 8. Admin cannot lock themselves out
+    admin_user = db.get_user_by_username("admin@example.com")
+    assert admin_user is not None
+    resp = client.patch(f"/api/admin/users/{admin_user.id}/status", headers=headers_admin, json={"is_active": False})
+    assert resp.status_code == 400
+    assert "不能禁用/修改自己的" in resp.json()["detail"]
+
+    resp = client.patch(f"/api/admin/users/{admin_user.id}/expiry", headers=headers_admin, json={"expires_at": past_expiry})
+    assert resp.status_code == 400
+    assert "不能修改自己的账户过期时间" in resp.json()["detail"]
+
+
+def test_user_config_idor_prevention(tmp_path, monkeypatch):
+    client, db = _make_app(tmp_path, monkeypatch)
+    
+    # 1. Register User A and User B
+    token_a = _register(client, "user_a@test.com")
+    headers_a = {"Authorization": f"Bearer {token_a}"}
+    
+    token_b = _register(client, "user_b@test.com")
+    headers_b = {"Authorization": f"Bearer {token_b}"}
+    
+    # 2. User A creates a model config
+    resp = client.post("/api/configs", headers=headers_a, json={
+        "provider": "openai-compatible",
+        "modelId": "gpt-4o",
+        "name": "User A Private Config",
+        "apiKey": "sk-user-a-secret-12345678",
+        "enabled": True
+    })
+    assert resp.status_code == 200
+    config_id = resp.json()["id"]
+    
+    # 3. User B tries to update User A's config (IDOR attack)
+    resp = client.post("/api/configs", headers=headers_b, json={
+        "id": config_id,
+        "provider": "openai-compatible",
+        "modelId": "gpt-4o",
+        "name": "User B Hacked Name",
+        "apiKey": "sk-user-b-evil-key",
+        "enabled": False
+    })
+    assert resp.status_code == 403
+    assert "无权修改其他用户的配置" in resp.json()["detail"]
+    
+    # 4. Verify User A's config is untouched
+    resp = client.get("/api/configs", headers=headers_a)
+    assert resp.status_code == 200
+    user_a_configs = resp.json()["configs"]
+    cfg = next(c for c in user_a_configs if c["id"] == config_id)
+    assert cfg["name"] == "User A Private Config"
+    assert cfg["enabled"] is True
+
+

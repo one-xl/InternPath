@@ -13,7 +13,7 @@ export function ActiveModelSummary({
 }) {
   const testedAt = [embeddingConfig?.lastTestedAt, chatConfig?.lastTestedAt].filter((value): value is string => Boolean(value)).sort();
   const latestTest = testedAt.length ? testedAt[testedAt.length - 1] : undefined;
-  const embeddingReady = embeddingConfig ? (isDoubaoTextEmbeddingProvider(embeddingConfig.provider) || isDoubaoMultimodalEmbeddingProvider(embeddingConfig.provider) || embeddingConfig.provider === "openai-compatible") : false;
+  const embeddingReady = embeddingConfig ? (isDoubaoTextEmbeddingProvider(embeddingConfig.provider, embeddingConfig.modelId) || isDoubaoMultimodalEmbeddingProvider(embeddingConfig.provider, embeddingConfig.modelId) || embeddingConfig.provider === "openai-compatible") : false;
   const allTested = embeddingConfig?.testStatus === "success" && chatConfig?.testStatus === "success";
 
   return (

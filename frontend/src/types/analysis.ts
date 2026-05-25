@@ -75,6 +75,7 @@ export interface AnalysisResult {
   resumeAdvice: ResumeAdvice[];
   learningSuggestions: LearningSuggestion[];
   nextActions: string[];
+  is_failed?: boolean;
   
   // Rearchitected pipeline structural outcomes
   parsedJD?: any; // ParsedJobDescription

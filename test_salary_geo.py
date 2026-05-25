@@ -43,5 +43,39 @@ class TestLinearForecast(unittest.TestCase):
         self.assertGreater(nxt, 14.0)
 
 
+class TestSSRFPrevention(unittest.TestCase):
+    def test_ssrf_validation(self):
+        from salary_scraper import validate_url_for_ssrf
+        from config import Config
+        
+        # Backup original setting
+        orig_prod = Config.IS_PRODUCTION
+        
+        try:
+            # Under production Mode
+            Config.IS_PRODUCTION = True
+            
+            # Non-http scheme should be blocked
+            with self.assertRaises(ValueError):
+                validate_url_for_ssrf("ftp://example.com")
+            with self.assertRaises(ValueError):
+                validate_url_for_ssrf("file:///etc/passwd")
+                
+            # Loopback/Private IP should be blocked
+            with self.assertRaises(ValueError):
+                validate_url_for_ssrf("http://127.0.0.1/test")
+            with self.assertRaises(ValueError):
+                validate_url_for_ssrf("https://192.168.1.100/jobs")
+            with self.assertRaises(ValueError):
+                validate_url_for_ssrf("http://localhost/jobs")
+
+            # Normal public URLs should pass
+            validate_url_for_ssrf("https://www.baidu.com")
+            validate_url_for_ssrf("http://news.sina.com.cn/test")
+
+        finally:
+            Config.IS_PRODUCTION = orig_prod
+
+
 if __name__ == "__main__":
     unittest.main()

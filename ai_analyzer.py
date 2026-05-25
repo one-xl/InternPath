@@ -1,6 +1,7 @@
 import json
 import re
-from typing import List, Optional
+import time
+from typing import List, Optional, Tuple, Any
 
 import httpx
 from openai import APIConnectionError, APITimeoutError, AuthenticationError, OpenAI
@@ -37,24 +38,131 @@ class AIAnalyzer:
         self._http_client = httpx.Client(timeout=timeout)
         self.model = Config.LLM_MODEL
 
-    def _client(self) -> OpenAI:
+    def _client(self, user_id: Optional[Any] = None, config_id: Optional[str] = None) -> Tuple[OpenAI, Optional[str], str, str]:
+        # 1. If user_id is provided, try to find an enabled custom model configuration in the database
+        if user_id:
+            try:
+                from database import Database
+                db = Database()
+                with db.get_connection() as conn:
+                    cursor = conn.cursor()
+                    if config_id:
+                        cursor.execute(
+                            """
+                            SELECT id, provider, model_id, encrypted_api_key, config_json
+                            FROM model_configs
+                            WHERE id = ? AND user_id = ? AND enabled = ?
+                            """,
+                            (config_id, user_id, 1 if not db.is_postgres else True)
+                        )
+                        rows = cursor.fetchall()
+                        if not rows:
+                            cursor.execute(
+                                """
+                                SELECT c.id, c.provider, c.model_id, c.encrypted_api_key, c.config_json
+                                FROM model_configs c
+                                JOIN model_config_assignments a ON c.id = a.config_id
+                                WHERE c.id = ? AND a.user_id = ? AND a.enabled = ? AND c.enabled = ?
+                                """,
+                                (config_id, user_id, 1 if not db.is_postgres else True, 1 if not db.is_postgres else True)
+                            )
+                            rows = cursor.fetchall()
+                    else:
+                        cursor.execute(
+                            """
+                            SELECT id, provider, model_id, encrypted_api_key, config_json
+                            FROM model_configs
+                            WHERE user_id = ? AND enabled = ?
+                            ORDER BY updated_at DESC
+                            """,
+                            (user_id, 1 if not db.is_postgres else True)
+                        )
+                        rows = cursor.fetchall()
+                        if not rows:
+                            cursor.execute(
+                                """
+                                SELECT c.id, c.provider, c.model_id, c.encrypted_api_key, c.config_json
+                                FROM model_configs c
+                                JOIN model_config_assignments a ON c.id = a.config_id
+                                WHERE a.user_id = ? AND a.enabled = ? AND c.enabled = ?
+                                ORDER BY c.updated_at DESC
+                                """,
+                                (user_id, 1 if not db.is_postgres else True, 1 if not db.is_postgres else True)
+                            )
+                            rows = cursor.fetchall()
+                
+                if rows:
+                    for r in rows:
+                        cfg_id, provider, model_id, encrypted_key, config_json = r
+                        decrypted_key = db.decrypt_api_key(encrypted_key).strip() if encrypted_key else ""
+                        if decrypted_key:
+                            base_url = ""
+                            if config_json:
+                                import json
+                                try:
+                                    extra = json.loads(config_json)
+                                    base_url = extra.get("baseUrl") or extra.get("base_url") or ""
+                                except:
+                                    pass
+                            
+                            if not base_url:
+                                if provider == "gemini":
+                                    base_url = "https://generativelanguage.googleapis.com/v1beta"
+                                elif provider == "openai-compatible":
+                                    base_url = "https://api.openai.com/v1"
+                                    
+                            if base_url:
+                                self.model = model_id
+                                if provider == "gemini":
+                                    base = base_url.rstrip("/")
+                                    if not base.endswith("/openai"):
+                                        base_url = f"{base}/openai"
+                                else:
+                                    # Format custom baseUrl for OpenAI Python SDK client
+                                    base = base_url.rstrip("/")
+                                    if base.endswith("/chat/completions"):
+                                        base_url = base[:-17].rstrip("/")
+                                    elif base.endswith("/chat"):
+                                        base_url = base[:-5].rstrip("/")
+                                    else:
+                                        try:
+                                            import urllib.parse
+                                            import re
+                                            parsed = urllib.parse.urlparse(base)
+                                            path = parsed.path.rstrip("/")
+                                            if not path or not re.search(r"/(v\d+[^/]*)$", path):
+                                                base = f"{base}/v1"
+                                        except:
+                                            pass
+                                        base_url = base
+                                        
+                                return OpenAI(
+                                    api_key=decrypted_key,
+                                    base_url=base_url,
+                                    http_client=self._http_client,
+                                ), cfg_id, provider, model_id
+            except Exception as e:
+                print(f"[STAR_AI] Database model config resolution error: {e}")
+                
+        # 2. Fallback to default .env config
         key = (Config.LLM_API_KEY or "").strip()
         if key.lower() in _PLACEHOLDER_KEYS:
             raise Exception(
                 "未配置有效的 LLM_API_KEY：请在项目根目录创建 .env，"
                 "设置 LLM_API_KEY（参考 .env.example），保存后重启应用。"
             )
+        self.model = Config.LLM_MODEL
         return OpenAI(
             api_key=key,
             base_url=Config.LLM_BASE_URL,
             http_client=self._http_client,
-        )
+        ), None, "openai", self.model
 
     def extract_skills(self, jd_text: str) -> JobAnalysis:
-        client = self._client()
+        client, _, _, _ = self._client()
         system_prompt = """
         你是面向个人求职者的 JD 拆解助手。请分析给定岗位 JD，并提取：
-        1. skills: 核心技能列表，包含硬技能和少量关键软技能。
+        1. skills: 核心技能列表，包含硬技能 and 少量关键软技能。
         2. difficulty: 岗位难度，只能是 "简单"、"中等"、"困难" 之一。
         3. job_summary: 100-200 字中文摘要，说明岗位职责、能力要求和适合的人。
 
@@ -106,7 +214,7 @@ class AIAnalyzer:
         resume_text: str = "",
         knowledge_texts: Optional[List[str]] = None,
     ) -> PersonalDecision:
-        client = self._client()
+        client, _, _, _ = self._client()
         system_prompt = """
         你是一个严格但务实的个人求职产品经理。你的任务不是夸用户，而是帮个人判断这个岗位是否值得投，
         并把 JD 拆成可执行的简历改造和补短板行动。
@@ -169,7 +277,7 @@ class AIAnalyzer:
         major_profile: str,
         question_count: int = 8,
     ) -> FitExamPaper:
-        client = self._client()
+        client, _, _, _ = self._client()
         qc = max(3, min(int(question_count), 15))
         system_prompt = """
         你是校招/实习测评命题人。根据岗位 JD、技能点与候选人专业背景，出一套四选一单选题。
@@ -243,7 +351,7 @@ class AIAnalyzer:
         linear_hint: Optional[float],
         sample_count: int,
     ) -> SalaryTrendPrediction:
-        client = self._client()
+        client, _, _, _ = self._client()
         system_prompt = """
         你是劳动经济学方向的助理研究员。根据月薪时间序列（单位：千元/月）与样本量，
         给出未来 1-2 个季度的走势判断和一个点预测。只返回 JSON：
@@ -275,3 +383,214 @@ class AIAnalyzer:
             )
         except Exception as e:  # noqa: BLE001
             raise Exception(f"薪酬走势预测失败: {e}") from e
+
+    def generate_star_segment_suggestion(
+        self,
+        *,
+        segment_type: str,
+        input_text: str,
+        jd_text: Optional[str] = None,
+        resume_text: Optional[str] = None,
+        current_star: Optional[dict] = None,
+        user_id: Optional[Any] = None,
+        config_id: Optional[str] = None,
+    ) -> str:
+        client, resolved_config_id, provider, model_id = self._client(user_id, config_id)
+        current = current_star or {}
+        
+        system_prompt = f"""
+        你是极其资深的简历打磨和求职规划专家。你的任务是协助用户针对特定的项目经历，按照 STAR 原则打磨其第 {segment_type} 阶段的文字。
+        STAR 拆解指引：
+        - S (Situation) 背景: 交代当时面临的系统背景、业务瓶颈、系统痛点、或是技术债务。
+        - T (Task) 任务: 交代明确的技术或业务目标，比如首屏时间降到1s以内，QPS提升两倍，或解决内存泄露。
+        - A (Action) 行动: 说明你具体采用了什么技术、组件、重构方案、算法，如何排查问题并付诸实现的。
+        - R (Result) 结果: 突出量化的业务收益、技术指标指标变化、高并发负载测试、用户认可等。
+
+        当前打磨目标是：【{segment_type}】阶段。
+        请基于用户已有的输入（如果有），结合提供的 JD（岗位要求）和用户原有简历（如果有），给出 200 字以内的润色建议，甚至可以直接写出 2-3 个可以直接参考采用的高清专业表达句子供用户挑选。
+        只返回专业润色方案与直接拷贝句型，使用 Markdown 格式，不要说客套话。
+        """
+
+        user_prompt = f"""
+        用户在【{segment_type}】阶段当前的输入是：
+        “{input_text}”
+
+        当前项目的其他部分已填写内容：
+        - Situation(背景): {current.get("situation", "（未填）")}
+        - Task(任务): {current.get("task", "（未填）")}
+        - Action(行动): {current.get("action", "（未填）")}
+        - Result(结果): {current.get("result", "（未填）")}
+
+        相关岗位 JD 核心要求：
+        {jd_text or "（未提供相关JD）"}
+
+        用户已有简历上下文：
+        {resume_text or "（未提供简历）"}
+        """
+
+        import time
+        start_time = time.time()
+        success = False
+        error_type = None
+        prompt_tokens = 0
+        completion_tokens = 0
+        total_tokens = 0
+        output_text = ""
+
+        try:
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.35,
+            )
+            output_text = (response.choices[0].message.content or "").strip()
+            success = True
+
+            usage = getattr(response, "usage", None)
+            if usage:
+                prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
+                completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+                total_tokens = getattr(usage, "total_tokens", 0) or 0
+
+            return output_text
+        except Exception as e:
+            error_type = type(e).__name__
+            raise Exception(f"AI 智能建议生成失败: {e}") from e
+        finally:
+            duration = int((time.time() - start_time) * 1000)
+            if user_id:
+                try:
+                    from database import Database
+                    db = Database()
+                    input_chars = len(system_prompt) + len(user_prompt)
+                    output_chars = len(output_text)
+                    db.log_model_usage(
+                        user_id=user_id,
+                        config_id=resolved_config_id,
+                        assignment_id=None,
+                        analysis_id=None,
+                        provider=provider,
+                        model_id=model_id,
+                        usage_type="chat",
+                        endpoint="/api/star/generate-segment",
+                        success=success,
+                        error_type=error_type,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens,
+                        input_chars=input_chars,
+                        output_chars=output_chars,
+                        latency_ms=duration
+                    )
+                except Exception as ex:
+                    print(f"[STAR_AI] Failed to log usage: {ex}")
+
+    def polish_star_story(
+        self,
+        *,
+        situation: str,
+        task: str,
+        action: str,
+        result: str,
+        style: str = "standard",
+        jd_text: Optional[str] = None,
+        user_id: Optional[Any] = None,
+        config_id: Optional[str] = None,
+    ) -> str:
+        client, resolved_config_id, provider, model_id = self._client(user_id, config_id)
+        
+        style_prompt = ""
+        if style == "big-tech":
+            style_prompt = "【大厂风】：要求措辞高级，突出微服务、分布式、系统可用性、高并发保障、健壮架构设计、团队方法论、业务闭环思考。大量使用如“高内聚低耦合”、“高可用保证”、“高并发瓶颈突破”等工业界硬核词汇。"
+        elif style == "start-up":
+            style_prompt = "【初创/突击风】：要求突出“从0到1”、“独立交付”、“低成本快迭代”、“业务快速变现”、“全栈 ownership”。措辞突出敏捷、高交付效率、解决实际业务卡点、独立排除万难的精神。"
+        else:
+            style_prompt = "【通用标准风】：逻辑极其严密，条理清晰，突出专业技术扎实度与严密的闭环逻辑。符合主流中大型公司的简历评估金标准。"
+
+        system_prompt = f"""
+        你是极其顶级的技术简历撰写专家。你的任务是将用户提供的 STAR (Situation, Task, Action, Result) 4个拆解字段，重塑并融合成一段极具含金量、可以直接贴入简历的【项目描述】。
+        
+        风格要求：{style_prompt}
+
+        核心合成规范：
+        1. 请使用 Markdown 格式输出。
+        2. 请先提供一小段项目整体概述（2-3句话，说明项目性质和背景）。
+        3. 然后，以结构清晰的【 Bullet Points（项目职责与成果列项）】输出（3-5点为宜）。
+        4. Bullet Points 必须将 Action 和 Result 深度结合，例如“采用 XX 架构，重构 XX 模块 (Action)，从而使得 XX 指标提升 XX (Result)”。
+        5. 对数字指标（Result 中的量化数字）务必进行合理加粗，显得极具说服力。
+        6. 不要说任何多余的解释、寒暄或说明，直接输出最终合成的项目话术段落。
+        """
+
+        user_prompt = f"""
+        用户输入的 STAR 碎片如下：
+        S (背景): {situation}
+        T (任务): {task}
+        A (行动): {action}
+        R (结果): {result}
+
+        用户正在应聘的 JD 信息（如果提供，请尽量融入其高频关键词如对应技术栈或名词）：
+        {jd_text or "（未提供）"}
+        """
+
+        import time
+        start_time = time.time()
+        success = False
+        error_type = None
+        prompt_tokens = 0
+        completion_tokens = 0
+        total_tokens = 0
+        output_text = ""
+
+        try:
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.3,
+            )
+            output_text = (response.choices[0].message.content or "").strip()
+            success = True
+
+            usage = getattr(response, "usage", None)
+            if usage:
+                prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
+                completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+                total_tokens = getattr(usage, "total_tokens", 0) or 0
+
+            return output_text
+        except Exception as e:
+            error_type = type(e).__name__
+            raise Exception(f"STAR 故事智能抛光失败: {e}") from e
+        finally:
+            duration = int((time.time() - start_time) * 1000)
+            if user_id:
+                try:
+                    from database import Database
+                    db = Database()
+                    input_chars = len(system_prompt) + len(user_prompt)
+                    output_chars = len(output_text)
+                    db.log_model_usage(
+                        user_id=user_id,
+                        config_id=resolved_config_id,
+                        assignment_id=None,
+                        analysis_id=None,
+                        provider=provider,
+                        model_id=model_id,
+                        usage_type="chat",
+                        endpoint="/api/star/polish",
+                        success=success,
+                        error_type=error_type,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens,
+                        input_chars=input_chars,
+                        output_chars=output_chars,
+                        latency_ms=duration
+                    )
+                except Exception as ex:
+                    print(f"[STAR_AI] Failed to log usage: {ex}")

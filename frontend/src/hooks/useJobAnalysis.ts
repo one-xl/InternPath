@@ -65,12 +65,14 @@ export function toUserFriendlyAnalysisError(
   const lowercaseBody = responseBody.toLowerCase();
   const errorType = error.errorType;
 
-  // Gemini specific errors (from errorType or messages)
+  const chatModelName = chatConfig?.name?.trim() || chatConfig?.modelId?.trim() || "Gemini";
+
+  // Gemini / LLM specific errors (from errorType or messages)
   if (errorType === "high_demand" || lowercaseMsg.includes("high demand") || lowercaseMsg.includes("temporary") || lowercaseBody.includes("temporary") || lowercaseMsg.includes("503")) {
-    return "Gemini 模型高负载，请稍后重试或切换备用模型";
+    return `${chatModelName} 模型高负载，请稍后重试或切换备用模型`;
   }
   if (errorType === "rate_limit" || status === 429 || lowercaseMsg.includes("rate_limit") || lowercaseMsg.includes("too many requests") || lowercaseMsg.includes("429")) {
-    return "Gemini 请求限流，请稍后再试";
+    return `${chatModelName} 请求限流，请稍后再试`;
   }
   const isAuthError =
     errorType === "auth" ||
@@ -99,13 +101,13 @@ export function toUserFriendlyAnalysisError(
       const provider = chatConfig?.provider || "gemini";
       const configName = chatConfig?.name || "大语言模型";
       if (provider === "gemini") {
-        return "Gemini API Key 无效或无权限，请检查配置";
+        return `${chatModelName} API Key 无效或无权限，请检查配置`;
       }
       return `${configName} API Key 无效或无权限，请确认您的 API Key 并重试`;
     }
 
     if (lowercaseMsg.includes("gemini") || lowercaseMsg.includes("generative")) {
-      return "Gemini API Key 无效或无权限，请检查配置";
+      return `${chatModelName} API Key 无效或无权限，请检查配置`;
     }
     if (lowercaseMsg.includes("doubao") || lowercaseMsg.includes("ark")) {
       return "Doubao API Key 无效或无权限，请确认您的 API Key 并重试";
@@ -113,10 +115,10 @@ export function toUserFriendlyAnalysisError(
     return "API Key 无效或无权限，请确认您的 API Key 并重试";
   }
   if (errorType === "output_truncated_by_thinking" || message.includes("MAX_TOKENS") || message.includes("被截断")) {
-    return "Gemini 输出被截断，请提高 Max Output Tokens 或降低 thinking level";
+    return `${chatModelName} 输出被截断，请提高 Max Output Tokens 或降低 thinking level`;
   }
   if (errorType === "invalid_json" || lowercaseMsg.includes("invalid_json") || lowercaseMsg.includes("非 json 内容") || lowercaseMsg.includes("invalid json") || lowercaseMsg.includes("自然语言")) {
-    return "Gemini 返回非 JSON 格式数据，请检查 JSON mode 或尝试切换模型";
+    return `${chatModelName} 返回非 JSON 格式数据，请检查 JSON mode 或尝试切换模型`;
   }
 
   // Doubao specific errors
@@ -213,6 +215,7 @@ export function useJobAnalysis() {
 
       // 10. Check if the embedding provider is supported
       if (
+        input.embeddingConfig.provider !== "doubao" &&
         input.embeddingConfig.provider !== "doubao-multimodal" &&
         input.embeddingConfig.provider !== "doubao-text" &&
         input.embeddingConfig.provider !== "openai-compatible" &&

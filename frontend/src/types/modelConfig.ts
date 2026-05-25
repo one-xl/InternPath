@@ -1,4 +1,5 @@
 export type EmbeddingProvider =
+  | "doubao"
   | "doubao-multimodal"
   | "doubao-text"
   | "openai-compatible"
@@ -6,12 +7,20 @@ export type EmbeddingProvider =
 export type ChatProvider = "gemini" | "openai-compatible" | "custom";
 export type ModelTestStatus = "untested" | "testing" | "success" | "failed";
 
-export function isDoubaoTextEmbeddingProvider(provider: EmbeddingProvider): boolean {
-  return provider === "doubao-text";
+export function isDoubaoTextEmbeddingProvider(provider: EmbeddingProvider, modelId?: string): boolean {
+  if (provider === "doubao-text") return true;
+  if ((provider === "custom" || provider === "openai-compatible") && modelId?.toLowerCase().includes("doubao") && modelId?.toLowerCase().includes("text")) {
+    return true;
+  }
+  return false;
 }
 
-export function isDoubaoMultimodalEmbeddingProvider(provider: EmbeddingProvider): boolean {
-  return provider === "doubao-multimodal" || provider === "doubao" as any;
+export function isDoubaoMultimodalEmbeddingProvider(provider: EmbeddingProvider, modelId?: string): boolean {
+  if (provider === "doubao-multimodal" || provider === "doubao") return true;
+  if ((provider === "custom" || provider === "openai-compatible") && modelId?.toLowerCase().includes("doubao") && !modelId?.toLowerCase().includes("text")) {
+    return true;
+  }
+  return false;
 }
 
 export interface BaseModelConfig {

@@ -9,13 +9,24 @@ import {
   adminGetAssignments,
   adminGetUsageSummary,
   adminGetUsageLogs,
+  adminGenerateTempAccounts,
+  adminUpdateUserStatus,
+  adminUpdateUserExpiry,
+  adminUpdateUserGenerationLimit,
+  adminDeleteUser,
+  adminDeleteExpiredUsers,
+  adminUpdateUsername,
+  adminUpdateUserRemark,
   AdminUser,
   AdminModelConfig,
   UsageSummary,
   UsageLog,
+  GeneratedAccount,
 } from "../services/adminService";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
+import { apiFetch } from "../services/apiClient";
+
 
 type AdminTab = "users" | "configs" | "assignments" | "statistics" | "logs";
 
@@ -24,6 +35,14 @@ export function AdminPage() {
   
   // State
   const [users, setUsers] = useState<AdminUser[]>([]);
+  const [currentUser, setCurrentUser] = useState<any | null>(null);
+  
+  // Temporary account generator state
+  const [genDurationHours, setGenDurationHours] = useState<number>(24);
+  const [genQuantity, setGenQuantity] = useState<number>(1);
+  const [generatedAccounts, setGeneratedAccounts] = useState<GeneratedAccount[]>([]);
+  const [generating, setGenerating] = useState(false);
+
   const [configs, setConfigs] = useState<AdminModelConfig[]>([]);
   const [usageSummary, setUsageSummary] = useState<UsageSummary | null>(null);
   const [usageLogs, setUsageLogs] = useState<UsageLog[]>([]);
@@ -54,6 +73,207 @@ export function AdminPage() {
   const [formBaseUrl, setFormBaseUrl] = useState("");
   const [formTemp, setFormTemp] = useState("0.7");
   const [formMaxTokens, setFormMaxTokens] = useState("2048");
+  const [formCurl, setFormCurl] = useState("");
+
+  function tokenizeCommandLine(cmd: string): string[] {
+    const args: string[] = [];
+    let current = "";
+    let inDoubleQuote = false;
+    let inSingleQuote = false;
+    let escaped = false;
+
+    // clean line continuations first
+    const cleanCmd = cmd.replace(/\\\r?\n/g, ' ');
+
+    for (let i = 0; i < cleanCmd.length; i++) {
+      const char = cleanCmd[i];
+      if (escaped) {
+        current += char;
+        escaped = false;
+        continue;
+      }
+
+      if (char === '\\' && !inSingleQuote) {
+        escaped = true;
+        continue;
+      }
+
+      if (char === '"' && !inSingleQuote) {
+        inDoubleQuote = !inDoubleQuote;
+        continue;
+      }
+
+      if (char === "'" && !inDoubleQuote) {
+        inSingleQuote = !inSingleQuote;
+        continue;
+      }
+
+      if (/\s/.test(char) && !inDoubleQuote && !inSingleQuote) {
+        if (current) {
+          args.push(current);
+          current = "";
+        }
+      } else {
+        current += char;
+      }
+    }
+    if (current) {
+      args.push(current);
+    }
+    return args;
+  }
+
+  function handleImportFromCurl(curl: string) {
+    if (!curl || !curl.trim()) return;
+
+    let tokens: string[] = [];
+    try {
+      tokens = tokenizeCommandLine(curl);
+    } catch (e) {
+      console.warn("Failed to tokenize cURL:", e);
+      return;
+    }
+
+    let rawUrl = "";
+    const headers: Record<string, string> = {};
+    let requestBodyStr = "";
+
+    for (let i = 0; i < tokens.length; i++) {
+      const token = tokens[i];
+      const lowerToken = token.toLowerCase();
+
+      // Check for URL
+      if (token.startsWith("http://") || token.startsWith("https://")) {
+        rawUrl = token;
+      }
+
+      // Check for Header options
+      if ((token === "-H" || lowerToken === "--header") && i + 1 < tokens.length) {
+        const headerVal = tokens[i + 1];
+        const colonIdx = headerVal.indexOf(":");
+        if (colonIdx > -1) {
+          const name = headerVal.substring(0, colonIdx).trim().toLowerCase();
+          const value = headerVal.substring(colonIdx + 1).trim();
+          headers[name] = value;
+        }
+        i++; // skip next token
+      }
+
+      // Check for Data/Body options
+      if (
+        (token === "-d" ||
+          lowerToken === "--data" ||
+          lowerToken === "--data-raw" ||
+          lowerToken === "--data-binary" ||
+          lowerToken === "--data-ascii") &&
+        i + 1 < tokens.length
+      ) {
+        requestBodyStr = tokens[i + 1];
+        i++; // skip next token
+      }
+    }
+
+    // Fallback if URL option didn't start with protocol directly (e.g. url inside single quotes without http prefix, or just not parsed)
+    if (!rawUrl) {
+      const urlToken = tokens.find(t => t.includes("://"));
+      if (urlToken) {
+        rawUrl = urlToken;
+      }
+    }
+
+    // 2. Try to extract API Key from headers
+    let apiKey = "";
+    if (headers["authorization"]) {
+      const authVal = headers["authorization"];
+      if (authVal.toLowerCase().startsWith("bearer ")) {
+        apiKey = authVal.substring(7).trim();
+      } else {
+        apiKey = authVal.trim();
+      }
+    } else {
+      const keyHeader = Object.keys(headers).find(h => 
+        h === "api-key" || h === "x-api-key" || h === "x-goog-api-key" || h === "api_key"
+      );
+      if (keyHeader) {
+        apiKey = headers[keyHeader].trim();
+      }
+    }
+
+    // 3. Extract request body JSON if present
+    let modelId = "";
+    let temp = "0.7";
+    let maxTokens = "2048";
+
+    if (requestBodyStr) {
+      try {
+        const body = JSON.parse(requestBodyStr);
+        if (body.model) modelId = body.model;
+        if (body.temperature !== undefined) temp = String(body.temperature);
+        if (body.max_tokens !== undefined) maxTokens = String(body.max_tokens);
+        else if (body.maxOutputTokens !== undefined) maxTokens = String(body.maxOutputTokens);
+      } catch (e) {
+        console.warn("Failed to parse JSON body from curl:", e);
+      }
+    }
+
+    // 4. Derive Base URL (removing specific endpoints)
+    let baseUrl = "";
+    let provider = "";
+
+    if (rawUrl) {
+      try {
+        // Clean any trailing symbols
+        rawUrl = rawUrl.replace(/['",;)]+$/, "");
+        const parsedUrl = new URL(rawUrl);
+        const host = parsedUrl.origin;
+        const pathname = parsedUrl.pathname;
+
+        if (rawUrl.includes("generativelanguage.googleapis.com")) {
+          provider = "gemini";
+          const modelsMatch = pathname.match(/\/models\/([^:/]+)/);
+          if (modelsMatch && !modelId) {
+            modelId = modelsMatch[1];
+          }
+          baseUrl = host + pathname.split("/models/")[0];
+        } else {
+          provider = "openai-compatible";
+          if (rawUrl.includes("volces.com") || rawUrl.includes("ark.cn-beijing")) {
+            provider = "doubao";
+          }
+          
+          let cleanPath = pathname;
+          if (cleanPath.endsWith("/chat/completions")) {
+            cleanPath = cleanPath.substring(0, cleanPath.length - 17);
+          } else if (cleanPath.endsWith("/chat")) {
+            cleanPath = cleanPath.substring(0, cleanPath.length - 5);
+          } else if (cleanPath.endsWith("/embeddings/multimodal")) {
+            cleanPath = cleanPath.substring(0, cleanPath.length - 22);
+          } else if (cleanPath.endsWith("/embeddings")) {
+            cleanPath = cleanPath.substring(0, cleanPath.length - 11);
+          } else if (cleanPath.endsWith("/v1/chat/completions")) {
+            cleanPath = cleanPath.substring(0, cleanPath.length - 20) + "/v1";
+          }
+          baseUrl = host + cleanPath;
+        }
+      } catch (err) {
+        console.warn("Failed to parse URL from curl:", err);
+      }
+    }
+
+    // Update state fields
+    if (provider) setFormProvider(provider);
+    if (baseUrl) setFormBaseUrl(baseUrl);
+    if (modelId) setFormModelId(modelId);
+    if (apiKey) setFormApiKey(apiKey);
+    if (temp) setFormTemp(temp);
+    if (maxTokens) setFormMaxTokens(maxTokens);
+
+    // Guess a name if current name is empty
+    if (modelId) {
+      const capitalizedProvider = provider ? provider.toUpperCase() : "CUSTOM";
+      setFormName(`托管 ${capitalizedProvider} ${modelId}`);
+    }
+  }
 
   // Assignment Modal States
   const [showAssignModal, setShowAssignModal] = useState(false);
@@ -61,10 +281,18 @@ export function AdminPage() {
   const [assignedUsers, setAssignedUsers] = useState<any[]>([]);
   const [assignTargetUserIds, setAssignTargetUserIds] = useState<Array<string | number>>([]);
 
+  // Load self user on mount
+  useEffect(() => {
+    apiFetch<any>("/api/me")
+      .then((user) => setCurrentUser(user))
+      .catch((err) => console.error("Failed to load self info", err));
+  }, []);
+
   // Load Initial Data based on active tab
   useEffect(() => {
     loadTabData();
   }, [activeTab, logsPage, filterProvider, filterModelId, filterSuccess, filterUserId]);
+
 
   async function loadTabData() {
     setLoading(true);
@@ -171,6 +399,7 @@ export function AdminPage() {
     setFormBaseUrl(cfg.baseUrl || "");
     setFormTemp(cfg.temperature !== undefined ? String(cfg.temperature) : "0.7");
     setFormMaxTokens(cfg.maxOutputTokens !== undefined ? String(cfg.maxOutputTokens) : "2048");
+    setFormCurl("");
     setShowConfigModal(true);
   }
 
@@ -252,11 +481,168 @@ export function AdminPage() {
     }
   }
 
+  // Generate temporary accounts
+  async function handleGenerateTempAccounts() {
+    setGenerating(true);
+    try {
+      const res = await adminGenerateTempAccounts(genDurationHours, genQuantity);
+      setGeneratedAccounts(res);
+      alert(`已成功生成 ${res.length} 个临时账号！`);
+      loadTabData(); // refresh list
+    } catch (err: any) {
+      alert(err.message || "生成临时账号失败");
+    } finally {
+      setGenerating(false);
+    }
+  }
+  // Robust clipboard copy fallback
+  function handleCopyText(text: string, successMessage: string = "已复制到剪贴板！") {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text)
+        .then(() => alert(successMessage))
+        .catch(() => fallbackCopy(text, successMessage));
+    } else {
+      fallbackCopy(text, successMessage);
+    }
+  }
+
+  function fallbackCopy(text: string, successMessage: string) {
+    try {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      const success = document.execCommand("copy");
+      document.body.removeChild(textarea);
+      if (success) {
+        alert(successMessage + " (使用降级兼容方案)");
+      } else {
+        throw new Error();
+      }
+    } catch (e) {
+      window.prompt("当前环境不支持自动复制，请手动复制以下内容：", text);
+    }
+  }
+
+  // Toggle user active status
+  async function handleToggleUserStatus(u: AdminUser) {
+    if (currentUser && String(u.id) === String(currentUser.id)) {
+      alert("您不能修改自己当前管理员账号的启用状态。");
+      return;
+    }
+    const targetStatus = u.is_active === undefined ? false : !u.is_active;
+    setLoading(true);
+    try {
+      await adminUpdateUserStatus(u.id, targetStatus);
+      alert(`已成功${targetStatus ? "启用" : "禁用"}该用户！`);
+      loadTabData();
+    } catch (err: any) {
+      alert(err.message || "修改用户状态失败");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Update user expiry time
+  async function handleUpdateUserExpiry(u: AdminUser, presetValue: string) {
+    if (currentUser && String(u.id) === String(currentUser.id)) {
+      alert("您不能修改自己当前管理员账号的有效期。");
+      return;
+    }
+    let expiresAt: string | null = null;
+    if (presetValue !== "permanent") {
+      const hours = parseInt(presetValue, 10);
+      expiresAt = new Date(Date.now() + hours * 3600 * 1000).toISOString();
+    }
+    setLoading(true);
+    try {
+      await adminUpdateUserExpiry(u.id, expiresAt);
+      alert("有效期更新成功！");
+      loadTabData();
+    } catch (err: any) {
+      alert(err.message || "修改有效期失败");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Update user generation limit
+  async function handleUpdateUserGenerationLimit(u: AdminUser, limit: number) {
+    if (u.role === "admin") {
+      alert("管理员默认拥有无限次生成限额，无需修改。");
+      return;
+    }
+    // Optimistically update local users state
+    setUsers(prev =>
+      prev.map(user =>
+        String(user.id) === String(u.id) ? { ...user, generation_limit: limit } : user
+      )
+    );
+    try {
+      await adminUpdateUserGenerationLimit(u.id, limit);
+    } catch (err: any) {
+      alert(err.message || "修改生成限额失败");
+      loadTabData();
+    }
+  }
+
+  // Delete user
+  async function handleDeleteUser(u: AdminUser) {
+    if (currentUser && String(u.id) === String(currentUser.id)) {
+      alert("您不能删除自己当前登录的管理员账户。");
+      return;
+    }
+    if (!window.confirm(`确定要彻底删除用户 "${u.username}" 吗？此操作不可逆，将清除该用户的所有历史记录和设置！`)) {
+      return;
+    }
+    setLoading(true);
+    try {
+      await adminDeleteUser(u.id);
+      alert(`已成功删除用户 "${u.username}"！`);
+      loadTabData();
+    } catch (err: any) {
+      alert(err.message || "删除用户失败");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Bulk delete expired users
+  async function handleCleanExpiredUsers() {
+    const expiredUsers = users.filter(u => {
+      if (!u.expires_at) return false;
+      return new Date(u.expires_at) <= new Date();
+    });
+
+    if (expiredUsers.length === 0) {
+      alert("当前没有已过期的用户需要清理。");
+      return;
+    }
+
+    if (!window.confirm(`确定要清理所有已过期的测试账户吗？\n当前检测到有 ${expiredUsers.length} 个已过期账户，清理操作不可逆！`)) {
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const res = await adminDeleteExpiredUsers();
+      alert(`成功清理了 ${res.deleted_count} 个已过期的测试账户！`);
+      loadTabData();
+    } catch (err: any) {
+      alert(err.message || "清理已过期用户失败");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+
   return (
     <div className="page-stack" style={{ maxWidth: "1200px", margin: "0 auto", paddingBottom: "50px" }}>
       <div className="page-title" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end" }}>
         <div>
-          <span className="section-kicker" style={{ background: "linear-gradient(90deg, #f59e0b, #d97706)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+          <span className="section-kicker" style={{ background: "linear-gradient(135deg, var(--accent), #1ed760)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
             👑 系统管理
           </span>
           <h2 style={{ fontSize: "24px", color: "#fff", fontWeight: "800", marginTop: "8px" }}>管理员控制台</h2>
@@ -268,15 +654,12 @@ export function AdminPage() {
 
       {/* Tabs Selector */}
       <div
-        className="glass-tabs"
+        className="tabs"
         style={{
-          display: "flex",
-          gap: "4px",
           background: "rgba(255, 255, 255, 0.03)",
-          border: "1px solid rgba(255, 255, 255, 0.05)",
+          border: "1px solid var(--line)",
           padding: "4px",
-          borderRadius: "var(--radius-lg)",
-          width: "fit-content",
+          borderRadius: "var(--radius-md)",
           marginBottom: "20px"
         }}
       >
@@ -290,20 +673,16 @@ export function AdminPage() {
           <button
             key={tab.key}
             type="button"
+            className={activeTab === tab.key ? "active" : ""}
             onClick={() => {
               setActiveTab(tab.key as AdminTab);
               setError(null);
             }}
             style={{
-              background: activeTab === tab.key ? "rgba(255, 255, 255, 0.1)" : "transparent",
-              color: activeTab === tab.key ? "#fff" : "rgba(255, 255, 255, 0.6)",
-              border: "none",
-              padding: "8px 16px",
-              borderRadius: "var(--radius-md)",
-              fontSize: "13px",
-              fontWeight: 600,
-              cursor: "pointer",
-              transition: "all 200ms ease"
+              color: activeTab === tab.key ? "var(--accent)" : "var(--muted)",
+              background: activeTab === tab.key ? "rgba(255, 255, 255, 0.06)" : "transparent",
+              border: "1px solid " + (activeTab === tab.key ? "var(--line-strong)" : "transparent"),
+              boxShadow: activeTab === tab.key ? "var(--shadow-sm)" : "none",
             }}
           >
             {tab.label}
@@ -319,62 +698,421 @@ export function AdminPage() {
 
       {/* 1. Users Tab */}
       {activeTab === "users" && (
-        <Card title="系统注册用户" description="管理系统注册的用户、角色权限、关联设备数以及整体调用明细。">
-          <div style={{ overflowX: "auto" }}>
-            <table className="admin-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px", color: "rgba(255, 255, 255, 0.85)" }}>
-              <thead>
-                <tr style={{ borderBottom: "1px solid rgba(255, 255, 255, 0.08)", textAlign: "left", color: "rgba(255, 255, 255, 0.5)" }}>
-                  <th style={{ padding: "12px 8px" }}>用户</th>
-                  <th style={{ padding: "12px 8px" }}>角色</th>
-                  <th style={{ padding: "12px 8px" }}>已分配模型</th>
-                  <th style={{ padding: "12px 8px" }}>模型调用次数</th>
-                  <th style={{ padding: "12px 8px" }}>注册时间</th>
-                  <th style={{ padding: "12px 8px" }}>最近活动</th>
-                </tr>
-              </thead>
-              <tbody>
-                {users.map((u) => (
-                  <tr key={u.id} style={{ borderBottom: "1px solid rgba(255, 255, 255, 0.04)" }}>
-                    <td style={{ padding: "12px 8px", fontWeight: 600, color: "#fff" }}>{u.username}</td>
-                    <td style={{ padding: "12px 8px" }}>
-                      <span style={{
-                        background: u.role === "admin" ? "rgba(245, 158, 11, 0.15)" : "rgba(255, 255, 255, 0.06)",
-                        color: u.role === "admin" ? "#f59e0b" : "rgba(255, 255, 255, 0.7)",
-                        padding: "2px 8px",
-                        borderRadius: "10px",
-                        fontSize: "11px",
-                        fontWeight: 700
-                      }}>
-                        {u.role === "admin" ? "管理员" : "用户"}
-                      </span>
-                    </td>
-                    <td style={{ padding: "12px 8px" }}>
-                      {u.assigned_models && u.assigned_models.length > 0 ? (
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: "4px" }}>
-                          {u.assigned_models.map((m, idx) => (
-                            <span key={idx} style={{ background: "rgba(59, 130, 246, 0.12)", color: "#60a5fa", padding: "1px 6px", borderRadius: "4px", fontSize: "11px" }}>
-                              {m}
+        <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+          {/* Temporary Account Generator Panel */}
+          <Card
+            title="⚡ 临时测试账号生成器"
+            description="选择账号有效时间与生成数量，一键批量生成高强度的临时测试账号。账号到期后将自动停用，保障系统安全。"
+          >
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+                gap: "16px",
+                alignItems: "flex-end",
+                marginBottom: "20px",
+              }}
+            >
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                <label style={{ fontSize: "12px", color: "var(--muted)", fontWeight: 600 }}>有效时长</label>
+                <select
+                  value={genDurationHours}
+                  onChange={(e) => setGenDurationHours(parseFloat(e.target.value))}
+                  style={{
+                    background: "rgba(255, 255, 255, 0.05)",
+                    border: "1px solid var(--line)",
+                    borderRadius: "var(--radius-sm)",
+                    color: "#fff",
+                    padding: "8px 12px",
+                    fontSize: "13px",
+                    cursor: "pointer",
+                  }}
+                >
+                  <option value={1}>1 小时</option>
+                  <option value={12}>12 小时</option>
+                  <option value={24}>1 天 (24 小时)</option>
+                  <option value={72}>3 天 (72 小时)</option>
+                  <option value={168}>7 天 (168 小时)</option>
+                  <option value={720}>30 天 (720 小时)</option>
+                </select>
+              </div>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                <label style={{ fontSize: "12px", color: "var(--muted)", fontWeight: 600 }}>生成数量</label>
+                <select
+                  value={genQuantity}
+                  onChange={(e) => setGenQuantity(parseInt(e.target.value, 10))}
+                  style={{
+                    background: "rgba(255, 255, 255, 0.05)",
+                    border: "1px solid var(--line)",
+                    borderRadius: "var(--radius-sm)",
+                    color: "#fff",
+                    padding: "8px 12px",
+                    fontSize: "13px",
+                    cursor: "pointer",
+                  }}
+                >
+                  {[1, 2, 3, 5, 10].map((q) => (
+                    <option key={q} value={q}>
+                      {q} 个账号
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <Button
+                type="button"
+                variant="primary"
+                onClick={handleGenerateTempAccounts}
+                disabled={generating}
+                style={{
+                  height: "38px",
+                }}
+              >
+                {generating ? "正在生成..." : "🚀 一键批量生成"}
+              </Button>
+            </div>
+
+            {generatedAccounts.length > 0 && (
+              <div
+                style={{
+                  background: "rgba(255, 255, 255, 0.02)",
+                  border: "1px solid var(--line)",
+                  borderRadius: "var(--radius-md)",
+                  padding: "16px",
+                  marginTop: "16px",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    marginBottom: "12px",
+                  }}
+                >
+                  <span style={{ fontSize: "13px", color: "var(--accent)", fontWeight: 700 }}>📋 生成结果 (请妥善保存账号凭证)：</span>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => {
+                      const text = generatedAccounts
+                        .map((a) => `邮箱: ${a.username}  密码: ${a.password}`)
+                        .join("\n");
+                      handleCopyText(text, "所有生成的测试账号凭证已复制到剪贴板！");
+                    }}
+                    style={{ padding: "4px 10px", fontSize: "12px" }}
+                  >
+                    复制全部账号
+                  </Button>
+                </div>
+
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", fontSize: "12px", borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr style={{ textAlign: "left", color: "var(--muted)", borderBottom: "1px solid var(--line)" }}>
+                        <th style={{ padding: "6px" }}>测试邮箱 (用户名)</th>
+                        <th style={{ padding: "6px" }}>登录密码</th>
+                        <th style={{ padding: "6px" }}>过期截止时间</th>
+                        <th style={{ padding: "6px", textAlign: "right" }}>操作</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {generatedAccounts.map((account, idx) => (
+                        <tr key={idx} style={{ borderBottom: "1px solid var(--line)" }}>
+                          <td style={{ padding: "8px 6px", color: "#fff", fontWeight: 600, fontFamily: "monospace" }}>{account.username}</td>
+                          <td style={{ padding: "8px 6px", color: "var(--accent)", fontWeight: 600, fontFamily: "monospace" }}>{account.password}</td>
+                          <td style={{ padding: "8px 6px", color: "var(--muted)" }}>{new Date(account.expires_at).toLocaleString("zh-CN")}</td>
+                          <td style={{ padding: "8px 6px", textAlign: "right" }}>
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              onClick={() => {
+                                handleCopyText(`邮箱: ${account.username}  密码: ${account.password}`, "账号凭证已复制！");
+                              }}
+
+                              style={{ padding: "2px 8px", fontSize: "11px" }}
+                            >
+                              复制
+                            </Button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </Card>
+
+          {/* Existing Users Table upgraded with lifecycle management */}
+          <Card
+            title="系统注册用户"
+            description="管理系统注册的用户、角色权限、有效期截至以及整体调用明细。"
+            action={
+              <Button
+                type="button"
+                variant="danger"
+                onClick={handleCleanExpiredUsers}
+                style={{ padding: "6px 12px", fontSize: "12px" }}
+              >
+                🗑️ 清理已过期用户
+              </Button>
+            }
+          >
+            <div style={{ overflowX: "auto" }}>
+              <table className="admin-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px", color: "rgba(255, 255, 255, 0.85)" }}>
+                <thead>
+                  <tr style={{ borderBottom: "1px solid rgba(255, 255, 255, 0.08)", textAlign: "left", color: "rgba(255, 255, 255, 0.5)" }}>
+                    <th style={{ padding: "12px 8px" }}>用户</th>
+                    <th style={{ padding: "12px 8px" }}>角色</th>
+                    <th style={{ padding: "12px 8px" }}>生成限额</th>
+                    <th style={{ padding: "12px 8px" }}>账户状态</th>
+                    <th style={{ padding: "12px 8px" }}>有效期截至</th>
+                    <th style={{ padding: "12px 8px" }}>备注</th>
+                    <th style={{ padding: "12px 8px" }}>已分配模型</th>
+                    <th style={{ padding: "12px 8px" }}>模型调用次数</th>
+                    <th style={{ padding: "12px 8px" }}>注册时间</th>
+                    <th style={{ padding: "12px 8px" }}>最近活动</th>
+                    <th style={{ padding: "12px 8px", textAlign: "right" }}>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {users.map((u) => {
+                    const isSelf = currentUser && String(u.id) === String(currentUser.id);
+                    
+                    // Expiry calculation helper
+                    const formatExpiry = (expiresAt: string | null | undefined) => {
+                      if (!expiresAt) return "永久有效";
+                      const expDate = new Date(expiresAt);
+                      const now = new Date();
+                      if (expDate <= now) {
+                        return "已停用/过期";
+                      }
+                      const diffMs = expDate.getTime() - now.getTime();
+                      const diffHours = Math.ceil(diffMs / (1000 * 60 * 60));
+                      if (diffHours < 24) {
+                        return `剩余 ${diffHours} 小时`;
+                      }
+                      const diffDays = Math.ceil(diffHours / 24);
+                      return `剩余 ${diffDays} 天`;
+                    };
+
+                    const isActive = u.is_active !== false;
+
+                    return (
+                      <tr key={u.id} style={{ borderBottom: "1px solid var(--line)" }}>
+                        <td style={{ padding: "12px 8px", fontWeight: 600, color: "#fff" }}>
+                          {!isSelf ? (
+                            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                              <span style={{ fontSize: "13px" }}>{u.username}</span>
+                              <button
+                                onClick={async () => {
+                                  const newName = window.prompt(`请输入用户 "${u.username}" 的新用户名/邮箱：`, u.username);
+                                  if (newName !== null && newName.trim() && newName.trim() !== u.username) {
+                                    try {
+                                      await adminUpdateUsername(u.id, newName.trim());
+                                      alert("用户名修改成功！");
+                                      loadTabData();
+                                    } catch (err: any) {
+                                      alert(err.message || "修改用户名失败");
+                                    }
+                                  }
+                                }}
+                                style={{ background: "none", border: "none", color: "var(--accent)", cursor: "pointer", fontSize: "12px", padding: 0, display: "inline-flex", alignItems: "center", opacity: 0.7 }}
+                                onMouseEnter={(e) => (e.currentTarget.style.opacity = "1")}
+                                onMouseLeave={(e) => (e.currentTarget.style.opacity = "0.7")}
+                                title="修改用户名"
+                              >
+                                ✏️
+                              </button>
+                            </div>
+                          ) : (
+                            <span>{u.username} <span style={{ color: "rgba(255, 255, 255, 0.3)", marginLeft: "6px", fontSize: "11px", fontWeight: "normal" }}>(当前)</span></span>
+                          )}
+                        </td>
+                        <td style={{ padding: "12px 8px" }}>
+                          <span style={{
+                            background: u.role === "admin" ? "rgba(29, 185, 84, 0.15)" : "rgba(255, 255, 255, 0.06)",
+                            color: u.role === "admin" ? "var(--accent)" : "rgba(255, 255, 255, 0.7)",
+                            padding: "2px 8px",
+                            borderRadius: "10px",
+                            fontSize: "11px",
+                            fontWeight: 700
+                          }}>
+                            {u.role === "admin" ? "管理员" : "用户"}
+                          </span>
+                        </td>
+                        <td style={{ padding: "12px 8px" }}>
+                          {u.role === "admin" ? (
+                            <span style={{ color: "var(--accent)", fontWeight: 600, fontSize: "12px" }}>无限次</span>
+                          ) : (
+                            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                              <input
+                                type="number"
+                                min="0"
+                                max="999999"
+                                value={u.generation_limit ?? 5}
+                                onChange={async (e) => {
+                                  const limitVal = parseInt(e.target.value, 10);
+                                  if (!isNaN(limitVal) && limitVal >= 0) {
+                                    await handleUpdateUserGenerationLimit(u, limitVal);
+                                  }
+                                }}
+                                style={{
+                                  background: "rgba(255, 255, 255, 0.05)",
+                                  border: "1px solid var(--line)",
+                                  borderRadius: "var(--radius-sm)",
+                                  color: "#fff",
+                                  fontSize: "12px",
+                                  padding: "2px 6px",
+                                  width: "60px",
+                                  textAlign: "center"
+                                }}
+                              />
+                              <span style={{ color: "var(--muted)", fontSize: "11px" }}>次</span>
+                            </div>
+                          )}
+                        </td>
+                        <td style={{ padding: "12px 8px" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                            {isSelf ? (
+                               <span style={{ color: "var(--accent)", fontSize: "12px", fontWeight: 600 }}>● 始终启用</span>
+                            ) : (
+                              <>
+                                <span style={{
+                                  fontSize: "11px",
+                                  color: isActive ? "var(--accent)" : "var(--danger)",
+                                  fontWeight: 600,
+                                  background: isActive ? "var(--success-bg)" : "var(--danger-bg)",
+                                  padding: "2px 6px",
+                                  borderRadius: "4px"
+                                }}>
+                                  {isActive ? "已启用" : "已禁用"}
+                                </span>
+                                <input
+                                  type="checkbox"
+                                  checked={isActive}
+                                  onChange={() => handleToggleUserStatus(u)}
+                                  style={{
+                                    cursor: "pointer",
+                                    accentColor: "var(--accent)",
+                                    width: "16px",
+                                    height: "16px"
+                                  }}
+                                />
+                              </>
+                            )}
+                          </div>
+                        </td>
+                        <td style={{ padding: "12px 8px" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                            <span style={{
+                              color: !u.expires_at ? "var(--accent)" : (new Date(u.expires_at) <= new Date() ? "var(--danger)" : "var(--warning)"),
+                              fontWeight: 600,
+                              fontSize: "12px"
+                            }}>
+                              {formatExpiry(u.expires_at)}
                             </span>
-                          ))}
-                        </div>
-                      ) : (
-                        <span style={{ color: "rgba(255, 255, 255, 0.3)" }}>无</span>
-                      )}
-                    </td>
-                    <td style={{ padding: "12px 8px", fontWeight: "bold" }}>{u.usage_count} 次</td>
-                    <td style={{ padding: "12px 8px", color: "rgba(255, 255, 255, 0.5)" }}>{new Date(u.created_at).toLocaleString("zh-CN")}</td>
-                    <td style={{ padding: "12px 8px", color: "rgba(255, 255, 255, 0.5)" }}>{u.last_login ? new Date(u.last_login).toLocaleString("zh-CN") : "暂无活跃记录"}</td>
-                  </tr>
-                ))}
-                {!users.length && !loading && (
-                  <tr>
-                    <td colSpan={6} style={{ textAlign: "center", padding: "30px", color: "rgba(255,255,255,0.4)" }}>无用户记录。</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </Card>
+                            
+                            {!isSelf && (
+                              <select
+                                defaultValue={u.expires_at ? "custom" : "permanent"}
+                                onChange={(e) => {
+                                  if (e.target.value === "custom") return;
+                                  handleUpdateUserExpiry(u, e.target.value);
+                                }}
+                                style={{
+                                  background: "rgba(255, 255, 255, 0.05)",
+                                  border: "1px solid var(--line)",
+                                  borderRadius: "var(--radius-sm)",
+                                  color: "#fff",
+                                  fontSize: "11px",
+                                  padding: "2px 4px",
+                                  cursor: "pointer",
+                                }}
+                              >
+                                {u.expires_at && <option value="custom">保留当前</option>}
+                                <option value="24">1 天</option>
+                                <option value="72">3 天</option>
+                                <option value="168">7 天</option>
+                                <option value="720">30 天</option>
+                                <option value="permanent">永久有效</option>
+                              </select>
+                            )}
+                          </div>
+                        </td>
+                        <td style={{ padding: "12px 8px", maxWidth: "150px" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                            {u.remark ? (
+                              <span style={{ color: "rgba(255, 255, 255, 0.85)", fontSize: "12px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={u.remark}>
+                                {u.remark}
+                              </span>
+                            ) : (
+                              <span style={{ color: "rgba(255, 255, 255, 0.25)", fontSize: "12px" }}>无备注</span>
+                            )}
+                            <button
+                              onClick={async () => {
+                                const newRemark = window.prompt(`修改用户 "${u.username}" 的备注：`, u.remark || "");
+                                if (newRemark !== null) {
+                                  try {
+                                    await adminUpdateUserRemark(u.id, newRemark.trim());
+                                    loadTabData();
+                                  } catch (err: any) {
+                                    alert(err.message || "修改备注失败");
+                                  }
+                                }
+                              }}
+                              style={{ background: "none", border: "none", color: "rgba(255,255,255,0.4)", cursor: "pointer", fontSize: "12px", padding: 0, display: "inline-flex", alignItems: "center", opacity: 0.7 }}
+                              onMouseEnter={(e) => (e.currentTarget.style.opacity = "1")}
+                              onMouseLeave={(e) => (e.currentTarget.style.opacity = "0.7")}
+                              title="编辑备注"
+                            >
+                              📝
+                            </button>
+                          </div>
+                        </td>
+                        <td style={{ padding: "12px 8px" }}>
+                          {u.assigned_models && u.assigned_models.length > 0 ? (
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: "4px" }}>
+                              {u.assigned_models.map((m, idx) => (
+                                <span key={idx} style={{ background: "rgba(29, 185, 84, 0.12)", color: "var(--accent)", padding: "1px 6px", borderRadius: "4px", fontSize: "11px" }}>
+                                  {m}
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <span style={{ color: "rgba(255, 255, 255, 0.3)" }}>无</span>
+                          )}
+                        </td>
+                        <td style={{ padding: "12px 8px", fontWeight: "bold" }}>{u.usage_count} 次</td>
+                        <td style={{ padding: "12px 8px", color: "rgba(255, 255, 255, 0.5)" }}>{new Date(u.created_at).toLocaleString("zh-CN")}</td>
+                        <td style={{ padding: "12px 8px", color: "rgba(255, 255, 255, 0.5)" }}>{u.last_login ? new Date(u.last_login).toLocaleString("zh-CN") : "暂无活跃记录"}</td>
+                        <td style={{ padding: "12px 8px", textAlign: "right" }}>
+                          {!isSelf && (
+                            <Button
+                              type="button"
+                              variant="danger"
+                              onClick={() => handleDeleteUser(u)}
+                              style={{ padding: "4px 8px", fontSize: "11px" }}
+                            >
+                              删除
+                            </Button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {!users.length && !loading && (
+                    <tr>
+                      <td colSpan={11} style={{ textAlign: "center", padding: "30px", color: "rgba(255,255,255,0.4)" }}>无用户记录。</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        </div>
       )}
 
       {/* 2. Model Configs Tab */}
@@ -397,6 +1135,7 @@ export function AdminPage() {
                 setFormBaseUrl("");
                 setFormTemp("0.7");
                 setFormMaxTokens("2048");
+                setFormCurl("");
                 setShowConfigModal(true);
               }}
             >
@@ -408,11 +1147,9 @@ export function AdminPage() {
             {configs.map((cfg) => (
               <div
                 key={cfg.id}
+                className="card"
                 style={{
-                  background: "rgba(255, 255, 255, 0.02)",
-                  border: "1px solid rgba(255, 255, 255, 0.05)",
-                  borderRadius: "var(--radius-lg)",
-                  padding: "16px",
+                  padding: "20px",
                   display: "flex",
                   flexDirection: "column",
                   justifyContent: "space-between",
@@ -422,27 +1159,28 @@ export function AdminPage() {
                 <div>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                     <span style={{
-                      background: "rgba(255, 255, 255, 0.05)",
-                      color: "rgba(255, 255, 255, 0.8)",
+                      background: "var(--surface-muted)",
+                      color: "var(--text)",
                       fontSize: "11px",
                       padding: "2px 8px",
                       borderRadius: "6px",
                       fontWeight: "bold",
-                      textTransform: "uppercase"
+                      textTransform: "uppercase",
+                      border: "1px solid var(--line)"
                     }}>
                       {cfg.provider}
                     </span>
-                    <span style={{ fontSize: "11px", color: cfg.enabled ? "#10b981" : "#ef4444", fontWeight: 700 }}>
+                    <span style={{ fontSize: "11px", color: cfg.enabled ? "var(--accent)" : "var(--danger)", fontWeight: 700 }}>
                       ● {cfg.enabled ? "已启用" : "已停用"}
                     </span>
                   </div>
                   <h4 style={{ color: "#fff", fontSize: "16px", fontWeight: "700", marginTop: "10px" }}>{cfg.name}</h4>
-                  <p style={{ color: "rgba(255,255,255,0.4)", fontSize: "12px", marginTop: "2px", fontFamily: "monospace" }}>{cfg.modelId}</p>
+                  <p style={{ color: "var(--muted)", fontSize: "12px", marginTop: "2px", fontFamily: "monospace" }}>{cfg.modelId}</p>
                   
-                  <div style={{ marginTop: "14px", borderTop: "1px solid rgba(255,255,255,0.04)", paddingTop: "10px", display: "flex", flexDirection: "column", gap: "6px", fontSize: "12px", color: "rgba(255,255,255,0.6)" }}>
+                  <div style={{ marginTop: "14px", borderTop: "1px solid var(--line)", paddingTop: "10px", display: "flex", flexDirection: "column", gap: "6px", fontSize: "12px", color: "var(--muted)" }}>
                     <div>
                       <span>已分配用户数：</span>
-                      <strong style={{ color: "#60a5fa" }}>{cfg.assignment_count} 人</strong>
+                      <strong style={{ color: "var(--accent)" }}>{cfg.assignment_count} 人</strong>
                     </div>
                     <div>
                       <span>创建时间：</span>
@@ -459,7 +1197,7 @@ export function AdminPage() {
                     type="button"
                     variant="secondary"
                     onClick={() => toggleConfigStatus(cfg)}
-                    style={{ color: cfg.enabled ? "#f87171" : "#34d399", background: "rgba(255,255,255,0.02)" }}
+                    style={{ color: cfg.enabled ? "var(--danger)" : "var(--accent)", background: "rgba(255,255,255,0.02)" }}
                   >
                     {cfg.enabled ? "停用" : "启用"}
                   </Button>
@@ -479,7 +1217,7 @@ export function AdminPage() {
           <div style={{ overflowX: "auto" }}>
             <table className="admin-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px", color: "rgba(255, 255, 255, 0.85)" }}>
               <thead>
-                <tr style={{ borderBottom: "1px solid rgba(255, 255, 255, 0.08)", textAlign: "left", color: "rgba(255, 255, 255, 0.5)" }}>
+                <tr style={{ borderBottom: "1px solid var(--line)", textAlign: "left", color: "var(--muted)" }}>
                   <th style={{ padding: "12px 8px" }}>配置名称</th>
                   <th style={{ padding: "12px 8px" }}>提供商</th>
                   <th style={{ padding: "12px 8px" }}>模型标识</th>
@@ -490,15 +1228,15 @@ export function AdminPage() {
               </thead>
               <tbody>
                 {configs.map((cfg) => (
-                  <tr key={cfg.id} style={{ borderBottom: "1px solid rgba(255, 255, 255, 0.04)" }}>
+                  <tr key={cfg.id} style={{ borderBottom: "1px solid var(--line)" }}>
                     <td style={{ padding: "12px 8px", fontWeight: 600, color: "#fff" }}>{cfg.name}</td>
                     <td style={{ padding: "12px 8px" }}>
-                      <span style={{ background: "rgba(255,255,255,0.05)", padding: "2px 6px", borderRadius: "4px", fontSize: "11px" }}>{cfg.provider}</span>
+                      <span style={{ background: "var(--surface-muted)", padding: "2px 6px", borderRadius: "4px", fontSize: "11px", border: "1px solid var(--line)" }}>{cfg.provider}</span>
                     </td>
-                    <td style={{ padding: "12px 8px", fontFamily: "monospace", color: "rgba(255,255,255,0.6)" }}>{cfg.modelId}</td>
-                    <td style={{ padding: "12px 8px", fontWeight: "bold", color: "#60a5fa" }}>{cfg.assignment_count} 人</td>
+                    <td style={{ padding: "12px 8px", fontFamily: "monospace", color: "var(--muted)" }}>{cfg.modelId}</td>
+                    <td style={{ padding: "12px 8px", fontWeight: "bold", color: "var(--accent)" }}>{cfg.assignment_count} 人</td>
                     <td style={{ padding: "12px 8px" }}>
-                      <span style={{ color: cfg.enabled ? "#34d399" : "#ef4444" }}>● {cfg.enabled ? "服务正常" : "已失效"}</span>
+                      <span style={{ color: cfg.enabled ? "var(--accent)" : "var(--danger)" }}>● {cfg.enabled ? "服务正常" : "已失效"}</span>
                     </td>
                     <td style={{ padding: "12px 8px", textAlign: "right" }}>
                       <Button type="button" variant="primary" onClick={() => openAssignModal(cfg)}>
@@ -509,7 +1247,7 @@ export function AdminPage() {
                 ))}
                 {!configs.length && !loading && (
                   <tr>
-                    <td colSpan={6} style={{ textAlign: "center", padding: "30px", color: "rgba(255,255,255,0.4)" }}>无模型配置记录。请先在“模型配置”标签中新建。</td>
+                    <td colSpan={6} style={{ textAlign: "center", padding: "30px", color: "var(--subtle)" }}>无模型配置记录。请先在“模型配置”标签中新建。</td>
                   </tr>
                 )}
               </tbody>
@@ -582,24 +1320,24 @@ export function AdminPage() {
           {/* Stats Summary Cards */}
           {usageSummary && (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "16px" }}>
-              <div style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.05)", borderRadius: "var(--radius-lg)", padding: "16px" }}>
-                <span style={{ fontSize: "12px", color: "rgba(255,255,255,0.4)" }}>总调用次数</span>
+              <div className="card" style={{ padding: "20px" }}>
+                <span style={{ fontSize: "12px", color: "var(--muted)" }}>总调用次数</span>
                 <h3 style={{ fontSize: "28px", color: "#fff", fontWeight: "800", marginTop: "6px" }}>{usageSummary.totalCalls} 次</h3>
               </div>
-              <div style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.05)", borderRadius: "var(--radius-lg)", padding: "16px" }}>
-                <span style={{ fontSize: "12px", color: "rgba(255,255,255,0.4)" }}>成功次数 / 失败率</span>
-                <h3 style={{ fontSize: "28px", color: "#34d399", fontWeight: "800", marginTop: "6px" }}>
-                  {usageSummary.successCalls} <span style={{ fontSize: "14px", color: "#f87171", fontWeight: "normal" }}>/ {usageSummary.totalCalls > 0 ? ((usageSummary.failedCalls / usageSummary.totalCalls) * 100).toFixed(1) : 0}% 失败</span>
+              <div className="card" style={{ padding: "20px" }}>
+                <span style={{ fontSize: "12px", color: "var(--muted)" }}>成功次数 / 失败率</span>
+                <h3 style={{ fontSize: "28px", color: "var(--accent)", fontWeight: "800", marginTop: "6px" }}>
+                  {usageSummary.successCalls} <span style={{ fontSize: "14px", color: "var(--danger)", fontWeight: "normal" }}>/ {usageSummary.totalCalls > 0 ? ((usageSummary.failedCalls / usageSummary.totalCalls) * 100).toFixed(1) : 0}% 失败</span>
                 </h3>
               </div>
-              <div style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.05)", borderRadius: "var(--radius-lg)", padding: "16px" }}>
-                <span style={{ fontSize: "12px", color: "rgba(255,255,255,0.4)" }}>平均延迟时长</span>
-                <h3 style={{ fontSize: "28px", color: "#fbbf24", fontWeight: "800", marginTop: "6px" }}>{(usageSummary.avgLatency / 1000).toFixed(2)} 秒</h3>
+              <div className="card" style={{ padding: "20px" }}>
+                <span style={{ fontSize: "12px", color: "var(--muted)" }}>平均延迟时长</span>
+                <h3 style={{ fontSize: "28px", color: "var(--warning)", fontWeight: "800", marginTop: "6px" }}>{(usageSummary.avgLatency / 1000).toFixed(2)} 秒</h3>
               </div>
-              <div style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.05)", borderRadius: "var(--radius-lg)", padding: "16px" }}>
-                <span style={{ fontSize: "12px", color: "rgba(255,255,255,0.4)" }}>总消费 Token 计数</span>
+              <div className="card" style={{ padding: "20px" }}>
+                <span style={{ fontSize: "12px", color: "var(--muted)" }}>总消费 Token 计数</span>
                 <h3 style={{ fontSize: "28px", color: "#60a5fa", fontWeight: "800", marginTop: "6px" }}>{usageSummary.totalTokens.toLocaleString()}</h3>
-                <span style={{ fontSize: "11px", color: "rgba(255,255,255,0.4)" }}>入 {usageSummary.totalPromptTokens.toLocaleString()} / 出 {usageSummary.totalCompletionTokens.toLocaleString()}</span>
+                <span style={{ fontSize: "11px", color: "var(--muted)" }}>入 {usageSummary.totalPromptTokens.toLocaleString()} / 出 {usageSummary.totalCompletionTokens.toLocaleString()}</span>
               </div>
             </div>
           )}
@@ -841,11 +1579,34 @@ export function AdminPage() {
       {/* Create / Edit Config Modal */}
       {showConfigModal && (
         <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 1000 }}>
-          <form onSubmit={handleSaveConfig} style={{ background: "#111", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "var(--radius-lg)", padding: "24px", width: "450px", maxWidth: "90%", display: "flex", flexDirection: "column", gap: "16px" }}>
+          <form onSubmit={handleSaveConfig} style={{ background: "#111", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "var(--radius-lg)", padding: "24px", width: "450px", maxWidth: "90%", maxHeight: "90vh", overflowY: "auto", display: "flex", flexDirection: "column", gap: "16px" }}>
             <h3 style={{ color: "#fff", fontSize: "18px", fontWeight: "800" }}>{isEditMode ? "编辑管理员托管配置" : "新建管理员托管配置"}</h3>
             <p style={{ fontSize: "12px", color: "rgba(255,255,255,0.5)" }}>
               该配置的所有权属于管理员/系统本身，普通用户无法查看真实的 API 密钥。
             </p>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+              <label style={{ fontSize: "12px", color: "rgba(255,255,255,0.7)" }}>从 cURL 导入 (一键解析并自动填表，可选)</label>
+              <textarea
+                value={formCurl}
+                placeholder="在此粘贴 cURL 命令行，如：&#10;curl https://api.deepseek.com/v1/chat/completions -H 'Authorization: Bearer sk-...' -d '{&quot;model&quot;: &quot;deepseek-chat&quot;}'"
+                onChange={(e) => {
+                  setFormCurl(e.target.value);
+                  handleImportFromCurl(e.target.value);
+                }}
+                rows={3}
+                style={{
+                  background: "#1e1e1e",
+                  border: "1px solid rgba(255,255,255,0.15)",
+                  borderRadius: "var(--radius-md)",
+                  color: "#fff",
+                  padding: "8px 12px",
+                  fontSize: "12px",
+                  fontFamily: "monospace",
+                  resize: "vertical"
+                }}
+              />
+            </div>
 
             <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
               <label style={{ fontSize: "12px", color: "rgba(255,255,255,0.7)" }}>提供商 (Provider) *</label>
@@ -902,11 +1663,12 @@ export function AdminPage() {
               />
             </div>
 
-            {formProvider === "openai-compatible" && (
+            {(formProvider === "openai-compatible" || formProvider === "custom" || formProvider === "doubao") && (
               <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                <label style={{ fontSize: "12px", color: "rgba(255,255,255,0.7)" }}>接口地址 (Base URL)</label>
+                <label style={{ fontSize: "12px", color: "rgba(255,255,255,0.7)" }}>接口地址 (Base URL) *</label>
                 <input
                   type="text"
+                  required
                   value={formBaseUrl}
                   placeholder="如: https://api.deepseek.com/v1"
                   onChange={(e) => setFormBaseUrl(e.target.value)}
@@ -1016,6 +1778,15 @@ export function AdminPage() {
                             setAssignTargetUserIds(prev => prev.filter(id => id !== u.id));
                           }
                         }}
+                        style={{
+                          width: "16px",
+                          height: "16px",
+                          minHeight: "auto",
+                          padding: 0,
+                          margin: 0,
+                          cursor: "pointer",
+                          accentColor: "var(--accent)"
+                        }}
                       />
                       <label htmlFor={`user-chk-${u.id}`} style={{ color: "#fff", fontSize: "13px", cursor: "pointer" }}>{u.username}</label>
                     </div>
@@ -1026,7 +1797,7 @@ export function AdminPage() {
               </div>
             </div>
 
-            <div style={{ fontSize: "11px", color: "#f59e0b", background: "rgba(245, 158, 11, 0.08)", border: "1px solid rgba(245, 158, 11, 0.2)", borderRadius: "6px", padding: "8px", lineHeight: "1.4" }}>
+            <div style={{ fontSize: "11px", color: "var(--warning)", background: "var(--warning-bg)", border: "1px solid var(--warning-border)", borderRadius: "6px", padding: "8px", lineHeight: "1.4" }}>
               💡 <strong>安全说明：</strong>分配后该用户可在前端通过后端间接调用此模型，但 API 密钥依旧留在服务端，用户绝对无法导出或查看到真实密钥。
             </div>
 

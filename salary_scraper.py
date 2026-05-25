@@ -2,8 +2,11 @@ import math
 import re
 from datetime import datetime
 from typing import List, Optional, Tuple
-
+import ipaddress
+import socket
+from urllib.parse import urlparse
 import httpx
+from config import Config
 
 try:
     from scrapling.fetchers import Fetcher
@@ -17,6 +20,44 @@ DEFAULT_HEADERS = {
         "Chrome/123.0.0.0 Safari/537.36"
     ),
 }
+
+
+def is_private_ip(ip_str: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(ip_str)
+        return ip.is_private or ip.is_loopback or ip.is_link_local
+    except ValueError:
+        return False
+
+
+def validate_url_for_ssrf(url: str) -> None:
+    # 1. Scheme check
+    parsed = urlparse(url)
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        raise ValueError("仅支持 HTTP 或 HTTPS 协议的 URL。")
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("无效的 URL 域名或 IP。")
+
+    # In development/test mode, allow localhost for convenience
+    if not Config.IS_PRODUCTION:
+        return
+
+    # 2. Check direct IP host
+    if is_private_ip(hostname):
+        raise ValueError("不允许访问私有或本地 IP 地址。")
+
+    # 3. Resolve host and check resolved IPs (DNS rebinding / redirection defense)
+    try:
+        ips = socket.getaddrinfo(hostname, None)
+        for item in ips:
+            ip = item[4][0]
+            if is_private_ip(ip):
+                raise ValueError("解析域名指向了私有或本地 IP 地址。")
+    except socket.gaierror:
+        pass
 
 
 def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -84,6 +125,7 @@ def extract_salary_monthly_mid_k(text: str) -> Optional[float]:
 
 
 def fetch_job_page_text(url: str) -> str:
+    validate_url_for_ssrf(url)
     last: Optional[Exception] = None
     if Fetcher is not None:
         try:

@@ -1,5 +1,5 @@
 import type { EmbeddingModelConfig } from "../types/modelConfig";
-import { isDoubaoMultimodalEmbeddingProvider } from "../types/modelConfig";
+import { isDoubaoMultimodalEmbeddingProvider, isDoubaoTextEmbeddingProvider } from "../types/modelConfig";
 import type { ResumeChunk } from "../types/resume";
 import { embedTextWithDoubaoMultimodal, HttpRequestError } from "./doubaoMultimodalEmbeddingClient";
 
@@ -38,10 +38,15 @@ async function embedTextWithOpenAICompatible(text: string, config: EmbeddingMode
 }
 
 export async function embedTextWithConfig(text: string, config: EmbeddingModelConfig): Promise<number[]> {
-  if (isDoubaoMultimodalEmbeddingProvider(config.provider)) {
+  if (isDoubaoMultimodalEmbeddingProvider(config.provider, config.modelId)) {
     return embedTextWithDoubaoMultimodal(text, config);
   }
-  if (config.provider === "openai-compatible" || config.provider === "custom" || config.provider === "doubao-text") {
+  if (
+    config.provider === "openai-compatible" ||
+    config.provider === "custom" ||
+    config.provider === "doubao-text" ||
+    isDoubaoTextEmbeddingProvider(config.provider, config.modelId)
+  ) {
     return embedTextWithOpenAICompatible(text, config);
   }
   throw new Error(`当前文本 RAG 不支持 Provider: ${config.provider}`);

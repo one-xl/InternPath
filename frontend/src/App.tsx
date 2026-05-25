@@ -15,6 +15,7 @@ import { ResultPage } from "./pages/ResultPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { LoginPage } from "./pages/LoginPage";
 import { AdminPage } from "./pages/AdminPage";
+import { StarPage } from "./pages/StarPage";
 import { createEmptyDraft } from "./services/mockAnalysis";
 import type { ApplicationStatus, HistoryRecord } from "./types/analysis";
 import type { JobDraft } from "./types/job";
@@ -39,7 +40,7 @@ export default function App() {
   const [draftSaveMessage, setDraftSaveMessage] = useState<string | null>(null);
 
   // Authentication State
-  const [currentUser, setCurrentUser] = useState<{ id: any; username: string; role?: string } | null>(null);
+  const [currentUser, setCurrentUser] = useState<{ id: any; username: string; role?: string; generation_limit?: number } | null>(null);
   const [checkingAuth, setCheckingAuth] = useState(true);
   const currentUserRef = useRef(currentUser);
   const authExpiredAlertShownRef = useRef(false);
@@ -58,7 +59,7 @@ export default function App() {
         const response = await fetch("/api/me");
         if (response.ok) {
           const user = await response.json();
-          setCurrentUser({ id: user.id, username: user.username, role: user.role });
+          setCurrentUser({ id: user.id, username: user.username, role: user.role, generation_limit: user.generation_limit });
         } else {
           setCurrentUser(null);
         }
@@ -158,6 +159,13 @@ export default function App() {
   async function runAnalysis() {
     setDraftSaveMessage(null);
 
+    if (currentUser && currentUser.role !== "admin") {
+      if (currentUser.generation_limit !== undefined && currentUser.generation_limit <= 0) {
+        alert("您的账号生成额度已用尽，请联系管理员增加次数。");
+        return;
+      }
+    }
+
     // 1. Auto-create/save draft if not already working on an active draft
     let draftId = activeDraftId;
     if (!draftId && draft.jdText?.trim() && resumeUpload.resumeFile) {
@@ -216,6 +224,13 @@ export default function App() {
 
     if (runResult.ok) {
       localStorage.removeItem("internpath:active-analysis-session");
+      // Decrement limit in local state
+      setCurrentUser((prev) => {
+        if (prev && prev.role !== "admin" && prev.generation_limit !== undefined) {
+          return { ...prev, generation_limit: Math.max(0, prev.generation_limit - 1) };
+        }
+        return prev;
+      });
       // If successful, mark the draft as converted to history (completed status)
       if (draftId) {
         draftsControl.updateDraftStatus(draftId, "converted_to_history");
@@ -282,6 +297,7 @@ export default function App() {
           learningSuggestions: [],
           nextActions: ["检查模型配置或网络连接", "点击继续分析重新开始"],
           citedResumeChunks: [],
+          is_failed: true,
         };
         await history.saveRecord(toHistoryRecord(failedResult, "watching"));
       } catch (err: any) {
@@ -502,7 +518,7 @@ export default function App() {
 
   return (
     <ErrorBoundary>
-      <AppShell activePage={activePage} onNavigate={setActivePage} onLogout={handleLogout} userRole={currentUser?.role}>
+      <AppShell activePage={activePage} onNavigate={setActivePage} onLogout={handleLogout} userRole={currentUser?.role} generationLimit={currentUser?.generation_limit}>
         {activePage === "dashboard" && (
           <DashboardPage
             records={history.records}
@@ -595,6 +611,18 @@ export default function App() {
         )}
         {activePage === "admin" && currentUser?.role === "admin" && (
           <AdminPage />
+        )}
+        {activePage === "star" && (
+          <StarPage
+            onGenerationUsed={() => {
+              setCurrentUser((prev) => {
+                if (prev && prev.role !== "admin" && prev.generation_limit !== undefined) {
+                  return { ...prev, generation_limit: Math.max(0, prev.generation_limit - 1) };
+                }
+                return prev;
+              });
+            }}
+          />
         )}
       </AppShell>
     </ErrorBoundary>

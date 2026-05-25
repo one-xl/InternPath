@@ -67,9 +67,30 @@ const navItems: { key: PageKey; label: string; icon: React.ReactNode }[] = [
       </svg>
     ),
   },
+  {
+    key: "star",
+    label: "STAR工坊",
+    icon: (
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+        <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+      </svg>
+    ),
+  },
 ];
 
-export function Sidebar({ activePage, onNavigate, onLogout, userRole }: { activePage: PageKey; onNavigate: (page: PageKey) => void; onLogout?: () => void; userRole?: string }) {
+export function Sidebar({
+  activePage,
+  onNavigate,
+  onLogout,
+  userRole,
+  generationLimit,
+}: {
+  activePage: PageKey;
+  onNavigate: (page: PageKey) => void;
+  onLogout?: () => void;
+  userRole?: string;
+  generationLimit?: number;
+}) {
   const visibleItems = userRole === "admin"
     ? [
         ...navItems,
@@ -107,13 +128,49 @@ export function Sidebar({ activePage, onNavigate, onLogout, userRole }: { active
             </button>
           ))}
         </div>
+        
+        {/* Remaining Generation Limit Card */}
+        {userRole !== "admin" && generationLimit !== undefined && (
+          <div style={{
+            background: "rgba(255, 255, 255, 0.03)",
+            border: "1px solid rgba(255, 255, 255, 0.06)",
+            borderRadius: "var(--radius-md)",
+            padding: "10px 12px",
+            margin: "auto 0 12px 0",
+            fontSize: "12px",
+            color: "rgba(255, 255, 255, 0.7)",
+            boxSizing: "border-box"
+          }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}>
+              <span>剩余分析额度</span>
+              <strong style={{ color: generationLimit > 0 ? "#fbbf24" : "#f87171" }}>
+                {generationLimit} 次
+              </strong>
+            </div>
+            <div style={{
+              width: "100%",
+              height: "4px",
+              background: "rgba(255, 255, 255, 0.08)",
+              borderRadius: "2px",
+              overflow: "hidden"
+            }}>
+              <div style={{
+                width: `${Math.min(100, (generationLimit / 5) * 100)}%`,
+                height: "100%",
+                background: generationLimit > 1 ? "#fbbf24" : "#f87171",
+                transition: "width 300ms ease"
+              }} />
+            </div>
+          </div>
+        )}
+
         {onLogout && (
           <button
             type="button"
             className="sidebar-logout-btn"
             onClick={onLogout}
             style={{
-              marginTop: "auto",
+              marginTop: userRole === "admin" || generationLimit === undefined ? "auto" : "0px",
               color: "rgba(239, 68, 68, 0.95)",
               background: "rgba(239, 68, 68, 0.08)",
               display: "flex",

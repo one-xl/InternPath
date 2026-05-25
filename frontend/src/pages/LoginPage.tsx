@@ -1,11 +1,20 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "../components/ui/Button";
+import { gsap } from "gsap";
+import { useGSAP } from "@gsap/react";
+
+gsap.registerPlugin(useGSAP);
 
 interface LoginPageProps {
-  onLoginSuccess: (user: { id: any; username: string; role?: string }) => void;
+  onLoginSuccess: (user: { id: any; username: string; role?: string; generation_limit?: number }) => void;
 }
 
 export function LoginPage({ onLoginSuccess }: LoginPageProps) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const prevHeightRef = useRef<number | null>(null);
+  const firstRender = useRef(true);
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -17,6 +26,87 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
+
+  // 1. Initial entrance animation
+  useGSAP(() => {
+    // Animate background glow spheres floating in
+    gsap.fromTo(".glow-sphere", 
+      { scale: 0.8, opacity: 0 }, 
+      { scale: 1, opacity: 0.35, duration: 1.5, ease: "power2.out", stagger: 0.3 }
+    );
+
+    // Initial staggered intro animation timeline for card and elements
+    const tl = gsap.timeline();
+    tl.fromTo(cardRef.current, 
+      { y: 50, scale: 0.95, opacity: 0 }, 
+      { y: 0, scale: 1, opacity: 1, duration: 0.9, ease: "power3.out" }
+    );
+    
+    tl.fromTo(".login-header > *", 
+      { y: 15, opacity: 0 }, 
+      { y: 0, opacity: 1, duration: 0.5, stagger: 0.1, ease: "power2.out" },
+      "-=0.5" // overlap with card animation
+    );
+
+    tl.fromTo(".login-form .field", 
+      { x: -20, opacity: 0 }, 
+      { x: 0, opacity: 1, duration: 0.45, stagger: 0.08, ease: "power2.out" },
+      "-=0.3"
+    );
+
+    tl.fromTo(".login-submit-btn", 
+      { y: 15, opacity: 0 }, 
+      { y: 0, opacity: 1, duration: 0.4, ease: "power2.out" },
+      "-=0.2"
+    );
+
+    tl.fromTo([".login-footer-actions", ".login-security-notice"], 
+      { y: 10, opacity: 0 }, 
+      { y: 0, opacity: 1, duration: 0.4, stagger: 0.1, ease: "power2.out" },
+      "-=0.15"
+    );
+  }, { scope: containerRef });
+
+  // 2. Smooth height and field transitions when switching modes
+  useGSAP(() => {
+    if (firstRender.current) {
+      firstRender.current = false;
+      return;
+    }
+
+    const card = cardRef.current;
+    if (!card) return;
+
+    const oldHeight = prevHeightRef.current;
+    // Set overflow hidden to prevent scrollbars or content sticking out during animation
+    card.style.overflow = "hidden";
+    
+    // Force DOM layout calculation to get the new natural height of the card
+    const newHeight = card.clientHeight;
+
+    if (oldHeight && oldHeight !== newHeight) {
+      gsap.fromTo(card, 
+        { height: oldHeight }, 
+        { 
+          height: newHeight, 
+          duration: 0.45, 
+          ease: "power3.out", 
+          clearProps: "height",
+          onComplete: () => {
+            card.style.overflow = ""; // reset overflow
+          }
+        }
+      );
+    }
+
+    // Animate the appearance of the new fields if switching to Register mode
+    if (!isLogin) {
+      gsap.fromTo(".new-field", 
+        { opacity: 0, y: -15, scale: 0.95 }, 
+        { opacity: 1, y: 0, scale: 1, duration: 0.4, stagger: 0.08, ease: "power2.out" }
+      );
+    }
+  }, { dependencies: [isLogin], scope: containerRef });
 
   // Email format validation
   function validateEmail(val: string) {
@@ -62,6 +152,198 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
     }, 1000);
     return () => window.clearInterval(timer);
   }, [codeCooldown]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const container = containerRef.current;
+    if (!canvas || !container) return;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    let animationFrameId: number;
+    let width = (canvas.width = container.clientWidth);
+    let height = (canvas.height = container.clientHeight);
+
+    const handleResize = () => {
+      if (!container || !canvas) return;
+      width = canvas.width = container.clientWidth;
+      height = canvas.height = container.clientHeight;
+    };
+    window.addEventListener("resize", handleResize);
+
+    interface Particle {
+      angle: number;
+      angularSpeed: number;
+      baseRadius: number;
+      currentRadius: number;
+      radiusOffsetSpeed: number;
+      radiusOffsetTime: number;
+      size: number;
+      color: string;
+      alpha: number;
+      pulseSpeed: number;
+      pulseTime: number;
+      ease: number;
+      cx: number;
+      cy: number;
+    }
+
+    let particles: Particle[] = [];
+    const maxParticles = 60; // Reduced from 140 to heavily optimize canvas rendering performance
+
+    const getSpotifyGreenVariation = () => {
+      // Vary green hue between 120 (yellowish-green) and 160 (bluish-green)
+      const hue = Math.floor(Math.random() * 41) + 120;
+      const saturation = Math.floor(Math.random() * 21) + 70;
+      const lightness = Math.floor(Math.random() * 21) + 40;
+      return `hsl(${hue}, ${saturation}%, ${lightness}%)`;
+    };
+
+    const getRandomColor = () => {
+      // Completely random vibrant neon hue (0 to 360)
+      const hue = Math.floor(Math.random() * 360);
+      const saturation = Math.floor(Math.random() * 21) + 80; // High saturation
+      const lightness = Math.floor(Math.random() * 21) + 50; // High brightness
+      return `hsl(${hue}, ${saturation}%, ${lightness}%)`;
+    };
+
+    // Pre-initialize orbital particles
+    for (let i = 0; i < maxParticles; i++) {
+      // Radial ring between 20px (inner) and 50px (outer) to spread them out while maintaining hollow center
+      const baseRadius = Math.random() * 30 + 20;
+
+      // Assign ease factors to distribute response latency across 3 distinct cohorts:
+      // - 25% core tight followers (ease: 0.18 ~ 0.26)
+      // - 35% mid-tail transition particles (ease: 0.10 ~ 0.17)
+      // - 40% long-tail lagging particles (ease: 0.03 ~ 0.09)
+      let ease = 0.15;
+      const rand = Math.random();
+      if (rand < 0.25) {
+        ease = Math.random() * 0.08 + 0.18;
+      } else if (rand < 0.6) {
+        ease = Math.random() * 0.07 + 0.10;
+      } else {
+        ease = Math.random() * 0.06 + 0.03;
+      }
+
+      // 15% of the particles will have completely random colors (accents), 85% will remain Spotify greens
+      const isAccentParticle = Math.random() < 0.15;
+      const color = isAccentParticle ? getRandomColor() : getSpotifyGreenVariation();
+      
+      particles.push({
+        angle: Math.random() * Math.PI * 2,
+        angularSpeed: (Math.random() * 0.018 + 0.008) * (Math.random() > 0.5 ? 1 : -1),
+        baseRadius: baseRadius,
+        currentRadius: baseRadius,
+        radiusOffsetSpeed: Math.random() * 0.03 + 0.01,
+        radiusOffsetTime: Math.random() * Math.PI * 2,
+        size: Math.random() * 3.0 + 2.0, // Increased size (2.0px ~ 5.0px) for visibility with fewer particles
+        color: color,
+        alpha: Math.random() * 0.4 + 0.5, // Base alpha 0.5 ~ 0.9
+        pulseSpeed: Math.random() * 0.04 + 0.02,
+        pulseTime: Math.random() * Math.PI * 2,
+        ease: ease,
+        cx: 0,
+        cy: 0
+      });
+    }
+
+    const mouse = { x: -1000, y: -1000 };
+    let hasMoved = false;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const rect = container.getBoundingClientRect();
+      mouse.x = e.clientX - rect.left;
+      mouse.y = e.clientY - rect.top;
+
+      if (!hasMoved) {
+        // Initialize particle orbit centers immediately to mouse coordinates on first movement
+        for (let i = 0; i < particles.length; i++) {
+          particles[i].cx = mouse.x;
+          particles[i].cy = mouse.y;
+        }
+        hasMoved = true;
+      }
+    };
+
+    container.addEventListener("mousemove", handleMouseMove);
+
+    const animate = () => {
+      ctx.clearRect(0, 0, width, height);
+
+      if (hasMoved) {
+        for (let i = 0; i < particles.length; i++) {
+          const p = particles[i];
+
+          // Rotate
+          p.angle += p.angularSpeed;
+
+          // Gentle breathing variation in radius
+          p.radiusOffsetTime += p.radiusOffsetSpeed;
+          const currentRadius = p.baseRadius + Math.sin(p.radiusOffsetTime) * 5;
+
+          // Breath fade-in/out
+          p.pulseTime += p.pulseSpeed;
+          const baseAlpha = p.alpha * (0.6 + 0.4 * Math.sin(p.pulseTime));
+
+          // Interpolate orbit center towards mouse coordinate with its assigned ease factor
+          p.cx += (mouse.x - p.cx) * p.ease;
+          p.cy += (mouse.y - p.cy) * p.ease;
+
+          // Performance: Calculate lag using Math.sqrt to avoid Math.hypot function call overhead
+          const dx = mouse.x - p.cx;
+          const dy = mouse.y - p.cy;
+          const lag = Math.sqrt(dx * dx + dy * dy);
+          const maxLag = 110; // Max distance for full tapering effect
+          const lagRatio = Math.min(1, lag / maxLag);
+
+          // Taper orbit radius so trailing particles converge to a thin tail line
+          const renderRadius = currentRadius * (1 - lagRatio * 0.85);
+
+          // Taper size and opacity as particle lags further behind
+          const renderSize = Math.max(0.6, p.size * (1 - lagRatio * 0.65));
+          const renderAlpha = baseAlpha * (1 - lagRatio * 0.82);
+
+          // Calculate coordinates relative to the lagging orbit center and tapered radius
+          const x = p.cx + renderRadius * Math.cos(p.angle);
+          const y = p.cy + renderRadius * Math.sin(p.angle);
+
+          // Extreme Performance Optimization:
+          // 1. Avoid shadowBlur & shadowColor: Canvas shadow filters are very heavy on CPU/GPU and trigger lag.
+          //    Instead, we draw two concentric vector circles (outer faint aura + inner solid core) which GPUs draw instantly.
+          // 2. Avoid save() & restore() within the loop: Modifying canvas state stacks 60 times/frame causes lag.
+          //    Instead, we directly change globalAlpha and fillStyle, resetting globalAlpha once after the loop.
+          
+          // Pass 1: Draw outer soft glow aura
+          ctx.globalAlpha = renderAlpha * 0.28;
+          ctx.fillStyle = p.color;
+          ctx.beginPath();
+          ctx.arc(x, y, renderSize * 2.3, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Pass 2: Draw solid inner core
+          ctx.globalAlpha = renderAlpha;
+          ctx.beginPath();
+          ctx.arc(x, y, renderSize, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        
+        // Reset globalAlpha to default
+        ctx.globalAlpha = 1.0;
+      }
+
+      animationFrameId = requestAnimationFrame(animate);
+    };
+
+    animate();
+
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      container.removeEventListener("mousemove", handleMouseMove);
+      cancelAnimationFrame(animationFrameId);
+    };
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -124,11 +406,48 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
 
       const payload = await response.json();
       const user = payload.user ?? payload;
-      onLoginSuccess({
-        id: user.id,
-        username: user.username,
-        role: user.role,
+      
+      // Google-style Exit transition: zoom, shrink, and fade out the card and background components
+      const card = cardRef.current;
+      const canvas = canvasRef.current;
+      const spheres = document.querySelectorAll(".glow-sphere");
+      
+      const tl = gsap.timeline({
+        onComplete: () => {
+          onLoginSuccess({
+            id: user.id,
+            username: user.username,
+            role: user.role,
+            generation_limit: user.generation_limit,
+          });
+        }
       });
+      
+      if (card) {
+        tl.to(card, { 
+          y: -40, 
+          scale: 0.94, 
+          opacity: 0, 
+          duration: 0.45, 
+          ease: "power2.inOut" 
+        });
+      }
+      if (spheres.length) {
+        tl.to(spheres, { 
+          scale: 0.8,
+          opacity: 0, 
+          duration: 0.35, 
+          stagger: 0.05,
+          ease: "power2.in" 
+        }, "-=0.35");
+      }
+      if (canvas) {
+        tl.to(canvas, { 
+          opacity: 0, 
+          duration: 0.35, 
+          ease: "power2.in" 
+        }, "-=0.35");
+      }
     } catch (err: any) {
       setError(err.message || "连接服务器失败，请稍后重试。");
     } finally {
@@ -137,12 +456,25 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
   }
 
   return (
-    <div className="login-page-container">
+    <div ref={containerRef} className="login-page-container">
+      {/* Interactive mouse-follower particle canvas */}
+      <canvas
+        ref={canvasRef}
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          width: "100%",
+          height: "100%",
+          pointerEvents: "none",
+          zIndex: 1,
+        }}
+      />
       {/* Decorative gradient glowing spheres */}
       <div className="glow-sphere sphere-1"></div>
       <div className="glow-sphere sphere-2"></div>
 
-      <div className="login-glass-card">
+      <div ref={cardRef} className="login-glass-card" style={{ zIndex: 2 }}>
         <div className="login-header">
           <div className="login-logo">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -225,7 +557,7 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
           </label>
 
           {!isLogin && (
-            <label className="field animate-fadeIn">
+            <label className="field new-field">
               <span className="field-label-text">确认密码</span>
               <div className="input-with-icon">
                 <svg className="input-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -246,7 +578,7 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
           )}
 
           {!isLogin && (
-            <label className="field animate-fadeIn">
+            <label className="field new-field">
               <span className="field-label-text">邮箱验证码</span>
               <div className="input-with-icon">
                 <svg className="input-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -293,6 +625,10 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
             type="button"
             className="toggle-mode-btn"
             onClick={() => {
+              const card = cardRef.current;
+              if (card) {
+                prevHeightRef.current = card.clientHeight;
+              }
               setIsLogin(!isLogin);
               setError(null);
               setPassword("");

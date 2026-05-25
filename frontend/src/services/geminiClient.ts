@@ -4,42 +4,43 @@ import { safeParseModelJson } from "../utils/safeParseModelJson";
 const DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 
 function validateGeminiConfig(config: ChatModelConfig) {
-  if (!config.modelId.trim()) throw new Error("Model ID 不能为空");
-  if ((config.temperature ?? 0.2) < 0 || (config.temperature ?? 0.2) > 2) throw new Error("Temperature 不合法");
-  if ((config.maxOutputTokens ?? 4096) <= 0) throw new Error("Max Output Tokens 不合法");
-  if ((config.timeoutMs ?? 60000) <= 0) throw new Error("Timeout 不合法");
+  const modelName = config.name?.trim() || config.modelId.trim() || "Gemini";
+  if (!config.modelId.trim()) throw new Error(`${modelName} Model ID 不能为空`);
+  if ((config.temperature ?? 0.2) < 0 || (config.temperature ?? 0.2) > 2) throw new Error(`${modelName} Temperature 不合法`);
+  if ((config.maxOutputTokens ?? 4096) <= 0) throw new Error(`${modelName} Max Output Tokens 不合法`);
+  if ((config.timeoutMs ?? 60000) <= 0) throw new Error(`${modelName} Timeout 不合法`);
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number, modelName: string): Promise<Response> {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(url, { ...init, signal: controller.signal });
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") throw new Error("Gemini 请求超时");
+    if (error instanceof DOMException && error.name === "AbortError") throw new Error(`${modelName} 请求超时`);
     throw new Error("网络错误，请检查代理或网络环境");
   } finally {
     window.clearTimeout(timer);
   }
 }
 
-function parseErrorStatus(status: number): string {
-  if (status === 401 || status === 403) return "Gemini API Key 无效或无权限";
-  if (status === 404) return "Gemini 模型不存在或不可用";
-  if (status === 429) return "Gemini 请求被限流，请稍后再试";
-  if (status >= 500) return "Gemini 服务异常，请稍后再试";
-  return "Gemini 请求失败";
+function parseErrorStatus(status: number, modelName: string): string {
+  if (status === 401 || status === 403) return `${modelName} API Key 无效或无权限`;
+  if (status === 404) return `${modelName} 模型不存在或不可用`;
+  if (status === 429) return `${modelName} 请求被限流，请稍后再试`;
+  if (status >= 500) return `${modelName} 服务异常，请稍后再试`;
+  return `${modelName} 请求失败`;
 }
 
-async function readJson(response: Response): Promise<unknown> {
+async function readJson(response: Response, modelName: string): Promise<unknown> {
   try {
     return await response.json();
   } catch (error) {
-    throw new Error(`Gemini REST 响应不是合法 JSON：${error instanceof Error ? error.message : "解析失败"}`);
+    throw new Error(`${modelName} REST 响应不是合法 JSON：${error instanceof Error ? error.message : "解析失败"}`);
   }
 }
 
-function readGeminiText(payload: unknown): string {
+function readGeminiText(payload: unknown, modelName: string): string {
   const root = payload as { candidates?: unknown };
   const candidates = Array.isArray(root.candidates) ? root.candidates : [];
   const first = candidates[0] as { content?: { parts?: unknown } } | undefined;
@@ -49,7 +50,7 @@ function readGeminiText(payload: unknown): string {
     .filter((value): value is string => typeof value === "string")
     .join("\n")
     .trim();
-  if (!text) throw new Error("Gemini 返回内容为空");
+  if (!text) throw new Error(`${modelName} 返回内容为空`);
   return text;
 }
 
@@ -82,8 +83,10 @@ export async function callGeminiWithConfig(input: {
 }): Promise<string> {
   const { config, prompt, forceJson = true, responseSchema, overrideGenerationConfig, debugCapture } = input;
 
+  const modelName = config.name?.trim() || config.modelId?.trim() || "Gemini";
+
   if (!config.modelId?.trim()) {
-    throw new Error("Gemini Model ID 不能为空");
+    throw new Error(`${modelName} Model ID 不能为空`);
   }
 
   const baseUrl = config.baseUrl?.trim() || "https://generativelanguage.googleapis.com/v1beta";
@@ -126,7 +129,7 @@ export async function callGeminiWithConfig(input: {
   const timeout = window.setTimeout(() => controller.abort(), config.timeoutMs ?? 60000);
 
   try {
-    console.info("[chat] LLM analysis request started", {
+    console.info(`[chat] ${modelName} analysis request started`, {
       url,
       model: config.modelId.trim(),
       provider: config.provider,
@@ -164,7 +167,7 @@ export async function callGeminiWithConfig(input: {
           debugCapture.rawRequestBody = JSON.stringify(fallbackRequestBodyObj, null, 2);
         }
 
-        console.info("[chat] LLM analysis request retrying without thinkingConfig", {
+        console.info(`[chat] ${modelName} analysis request retrying without thinkingConfig`, {
           url,
           model: config.modelId.trim(),
           provider: config.provider,
@@ -191,13 +194,13 @@ export async function callGeminiWithConfig(input: {
     }
 
     if (!response.ok) {
-      const error = new Error(`Gemini 请求失败：${response.status} ${raw.slice(0, 500)}`);
+      const error = new Error(`${modelName} 请求失败：${response.status} ${raw.slice(0, 500)}`);
       (error as any).status = response.status;
       (error as any).responseBody = raw;
       throw error;
     }
 
-    console.info("[chat] Gemini analysis request success");
+    console.info(`[chat] ${modelName} analysis request success`);
 
     let json: any;
     try {
@@ -206,7 +209,7 @@ export async function callGeminiWithConfig(input: {
       if (debugCapture) {
         debugCapture.parseError = `JSON 解析 HTTP 响应失败: ${error.message}`;
       }
-      throw new Error(`Gemini REST 响应不是合法 JSON：${error instanceof Error ? error.message : "解析失败"}`);
+      throw new Error(`${modelName} REST 响应不是合法 JSON：${error instanceof Error ? error.message : "解析失败"}`);
     }
 
     const text =
@@ -235,7 +238,7 @@ export async function callGeminiWithConfig(input: {
     }
 
     if (finishReason === "MAX_TOKENS") {
-      const maxTokensErr = new Error(`Gemini 输出被截断：模型输出已被 MAX_TOKENS 截断。`);
+      const maxTokensErr = new Error(`${modelName} 输出被截断：模型输出已被 MAX_TOKENS 截断。`);
       (maxTokensErr as any).status = response.status;
       (maxTokensErr as any).responseBody = raw;
       (maxTokensErr as any).finishReason = "MAX_TOKENS";
@@ -245,13 +248,13 @@ export async function callGeminiWithConfig(input: {
     }
 
     if (!text.trim()) {
-      throw new Error("Gemini 返回内容为空");
+      throw new Error(`${modelName} 返回内容为空`);
     }
 
     return text;
   } catch (error: any) {
     if (error instanceof DOMException && error.name === "AbortError") {
-      throw new Error("Gemini 请求超时");
+      throw new Error(`${modelName} 请求超时`);
     }
     throw error;
   } finally {
@@ -267,7 +270,7 @@ export interface GeminiErrorDetails {
   responseBody?: string;
 }
 
-export function classifyGeminiError(error: any, defaultMsg = "Gemini 连接失败"): GeminiErrorDetails {
+export function classifyGeminiError(error: any, defaultMsg?: string, modelName = "Gemini"): GeminiErrorDetails {
   let status: number | undefined = error.status;
   let responseBody: string | undefined = error.responseBody;
   let rawMessage = error.message || String(error);
@@ -275,7 +278,16 @@ export function classifyGeminiError(error: any, defaultMsg = "Gemini 连接失�
   let usageMetadata = error.usageMetadata;
 
   // If not explicitly set, try to parse status/body from message
-  if (!status && rawMessage.includes("Gemini 请求失败：")) {
+  const customPrefix = `${modelName} 请求失败：`;
+  if (!status && rawMessage.includes(customPrefix)) {
+    const match = rawMessage.match(new RegExp(`${modelName} 请求失败：(\\d+)\\s*(.*)`));
+    if (match) {
+      status = parseInt(match[1], 10);
+      if (!responseBody) {
+        responseBody = match[2];
+      }
+    }
+  } else if (!status && rawMessage.includes("Gemini 请求失败：")) {
     const match = rawMessage.match(/Gemini 请求失败：(\d+)\s*(.*)/);
     if (match) {
       status = parseInt(match[1], 10);
@@ -289,7 +301,7 @@ export function classifyGeminiError(error: any, defaultMsg = "Gemini 连接失�
   const lowercaseBody = (responseBody || "").toLowerCase();
 
   let errorType: ModelTestResult["errorType"] = "unknown";
-  let userMessage = defaultMsg;
+  let userMessage = defaultMsg || `${modelName} 连接失败`;
   let retryable = false;
 
   const thoughtsTokenCount = usageMetadata?.thoughtsTokenCount ?? 0;
@@ -299,11 +311,11 @@ export function classifyGeminiError(error: any, defaultMsg = "Gemini 连接失�
   if (finishReason === "MAX_TOKENS") {
     if (thoughtsTokenCount > candidatesTokenCount || thoughtsTokenCount > 50) {
       errorType = "output_truncated_by_thinking";
-      userMessage = "Gemini 输出被截断：当前模型使用了 thinking token，maxOutputTokens 过低，导致可见 JSON 没有生成完整。请提高 maxOutputTokens 或将 thinking level 设置为 minimal。";
+      userMessage = `${modelName} 输出被截断：当前模型使用了 thinking token，maxOutputTokens 过低，导致可见 JSON 没有生成完整。请提高 maxOutputTokens 或将 thinking level 设置为 minimal。`;
       retryable = false;
     } else {
       errorType = "invalid_json";
-      userMessage = "Gemini 输出被截断：已达到最大 tokens 限制 (MAX_TOKENS)，导致可见 JSON 没有生成完整。请提高 maxOutputTokens。";
+      userMessage = `${modelName} 输出被截断：已达到最大 tokens 限制 (MAX_TOKENS)，导致可见 JSON 没有生成完整。请提高 maxOutputTokens。`;
       retryable = false;
     }
   }
@@ -318,31 +330,31 @@ export function classifyGeminiError(error: any, defaultMsg = "Gemini 连接失�
     lowercaseBody.includes("try again later")
   ) {
     errorType = "high_demand";
-    userMessage = "Gemini 当前模型负载较高，服务暂时不可用。请稍后重试，或切换备用模型。";
+    userMessage = `${modelName} 当前模型负载较高，服务暂时不可用。请稍后重试，或切换备用模型。`;
     retryable = true;
   }
   // 2. Check for 429 / rate limit
   else if (status === 429 || lowercaseMsg.includes("rate_limit") || lowercaseMsg.includes("resource_exhausted") || lowercaseBody.includes("resource_exhausted")) {
     errorType = "rate_limit";
-    userMessage = "Gemini 请求被限流，请稍后再试或降低请求频率。";
+    userMessage = `${modelName} 请求被限流，请稍后再试或降低请求频率。`;
     retryable = true;
   }
   // 3. Check for auth / 401 / 403
   else if (status === 401 || status === 403 || lowercaseMsg.includes("api key") || lowercaseMsg.includes("auth") || lowercaseMsg.includes("permission")) {
     errorType = "auth";
-    userMessage = "Gemini API Key 无效或无权限，请检查配置。";
+    userMessage = `${modelName} API Key 无效或无权限，请检查配置。`;
     retryable = false;
   }
   // 4. Check for 404 / not found
   else if (status === 404 || lowercaseMsg.includes("model not found") || lowercaseMsg.includes("not found")) {
     errorType = "not_found";
-    userMessage = "Gemini 模型不存在或不可用，请检查 Model ID。";
+    userMessage = `${modelName} 模型不存在或不可用，请检查 Model ID。`;
     retryable = false;
   }
   // 5. Check for timeout
   else if (lowercaseMsg.includes("timeout") || lowercaseMsg.includes("超时")) {
     errorType = "timeout";
-    userMessage = "Gemini 请求超时，请检查 network 或稍后重试。";
+    userMessage = `${modelName} 请求超时，请检查 network 或稍后重试。`;
     retryable = true;
   }
   // 6. Check for 400 invalid request
@@ -467,7 +479,7 @@ export async function testGeminiConfig(
         }
         return { text: resText, usedSchema: useSchema, finalPrompt: promptText };
       } catch (error: any) {
-        const classification = classifyGeminiError(error);
+        const classification = classifyGeminiError(error, undefined, config.name || config.modelId);
         
         if (classification.errorType === "high_demand" && config.fallbackModelId?.trim() && !isFallback) {
           throw error;
@@ -499,7 +511,7 @@ export async function testGeminiConfig(
       const resultObj = await runTestForModel(initialModelId, false);
       text = resultObj.text;
     } catch (primaryError: any) {
-      const primaryClassification = classifyGeminiError(primaryError);
+      const primaryClassification = classifyGeminiError(primaryError, undefined, config.name || config.modelId);
       
       if (primaryClassification.errorType === "high_demand" && config.fallbackModelId?.trim()) {
         fallbackUsed = true;
@@ -578,7 +590,7 @@ export async function testGeminiConfig(
         totalTokenCount: debugCapture.totalTokenCount,
       };
     }
-    const classification = classifyGeminiError(error);
+    const classification = classifyGeminiError(error, undefined, config.name || config.modelId);
 
     const baseUrl = config.baseUrl?.trim() || "https://generativelanguage.googleapis.com/v1beta";
     const url = `${baseUrl.replace(/\/$/, "")}/models/${encodeURIComponent(finalModelId.trim())}:generateContent`;

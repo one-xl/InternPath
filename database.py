@@ -19,6 +19,7 @@ from models import (
     JobPosting,
     SalarySnapshot,
     User,
+    StarStory,
 )
 
 
@@ -265,6 +266,14 @@ class Database:
                 cursor.execute("ALTER TABLE model_configs ADD COLUMN owner_type VARCHAR(50) DEFAULT 'user'")
             if not self._column_exists(cursor, "model_configs", "created_by_admin_id"):
                 cursor.execute("ALTER TABLE model_configs ADD COLUMN created_by_admin_id UUID REFERENCES users(id) ON DELETE SET NULL")
+            if not self._column_exists(cursor, "users", "is_active"):
+                cursor.execute("ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT TRUE")
+            if not self._column_exists(cursor, "users", "expires_at"):
+                cursor.execute("ALTER TABLE users ADD COLUMN expires_at TIMESTAMP")
+            if not self._column_exists(cursor, "users", "generation_limit"):
+                cursor.execute("ALTER TABLE users ADD COLUMN generation_limit INTEGER DEFAULT 5")
+            if not self._column_exists(cursor, "users", "remark"):
+                cursor.execute("ALTER TABLE users ADD COLUMN remark TEXT")
 
             # 7b. Create model_config_assignments table
             cursor.execute(
@@ -615,6 +624,26 @@ class Database:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);")
 
+            # 12. star_stories table
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS star_stories (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    title VARCHAR(255) NOT NULL,
+                    situation TEXT,
+                    task TEXT,
+                    action TEXT,
+                    result TEXT,
+                    full_text TEXT,
+                    style VARCHAR(50) DEFAULT 'standard',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_star_stories_user ON star_stories(user_id);")
+
         else:
             # SQLite setup (keep existing)
             cursor.execute(
@@ -942,6 +971,14 @@ class Database:
                 cursor.execute("ALTER TABLE model_configs ADD COLUMN owner_type TEXT DEFAULT 'user'")
             if not self._column_exists(cursor, "model_configs", "created_by_admin_id"):
                 cursor.execute("ALTER TABLE model_configs ADD COLUMN created_by_admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL")
+            if not self._column_exists(cursor, "users", "is_active"):
+                cursor.execute("ALTER TABLE users ADD COLUMN is_active INTEGER DEFAULT 1")
+            if not self._column_exists(cursor, "users", "expires_at"):
+                cursor.execute("ALTER TABLE users ADD COLUMN expires_at TEXT")
+            if not self._column_exists(cursor, "users", "generation_limit"):
+                cursor.execute("ALTER TABLE users ADD COLUMN generation_limit INTEGER DEFAULT 5")
+            if not self._column_exists(cursor, "users", "remark"):
+                cursor.execute("ALTER TABLE users ADD COLUMN remark TEXT")
 
             # Create model_config_assignments in SQLite
             cursor.execute(
@@ -1075,6 +1112,27 @@ class Database:
                 )
                 """
             )
+
+            # star_stories table
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS star_stories (
+                    id TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    situation TEXT,
+                    task TEXT,
+                    action TEXT,
+                    result TEXT,
+                    full_text TEXT,
+                    style TEXT DEFAULT 'standard',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                )
+                """
+            )
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_star_stories_user ON star_stories(user_id);")
 
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_analysis_records_user ON analysis_records(user_id, created_at DESC);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);")
@@ -1396,7 +1454,7 @@ class Database:
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT id, username, password_hash, created_at, role
+            SELECT id, username, password_hash, created_at, role, is_active, expires_at, generation_limit, remark
             FROM users
             WHERE username = ?
             """,
@@ -1410,14 +1468,28 @@ class Database:
         if not verify_password_hash(password, row[2]):
             return None
 
-        return User(id=row[0], username=row[1], role=row[4], created_at=datetime.fromisoformat(row[3]))
+        is_active_val = bool(row[5]) if row[5] is not None else True
+        expires_at_val = datetime.fromisoformat(row[6]) if row[6] else None
+        generation_limit_val = int(row[7]) if row[7] is not None else 5
+        remark_val = row[8] if row[8] else None
+
+        return User(
+            id=row[0],
+            username=row[1],
+            role=row[4],
+            created_at=datetime.fromisoformat(row[3]),
+            is_active=is_active_val,
+            expires_at=expires_at_val,
+            generation_limit=generation_limit_val,
+            remark=remark_val
+        )
 
     def get_user_by_id(self, user_id: int) -> Optional[User]:
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT id, username, created_at, role
+            SELECT id, username, created_at, role, is_active, expires_at, generation_limit, remark
             FROM users
             WHERE id = ?
             """,
@@ -1427,7 +1499,20 @@ class Database:
         conn.close()
         if row is None:
             return None
-        return User(id=row[0], username=row[1], role=row[3], created_at=datetime.fromisoformat(row[2]))
+        is_active_val = bool(row[4]) if row[4] is not None else True
+        expires_at_val = datetime.fromisoformat(row[5]) if row[5] else None
+        generation_limit_val = int(row[6]) if row[6] is not None else 5
+        remark_val = row[7] if row[7] else None
+        return User(
+            id=row[0],
+            username=row[1],
+            role=row[3],
+            created_at=datetime.fromisoformat(row[2]),
+            is_active=is_active_val,
+            expires_at=expires_at_val,
+            generation_limit=generation_limit_val,
+            remark=remark_val
+        )
 
     def get_user_by_username(self, username: str) -> Optional[User]:
         normalized = normalize_username(username)
@@ -1435,7 +1520,7 @@ class Database:
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT id, username, created_at, role
+            SELECT id, username, created_at, role, is_active, expires_at, generation_limit, remark
             FROM users
             WHERE username = ?
             """,
@@ -1445,7 +1530,20 @@ class Database:
         conn.close()
         if row is None:
             return None
-        return User(id=row[0], username=row[1], role=row[3], created_at=datetime.fromisoformat(row[2]))
+        is_active_val = bool(row[4]) if row[4] is not None else True
+        expires_at_val = datetime.fromisoformat(row[5]) if row[5] else None
+        generation_limit_val = int(row[6]) if row[6] is not None else 5
+        remark_val = row[7] if row[7] else None
+        return User(
+            id=row[0],
+            username=row[1],
+            role=row[3],
+            created_at=datetime.fromisoformat(row[2]),
+            is_active=is_active_val,
+            expires_at=expires_at_val,
+            generation_limit=generation_limit_val,
+            remark=remark_val
+        )
 
     def list_users_with_devices(self) -> list[dict]:
         conn = self.get_connection()
@@ -1500,7 +1598,17 @@ class Database:
     def delete_user(self, user_id: int) -> None:
         conn = self.get_connection()
         cursor = conn.cursor()
+        # Clean up related records explicitly
         cursor.execute("DELETE FROM registered_devices WHERE user_id = ?", (user_id,))
+        cursor.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        cursor.execute("DELETE FROM drafts WHERE user_id = ?", (user_id,))
+        cursor.execute("DELETE FROM user_settings WHERE user_id = ?", (user_id,))
+        cursor.execute("DELETE FROM model_config_assignments WHERE user_id = ?", (user_id,))
+        cursor.execute("DELETE FROM fit_exam_attempts WHERE user_id = ?", (user_id,))
+        cursor.execute("DELETE FROM analysis_records WHERE user_id = ?", (user_id,))
+        cursor.execute("DELETE FROM course_records WHERE jd_record_id IN (SELECT id FROM jd_records WHERE user_id = ?)", (user_id,))
+        cursor.execute("DELETE FROM jd_records WHERE user_id = ?", (user_id,))
+        # Delete user
         cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
         conn.commit()
         conn.close()
@@ -1512,6 +1620,152 @@ class Database:
         count = int(cursor.fetchone()[0])
         conn.close()
         return count
+
+    def save_star_story(self, user_id: Any, story: StarStory) -> Any:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            now_str = datetime.now().isoformat()
+            if self.is_postgres:
+                cursor.execute(
+                    """
+                    INSERT INTO star_stories (
+                        user_id, title, situation, task, action, result, full_text, style, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        user_id,
+                        story.title,
+                        story.situation,
+                        story.task,
+                        story.action,
+                        story.result,
+                        story.full_text,
+                        story.style,
+                        now_str,
+                        now_str,
+                    ),
+                )
+                story_id = cursor.lastrowid
+            else:
+                story_id = uuid4().hex
+                cursor.execute(
+                    """
+                    INSERT INTO star_stories (
+                        id, user_id, title, situation, task, action, result, full_text, style, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        story_id,
+                        user_id,
+                        story.title,
+                        story.situation,
+                        story.task,
+                        story.action,
+                        story.result,
+                        story.full_text,
+                        story.style,
+                        now_str,
+                        now_str,
+                    ),
+                )
+            return story_id
+
+    def list_star_stories(self, user_id: Any) -> List[dict]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT id, user_id, title, situation, task, action, result, full_text, style, created_at, updated_at
+                FROM star_stories
+                WHERE user_id = ?
+                ORDER BY updated_at DESC
+                """,
+                (user_id,),
+            )
+            rows = cursor.fetchall()
+        
+        stories = []
+        for r in rows:
+            stories.append({
+                "id": str(r[0]),
+                "user_id": str(r[1]),
+                "title": r[2],
+                "situation": r[3] or "",
+                "task": r[4] or "",
+                "action": r[5] or "",
+                "result": r[6] or "",
+                "full_text": r[7] or "",
+                "style": r[8] or "standard",
+                "created_at": r[9],
+                "updated_at": r[10]
+            })
+        return stories
+
+    def get_star_story(self, user_id: Any, story_id: Any) -> Optional[dict]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT id, user_id, title, situation, task, action, result, full_text, style, created_at, updated_at
+                FROM star_stories
+                WHERE user_id = ? AND id = ?
+                """,
+                (user_id, story_id),
+            )
+            r = cursor.fetchone()
+        if not r:
+            return None
+        return {
+            "id": str(r[0]),
+            "user_id": str(r[1]),
+            "title": r[2],
+            "situation": r[3] or "",
+            "task": r[4] or "",
+            "action": r[5] or "",
+            "result": r[6] or "",
+            "full_text": r[7] or "",
+            "style": r[8] or "standard",
+            "created_at": r[9],
+            "updated_at": r[10]
+        }
+
+    def update_star_story(self, user_id: Any, story_id: Any, story: StarStory) -> bool:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            now_str = datetime.now().isoformat()
+            cursor.execute(
+                """
+                UPDATE star_stories
+                SET title = ?, situation = ?, task = ?, action = ?, result = ?, full_text = ?, style = ?, updated_at = ?
+                WHERE user_id = ? AND id = ?
+                """,
+                (
+                    story.title,
+                    story.situation,
+                    story.task,
+                    story.action,
+                    story.result,
+                    story.full_text,
+                    story.style,
+                    now_str,
+                    user_id,
+                    story_id,
+                ),
+            )
+            rowcount = cursor.rowcount
+        return rowcount > 0
+
+    def delete_star_story(self, user_id: Any, story_id: Any) -> bool:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM star_stories WHERE user_id = ? AND id = ?",
+                (user_id, story_id),
+            )
+            rowcount = cursor.rowcount
+        return rowcount > 0
 
     def save_jd_record(self, user_id: Any, jd_text: str, analysis: JobAnalysis) -> Any:
         conn = self.get_connection()
@@ -3718,7 +3972,7 @@ class Database:
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT id, username, role, created_at
+            SELECT id, username, role, created_at, is_active, expires_at, generation_limit, remark
             FROM users
             ORDER BY created_at DESC
             """
@@ -3750,11 +4004,20 @@ class Database:
             )
             assigned_models = [r[0] or "未命名" for r in cursor.fetchall()]
             
+            is_active_val = bool(row[4]) if row[4] is not None else True
+            expires_at_val = row[5] if row[5] else None
+            generation_limit_val = int(row[6]) if row[6] is not None else 5
+            remark_val = row[7] if row[7] else ""
+
             users.append({
                 "id": u_id,
                 "username": row[1],
                 "role": row[2],
                 "created_at": row[3],
+                "is_active": is_active_val,
+                "expires_at": expires_at_val,
+                "generation_limit": generation_limit_val,
+                "remark": remark_val,
                 "assignment_count": assign_count,
                 "usage_count": usage_count,
                 "last_login": last_login,
@@ -3762,6 +4025,88 @@ class Database:
             })
         conn.close()
         return users
+
+    def admin_create_temp_user(self, username: str, password_hash: str, expires_at: Optional[str]) -> int:
+        normalized = normalize_username(username)
+        if not normalized:
+            raise ValueError("username_required")
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                INSERT INTO users (username, password_hash, created_at, is_active, expires_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    normalized,
+                    password_hash,
+                    datetime.now().isoformat(),
+                    1 if not self.is_postgres else True,
+                    expires_at,
+                ),
+            )
+            user_id = int(cursor.lastrowid)
+            conn.commit()
+            return user_id
+        except Exception as exc:
+            raise ValueError("username_taken") from exc
+        finally:
+            conn.close()
+
+    def admin_update_user_status(self, user_id: Any, is_active: bool) -> None:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        val = (1 if is_active else 0) if not self.is_postgres else is_active
+        cursor.execute("UPDATE users SET is_active = ? WHERE id = ?", (val, user_id))
+        conn.commit()
+        conn.close()
+
+    def admin_update_user_expiry(self, user_id: Any, expires_at: Optional[str]) -> None:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET expires_at = ? WHERE id = ?", (expires_at, user_id))
+        conn.commit()
+        conn.close()
+
+    def admin_update_user_generation_limit(self, user_id: Any, limit: int) -> None:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET generation_limit = ? WHERE id = ?", (limit, user_id))
+        conn.commit()
+        conn.close()
+
+    def admin_update_username(self, user_id: Any, new_username: str) -> None:
+        normalized = normalize_username(new_username)
+        if not normalized:
+            raise ValueError("username_required")
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("UPDATE users SET username = ? WHERE id = ?", (normalized, user_id))
+            conn.commit()
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("username_taken") from exc
+        except Exception as exc:
+            if "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
+                raise ValueError("username_taken") from exc
+            raise exc
+        finally:
+            conn.close()
+
+    def admin_update_remark(self, user_id: Any, remark: str) -> None:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET remark = ? WHERE id = ?", (remark, user_id))
+        conn.commit()
+        conn.close()
+
+    def decrement_user_generation_limit(self, user_id: Any) -> None:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET generation_limit = generation_limit - 1 WHERE id = ? AND role != 'admin' AND generation_limit > 0", (user_id,))
+        conn.commit()
+        conn.close()
 
     def admin_list_model_configs(self) -> List[dict]:
         conn = self.get_connection()

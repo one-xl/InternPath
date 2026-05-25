@@ -15,6 +15,26 @@ const priorityTone = {
   low: "neutral",
 } as const;
 
+function formatIssue(issue: string): string {
+  if (!issue) return "";
+  let clean = issue;
+  // Remove [evidence_insufficient]
+  clean = clean.replace(/\[evidence_insufficient\]/gi, "");
+  // Remove any 【...】 bracket headers like 【项目经历/工作经历】
+  clean = clean.replace(/【[^】]+】/g, "");
+  // Remove citation failure warning suffix
+  clean = clean.replace(/\(模型返回的证据引用无效或缺少有效证据\)/g, "");
+  return clean.replace(/\s+/g, " ").trim();
+}
+
+function formatSuggestion(suggestion: string): string {
+  if (!suggestion) return "";
+  let clean = suggestion;
+  // Remove fallback error warning prefix
+  clean = clean.replace(/模型返回的证据引用无效或缺少有效证据，原建议暂无法关联有效简历片段。原建议：/g, "");
+  return clean.trim();
+}
+
 function AdviceItem({ item }: { item: ResumeAdvice }) {
   const [copied, setCopied] = useState(false);
 
@@ -33,11 +53,11 @@ function AdviceItem({ item }: { item: ResumeAdvice }) {
       <div className="advice-body">
         <div className="advice-issue">
           <strong>问题与分析</strong>
-          <p>{item.issue}</p>
+          <p>{formatIssue(item.issue)}</p>
         </div>
         <div className="advice-suggestion">
           <strong>改造建议</strong>
-          <p>{item.suggestion}</p>
+          <p>{formatSuggestion(item.suggestion)}</p>
         </div>
         {item.example && (
           <div className="advice-example">

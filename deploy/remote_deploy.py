@@ -150,6 +150,30 @@ def main() -> int:
         sftp.chmod(REMOTE_TAR, stat.S_IRUSR | stat.S_IWUSR)
         sftp.close()
 
+        # Dynamically load local .env variables to sync LLM settings to the server
+        local_env_path = root / ".env"
+        local_llm_keys = {}
+        if local_env_path.is_file():
+            with open(local_env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    if "=" in line:
+                        key, val = line.split("=", 1)
+                        if key.startswith("LLM_"):
+                            local_llm_keys[key] = val.strip()
+
+        llm_env_script = ""
+        if local_llm_keys:
+            llm_env_script = "touch /etc/internpath/app.env\n"
+            for k, v in local_llm_keys.items():
+                v_escaped = shlex.quote(f"{k}={v}")
+                # Escape single quotes in value for sed
+                v_sed = v.replace("'", "'\\''")
+                # Update if exist, append if not
+                llm_env_script += f"grep -q '^{k}=' /etc/internpath/app.env && sed -i 's|^{k}=.*|{k}={v_sed}|' /etc/internpath/app.env || printf '%s\\n' {v_escaped} >> /etc/internpath/app.env\n"
+
         admin_env_script = ""
         if INITIAL_ADMIN_USERNAME and INITIAL_ADMIN_PASSWORD:
             admin_username = shlex.quote(f"INTERNPATH_ADMIN_USERNAME={INITIAL_ADMIN_USERNAME}")
@@ -171,7 +195,9 @@ cd {APP_DIR}
 chmod +x deploy/server_install.sh
 rm -rf .venv
 APP_DIR={APP_DIR} APP_PORT={APP_PORT} SERVICE_NAME=internpath REQUIREMENTS_FILE={APP_DIR}/requirements.server.txt ./deploy/server_install.sh
+{llm_env_script}
 {admin_env_script}
+chmod 600 /etc/internpath/app.env
 systemctl restart internpath
 command -v ufw >/dev/null 2>&1 && ufw allow {APP_PORT}/tcp comment internpath || true
 """
@@ -180,9 +206,11 @@ command -v ufw >/dev/null 2>&1 && ufw allow {APP_PORT}/tcp comment internpath ||
         err = stderr.read().decode("utf-8", errors="replace")
         code = stdout.channel.recv_exit_status()
         if out:
-            print(out)
+            sys.stdout.write(out.encode(sys.stdout.encoding or "utf-8", errors="replace").decode(sys.stdout.encoding or "utf-8"))
+            sys.stdout.flush()
         if err:
-            print(err, file=sys.stderr)
+            sys.stderr.write(err.encode(sys.stderr.encoding or "utf-8", errors="replace").decode(sys.stderr.encoding or "utf-8"))
+            sys.stderr.flush()
         return code
     finally:
         client.close()

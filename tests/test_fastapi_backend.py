@@ -98,3 +98,43 @@ def test_register_requires_email_code_and_accepts_dev_code(tmp_path, monkeypatch
     )
     assert register_response.status_code == 200
     assert register_response.json()["user"]["username"] == "verify@example.com"
+
+
+def test_star_api_payload_length_limits(tmp_path, monkeypatch):
+    monkeypatch.setattr(Config, "EMAIL_VERIFICATION_REQUIRED", False)
+    service = _service_with_tmp_storage(tmp_path, monkeypatch)
+    app = create_app(service=service, auth_db=Database(str(tmp_path / "auth.db")))
+    client = TestClient(app)
+
+    # 1. Register & Auth
+    register_response = client.post(
+        "/api/auth/register",
+        json={"username": "star_test@example.com", "password": "password123"},
+    )
+    assert register_response.status_code == 200
+    token = register_response.json()["token"]
+
+    # 2. Test Input text exceeding 4000 limit -> must be rejected with 422
+    too_long_text = "A" * 4001
+    bad_response = client.post(
+        "/api/star/generate-segment",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "segment_type": "S",
+            "input_text": too_long_text
+        }
+    )
+    assert bad_response.status_code == 422
+
+    # 3. Test Input text within 4000 limit -> must pass Pydantic validation (returns 500 because LLM_API_KEY is not configured in test env, but NOT 422)
+    normal_text = "A" * 4000
+    good_response = client.post(
+        "/api/star/generate-segment",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "segment_type": "S",
+            "input_text": normal_text
+        }
+    )
+    assert good_response.status_code != 422
+

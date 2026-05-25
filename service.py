@@ -18,6 +18,7 @@ from models import (
     PersonalDecision,
     SalarySnapshot,
     SalaryTrendPrediction,
+    StarStory,
 )
 from practice_app import PracticeAppInvoker
 from ranker import CourseRanker
@@ -565,3 +566,62 @@ class CareerPathAIService:
 
     def latest_fit_scores(self, user_id: int) -> dict[int, Tuple[float, datetime]]:
         return self.user_db(user_id).get_latest_fit_score_by_jd(user_id)
+
+    def generate_star_segment_suggestion(
+        self,
+        *,
+        segment_type: str,
+        input_text: str,
+        jd_text: Optional[str] = None,
+        resume_text: Optional[str] = None,
+        current_star: Optional[dict] = None,
+        user_id: Optional[Any] = None,
+        config_id: Optional[str] = None,
+    ) -> str:
+        return self.ai_analyzer.generate_star_segment_suggestion(
+            segment_type=segment_type,
+            input_text=input_text,
+            jd_text=jd_text,
+            resume_text=resume_text,
+            current_star=current_star,
+            user_id=user_id,
+            config_id=config_id,
+        )
+
+    def polish_star_story(
+        self,
+        *,
+        situation: str,
+        task: str,
+        action: str,
+        result: str,
+        style: str = "standard",
+        jd_text: Optional[str] = None,
+        user_id: Optional[Any] = None,
+        config_id: Optional[str] = None,
+    ) -> str:
+        return self.ai_analyzer.polish_star_story(
+            situation=situation,
+            task=task,
+            action=action,
+            result=result,
+            style=style,
+            jd_text=jd_text,
+            user_id=user_id,
+            config_id=config_id,
+        )
+
+    def save_star_story(self, user_id: Any, story: StarStory) -> Any:
+        return self.user_db(user_id).save_star_story(user_id, story)
+
+    def list_star_stories(self, user_id: Any) -> List[dict]:
+        return self.user_db(user_id).list_star_stories(user_id)
+
+    def get_star_story(self, user_id: Any, story_id: Any) -> Optional[dict]:
+        return self.user_db(user_id).get_star_story(user_id, story_id)
+
+    def update_star_story(self, user_id: Any, story_id: Any, story: StarStory) -> bool:
+        return self.user_db(user_id).update_star_story(user_id, story_id, story)
+
+    def delete_star_story(self, user_id: Any, story_id: Any) -> bool:
+        return self.user_db(user_id).delete_star_story(user_id, story_id)

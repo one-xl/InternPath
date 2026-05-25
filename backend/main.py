@@ -842,6 +842,29 @@ def create_app(
                         status_code=200,
                         media_type="application/json"
                     )
+                # Intercept non-200 upstream responses that return HTML (e.g. Cloudflare 504/502 pages)
+                if res.status_code != 200:
+                    content_type = (res.headers.get("content-type") or "").lower()
+                    raw_text = res.text[:500] if res.text else ""
+                    is_html = "text/html" in content_type or raw_text.strip().startswith("<!") or raw_text.strip().startswith("<html")
+                    if is_html:
+                        status_map = {
+                            502: "上游模型服务网关错误 (502)，请稍后重试或切换模型",
+                            503: "上游模型服务暂时不可用 (503)，请稍后重试",
+                            504: "上游模型服务响应超时 (504)，模型可能已消耗 token 但未能返回结果。建议稍后重试或切换模型",
+                            429: "上游模型服务请求限流 (429)，请稍后重试",
+                            403: "上游模型服务拒绝访问 (403)，可能是余额不足或 API Key 无效",
+                        }
+                        detail = status_map.get(res.status_code, f"上游模型服务返回异常 ({res.status_code})，请稍后重试或切换模型")
+                        raise HTTPException(status_code=502, detail=detail)
+                    # Non-HTML error: try to extract a clean error message from JSON
+                    try:
+                        err_json = res.json()
+                        err_msg = err_json.get("error", {}).get("message", "") if isinstance(err_json.get("error"), dict) else str(err_json.get("error", ""))
+                        if err_msg:
+                            raise HTTPException(status_code=res.status_code, detail=f"上游模型服务错误 ({res.status_code}): {err_msg}")
+                    except (ValueError, TypeError):
+                        pass
                 return Response(
                     content=res.content,
                     status_code=res.status_code,

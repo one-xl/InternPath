@@ -38,7 +38,7 @@ class AIAnalyzer:
         self._http_client = httpx.Client(timeout=timeout)
         self.model = Config.LLM_MODEL
 
-    def _client(self, user_id: Optional[Any] = None, config_id: Optional[str] = None) -> Tuple[OpenAI, Optional[str], str, str]:
+    def _client(self, user_id: Optional[Any] = None, config_id: Optional[str] = None, allow_fallback: bool = True) -> Tuple[OpenAI, Optional[str], str, str]:
         # 1. If user_id is provided, try to find it in the database
         if user_id:
             try:
@@ -145,6 +145,8 @@ class AIAnalyzer:
                 print(f"[STAR_AI] Database model config resolution error: {e}")
 
         # Fallback to system default LLM from .env
+        if not allow_fallback:
+            raise Exception("请先在个人中心 > 模型配置中配置并启用您的大模型，STAR 工坊需要使用您已配置的模型。")
         if Config.LLM_API_KEY and Config.LLM_API_KEY not in _PLACEHOLDER_KEYS and Config.LLM_BASE_URL:
             self.model = Config.LLM_MODEL
             base_url = Config.LLM_BASE_URL.rstrip("/")
@@ -406,7 +408,7 @@ class AIAnalyzer:
         user_id: Optional[Any] = None,
         config_id: Optional[str] = None,
     ) -> str:
-        client, resolved_config_id, provider, model_id = self._client(user_id, config_id)
+        client, resolved_config_id, provider, model_id = self._client(user_id, config_id, allow_fallback=False)
         current = current_star or {}
         
         system_prompt = f"""
@@ -511,7 +513,7 @@ class AIAnalyzer:
         user_id: Optional[Any] = None,
         config_id: Optional[str] = None,
     ) -> str:
-        client, resolved_config_id, provider, model_id = self._client(user_id, config_id)
+        client, resolved_config_id, provider, model_id = self._client(user_id, config_id, allow_fallback=False)
         
         style_prompt = ""
         if style == "big-tech":
@@ -615,7 +617,7 @@ class AIAnalyzer:
         user_id: Optional[Any] = None,
         config_id: Optional[str] = None,
     ) -> dict:
-        client, resolved_config_id, provider, model_id = self._client(user_id, config_id)
+        client, resolved_config_id, provider, model_id = self._client(user_id, config_id, allow_fallback=False)
 
         style_prompt = ""
         if style == "big-tech":

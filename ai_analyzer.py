@@ -143,9 +143,25 @@ class AIAnalyzer:
                                 ), cfg_id, provider, model_id
             except Exception as e:
                 print(f"[STAR_AI] Database model config resolution error: {e}")
-                raise Exception(f"大模型解析错误: {e}") from e
 
-        # If no custom model config resolved, raise an exception (system default chat model is empty)
+        # Fallback to system default LLM from .env
+        if Config.LLM_API_KEY and Config.LLM_API_KEY not in _PLACEHOLDER_KEYS and Config.LLM_BASE_URL:
+            self.model = Config.LLM_MODEL
+            base_url = Config.LLM_BASE_URL.rstrip("/")
+            try:
+                import urllib.parse, re as _re
+                parsed = urllib.parse.urlparse(base_url)
+                path = parsed.path.rstrip("/")
+                if not path or not _re.search(r"/(v\d+[^/]*)$", path):
+                    base_url = f"{base_url}/v1"
+            except Exception:
+                pass
+            return OpenAI(
+                api_key=Config.LLM_API_KEY,
+                base_url=base_url,
+                http_client=self._http_client,
+            ), None, "default", Config.LLM_MODEL
+
         raise Exception("系统默认大模型为空，请先在个人中心/设置中配置并启用您的自定义模型。")
 
 

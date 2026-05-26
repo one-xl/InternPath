@@ -19,6 +19,7 @@ interface ResultPageProps {
   onCopyAdvice: () => void;
   onMarkApplied: () => void;
   onAbandon: () => void;
+  onGoToRewrite?: (jdId: string, adviceId: string) => void;
 }
 
 function ResumeEvidenceCard({ result }: { result: AnalysisResult }) {
@@ -57,7 +58,7 @@ function ResumeEvidenceCard({ result }: { result: AnalysisResult }) {
   }
 
   return (
-    <Card title="旧版文本输入记录" description="这条历史记录来自旧版手动输入材料流程，因此没有上传文件和 RAG 检索片段。">
+    <Card title="旧版文本输入记录" description="这条历史记录来自旧版手动输入材料流程，因此没有上传文件 and RAG 检索片段。">
       <Badge tone="info">兼容旧数据</Badge>
       {result.candidateMaterial || result.draft?.resumeText ? <p className="legacy-material">{result.candidateMaterial || result.draft?.resumeText}</p> : null}
     </Card>
@@ -85,7 +86,16 @@ function AdviceEvidenceCard({ result }: { result: AnalysisResult }) {
   );
 }
 
-export function ResultPage({ result, isSaved, onNewAnalysis, onSave, onCopyAdvice, onMarkApplied, onAbandon }: ResultPageProps) {
+export function ResultPage({
+  result,
+  isSaved,
+  onNewAnalysis,
+  onSave,
+  onCopyAdvice,
+  onMarkApplied,
+  onAbandon,
+  onGoToRewrite
+}: ResultPageProps) {
   if (!result) {
     return (
       <EmptyState
@@ -109,8 +119,15 @@ export function ResultPage({ result, isSaved, onNewAnalysis, onSave, onCopyAdvic
       <DecisionCard result={result} />
       <MatchScorePanel result={result} />
       <ResumeEvidenceCard result={result} />
-      <ResumeChunkPreview chunks={result.retrievedResumeChunks ?? []} advice={result.resumeAdvice ?? []} />
-      <ResumeAdviceList advice={result.resumeAdvice ?? []} />
+      <ResumeChunkPreview
+        chunks={result.retrievedResumeChunks ?? []}
+        advice={result.resumeAdvice ?? []}
+        onGoToRewrite={onGoToRewrite ? (adviceId) => onGoToRewrite(result.id, adviceId) : undefined}
+      />
+      <ResumeAdviceList
+        advice={result.resumeAdvice ?? []}
+        onGoToRewrite={onGoToRewrite ? (adviceId) => onGoToRewrite(result.id, adviceId) : undefined}
+      />
       <AdviceEvidenceCard result={result} />
       <LearningPlanPanel suggestions={result.learningSuggestions ?? []} />
       <Card title="下一步行动">

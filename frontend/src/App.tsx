@@ -39,6 +39,9 @@ export default function App() {
   const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
   const [draftSaveMessage, setDraftSaveMessage] = useState<string | null>(null);
 
+  // Track preselected context for STAR rewrite redirection from ResultPage
+  const [preselectedStarContext, setPreselectedStarContext] = useState<{ jdId: string; adviceId: string } | null>(null);
+
   // Authentication State
   const [currentUser, setCurrentUser] = useState<{ id: any; username: string; role?: string; generation_limit?: number } | null>(null);
   const [checkingAuth, setCheckingAuth] = useState(true);
@@ -570,6 +573,10 @@ export default function App() {
             onCopyAdvice={copyAdvice}
             onMarkApplied={() => markCurrent("applied")}
             onAbandon={() => markCurrent("abandoned")}
+            onGoToRewrite={(jdId, adviceId) => {
+              setPreselectedStarContext({ jdId, adviceId });
+              setActivePage("star");
+            }}
           />
         )}
         {activePage === "history" && (
@@ -614,6 +621,8 @@ export default function App() {
         )}
         {activePage === "star" && (
           <StarPage
+            preselectedContext={preselectedStarContext}
+            onClearPreselectedContext={() => setPreselectedStarContext(null)}
             onGenerationUsed={() => {
               setCurrentUser((prev) => {
                 if (prev && prev.role !== "admin" && prev.generation_limit !== undefined) {

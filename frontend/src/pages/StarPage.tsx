@@ -50,7 +50,15 @@ interface JdHistoryItem {
   resumeAdvice?: ResumeAdvice[];
 }
 
-export function StarPage({ onGenerationUsed }: { onGenerationUsed?: () => void }) {
+export function StarPage({
+  preselectedContext,
+  onClearPreselectedContext,
+  onGenerationUsed
+}: {
+  preselectedContext?: { jdId: string; adviceId: string } | null;
+  onClearPreselectedContext?: () => void;
+  onGenerationUsed?: () => void;
+}) {
   const pageRef = useRef<HTMLDivElement | null>(null);
 
   // Modes: list, wizard, polish
@@ -153,6 +161,41 @@ export function StarPage({ onGenerationUsed }: { onGenerationUsed?: () => void }
     fetchHistoryJds();
     fetchConfigs();
   }, []);
+
+  // Automatically pre-fill the smart rewrite content when redirected with a selected advice from history
+  useEffect(() => {
+    if (preselectedContext && preselectedContext.jdId && historyJds.length > 0) {
+      setSelectedJdId(preselectedContext.jdId);
+      const item = historyJds.find((x) => x.id === preselectedContext.jdId);
+      if (item) {
+        const jdText = item.input_json?.jdText || item.result_json?.draft?.jdText || "";
+        setSelectedJdText(jdText);
+        const adviceList = item.resumeAdvice || [];
+        setSelectedJdAdvice(adviceList);
+        
+        // Find the specific advice item
+        const adv = adviceList.find((a) => a.id === preselectedContext.adviceId);
+        if (adv) {
+          const chunks = (item as any).parsedResume?.chunks || (item as any).retrievedResumeChunks || [];
+          const basedOn = adv.basedOnChunkIds || [];
+          const matched = chunks.filter((c: any) => basedOn.includes(c.id));
+          const originalText = matched.length > 0
+            ? matched.map((c: any) => c.content || c.text || "").join("\n").trim()
+            : "";
+          
+          if (originalText) {
+            const targetText = `${originalText}\n\n【修改目标】：针对以下简历问题进行针对性智能改写：\n- 问题缺陷：${adv.issue}\n- 优化建议：${adv.suggestion}`;
+            setSmartRewriteText(targetText);
+          }
+        }
+      }
+      
+      setSmartRewriteOpen(true);
+      setMode("wizard");
+      
+      onClearPreselectedContext?.();
+    }
+  }, [preselectedContext, historyJds]);
 
   // GSAP animations for page modes
   useGSAP(() => {
@@ -858,6 +901,44 @@ export function StarPage({ onGenerationUsed }: { onGenerationUsed?: () => void }
                 <p style={{ fontSize: "12px", color: "var(--muted)", margin: 0, lineHeight: "1.5" }}>
                   直接粘贴完整的项目经历描述（简历片段、面试草稿、甚至随意的笔记都可以），AI 将自动按 STAR 结构拆解并润色成简历级表达。
                 </p>
+
+                {/* Unified JD selection history import inside smart rewrite page */}
+                <div style={{ display: "flex", flexDirection: "column", gap: "6px", margin: "10px 0 14px 0" }}>
+                  <span style={{ fontSize: "12.5px", fontWeight: "700", color: "var(--text)", display: "flex", alignItems: "center", gap: "6px" }}>
+                    🔗 导入最近的简历与 JD 分析记录：
+                  </span>
+                  <select
+                    value={selectedJdId}
+                    onChange={handleJdSelect}
+                    style={{
+                      width: "100%",
+                      padding: "10px 14px",
+                      fontSize: "13px",
+                      borderRadius: "var(--radius-sm)",
+                      border: "1px solid var(--line-strong)",
+                      background: "var(--surface)",
+                      color: "var(--text)",
+                      outline: "none",
+                      cursor: "pointer",
+                      transition: "border-color 0.2s ease"
+                    }}
+                    onFocus={(e) => e.target.style.borderColor = "var(--accent)"}
+                    onBlur={(e) => e.target.style.borderColor = "var(--line-strong)"}
+                  >
+                    <option value="">-- 选择分析记录 (一键加载该岗位的待修改片段) --</option>
+                    {historyJds.map((item) => {
+                      const name = item.input_json?.company || item.result_json?.draft?.company || "未命名公司";
+                      const title = item.input_json?.title || item.result_json?.draft?.title || "未知岗位";
+                      const adviceCount = item.resumeAdvice?.length || 0;
+                      return (
+                        <option key={item.id} value={item.id}>
+                          {name} - {title} ({adviceCount} 条待改写建议)
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+
                 {selectedJdAdvice.some(item => getOriginalResumeText(item)) && (
                   <div className="quick-fill-advice-segments" style={{ margin: "12px 0", padding: "12px", background: "rgba(0,0,0,0.02)", borderRadius: "var(--radius-md)", border: "1px dashed var(--line)", display: "flex", flexDirection: "column", gap: "8px" }}>
                     <div style={{ fontSize: "12px", fontWeight: "700", color: "var(--text)", display: "flex", alignItems: "center", gap: "6px" }}>

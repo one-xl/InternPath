@@ -15,7 +15,7 @@ const priorityTone = {
   low: "neutral",
 } as const;
 
-function formatIssue(issue: string): string {
+export function formatIssue(issue: string): string {
   if (!issue) return "";
   let clean = issue;
   // Remove [evidence_insufficient]
@@ -27,7 +27,7 @@ function formatIssue(issue: string): string {
   return clean.replace(/\s+/g, " ").trim();
 }
 
-function formatSuggestion(suggestion: string): string {
+export function formatSuggestion(suggestion: string): string {
   if (!suggestion) return "";
   let clean = suggestion;
   // Remove fallback error warning prefix
@@ -35,7 +35,7 @@ function formatSuggestion(suggestion: string): string {
   return clean.trim();
 }
 
-function AdviceItem({ item }: { item: ResumeAdvice }) {
+function AdviceItem({ item, onGoToRewrite }: { item: ResumeAdvice; onGoToRewrite?: (adviceId: string) => void }) {
   const [copied, setCopied] = useState(false);
 
   function handleCopy() {
@@ -46,9 +46,41 @@ function AdviceItem({ item }: { item: ResumeAdvice }) {
 
   return (
     <article className="advice-card">
-      <div className="advice-head">
-        <Badge tone={priorityTone[item.priority]}>{priorityLabel[item.priority]}</Badge>
-        <span className="advice-impact">预计收益：{item.impact}</span>
+      <div className="advice-head" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+          <Badge tone={priorityTone[item.priority]}>{priorityLabel[item.priority]}</Badge>
+          <span className="advice-impact">预计收益：{item.impact}</span>
+        </div>
+        {onGoToRewrite && (
+          <button
+            type="button"
+            onClick={() => onGoToRewrite(item.id)}
+            style={{
+              background: "var(--accent-bg)",
+              color: "var(--accent)",
+              border: "1px solid var(--accent)",
+              borderRadius: "12px",
+              padding: "2px 10px",
+              fontSize: "11px",
+              fontWeight: "600",
+              cursor: "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "4px",
+              transition: "all 0.2s ease"
+            }}
+            onMouseOver={(e) => {
+              e.currentTarget.style.background = "var(--accent)";
+              e.currentTarget.style.color = "var(--surface)";
+            }}
+            onMouseOut={(e) => {
+              e.currentTarget.style.background = "var(--accent-bg)";
+              e.currentTarget.style.color = "var(--accent)";
+            }}
+          >
+            ✨ 去 STAR 工坊改写
+          </button>
+        )}
       </div>
       <div className="advice-body">
         <div className="advice-issue">
@@ -95,24 +127,24 @@ function AdviceItem({ item }: { item: ResumeAdvice }) {
   );
 }
 
-function AdviceSection({ title, items }: { title: string; items: ResumeAdvice[] }) {
+function AdviceSection({ title, items, onGoToRewrite }: { title: string; items: ResumeAdvice[]; onGoToRewrite?: (adviceId: string) => void }) {
   if (!items.length) return null;
   return (
     <div className="advice-section">
       <h3>{title}</h3>
       {items.map((item) => (
-        <AdviceItem key={item.id} item={item} />
+        <AdviceItem key={item.id} item={item} onGoToRewrite={onGoToRewrite} />
       ))}
     </div>
   );
 }
 
-export function ResumeAdviceList({ advice }: { advice: ResumeAdvice[] }) {
+export function ResumeAdviceList({ advice, onGoToRewrite }: { advice: ResumeAdvice[]; onGoToRewrite?: (adviceId: string) => void }) {
   return (
     <Card title="简历改造建议" description="按优先级分级处理，直接在下面对比修改前后的表述细节，支持一键复制。">
-      <AdviceSection title="必须改 (高优先级)" items={advice.filter((item) => item.priority === "high")} />
-      <AdviceSection title="推荐优化 (中优先级)" items={advice.filter((item) => item.priority === "medium")} />
-      <AdviceSection title="锦上添花 (低优先级)" items={advice.filter((item) => item.priority === "low")} />
+      <AdviceSection title="必须改 (高优先级)" items={advice.filter((item) => item.priority === "high")} onGoToRewrite={onGoToRewrite} />
+      <AdviceSection title="推荐优化 (中优先级)" items={advice.filter((item) => item.priority === "medium")} onGoToRewrite={onGoToRewrite} />
+      <AdviceSection title="锦上添花 (低优先级)" items={advice.filter((item) => item.priority === "low")} onGoToRewrite={onGoToRewrite} />
     </Card>
   );
 }

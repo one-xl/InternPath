@@ -85,12 +85,11 @@ export function StarPage({
   const [selectedJdAdvice, setSelectedJdAdvice] = useState<ResumeAdvice[]>([]);
 
   // AI & Polish states
-  const [activeStep, setActiveStep] = useState(0);
-  const [aiSuggestion, setAiSuggestion] = useState("");
-  const [loadingSuggestion, setLoadingSuggestion] = useState(false);
   const [polishedText, setPolishedText] = useState("");
   const [loadingPolish, setLoadingPolish] = useState(false);
   const [activeStyle, setActiveStyle] = useState("standard");
+  const [starDetailOpen, setStarDetailOpen] = useState(false);
+  const [previewTab, setPreviewTab] = useState<"render" | "markdown">("render");
 
   // Smart Rewrite states
   const [smartRewriteOpen, setSmartRewriteOpen] = useState(true);
@@ -189,43 +188,8 @@ export function StarPage({
           }
         }
       }
-      
-      setSmartRewriteOpen(true);
-      setMode("wizard");
-      
-      onClearPreselectedContext?.();
     }
   }, [preselectedContext, historyJds]);
-
-  // GSAP animations for page modes
-  useGSAP(() => {
-    gsap.fromTo(".star-fade-in", 
-      { opacity: 0, y: 15 },
-      { opacity: 1, y: 0, duration: 0.5, ease: "power2.out" }
-    );
-  }, { dependencies: [mode], scope: pageRef });
-
-  // GSAP for wizard steps
-  useGSAP(() => {
-    gsap.fromTo(".wizard-content-box", 
-      { opacity: 0, x: 20 },
-      { opacity: 1, x: 0, duration: 0.4, ease: "power2.out" }
-    );
-  }, { dependencies: [activeStep], scope: pageRef });
-
-  const getStepValue = (key: string) => {
-    if (key === "situation") return situation;
-    if (key === "task") return task;
-    if (key === "action") return action;
-    return result;
-  };
-
-  const setStepValue = (key: string, val: string) => {
-    if (key === "situation") setSituation(val);
-    else if (key === "task") setTask(val);
-    else if (key === "action") setAction(val);
-    else setResult(val);
-  };
 
   const handleJdSelect = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const id = e.target.value;
@@ -239,17 +203,6 @@ export function StarPage({
     const jdText = item?.input_json?.jdText || item?.result_json?.draft?.jdText || "";
     setSelectedJdText(jdText);
     setSelectedJdAdvice(item?.resumeAdvice || []);
-  };
-
-  const handleFillAdvice = (text: string) => {
-    if (!text) return;
-    const currentKey = steps[activeStep].key;
-    const currentVal = getStepValue(currentKey);
-    if (currentVal.trim()) {
-      setStepValue(currentKey, `${currentVal}\n\n${text}`);
-    } else {
-      setStepValue(currentKey, text);
-    }
   };
 
   const getOriginalResumeText = (adviceItem: ResumeAdvice) => {
@@ -266,52 +219,6 @@ export function StarPage({
       return matched.map((c: any) => c.content || c.text || "").join("\n").trim();
     }
     return "";
-  };
-
-  const handleImportAdviceToStar = (text: string, label = "优化改写示例") => {
-    if (!text) return;
-    
-    // Parse S/T/A/R sections using regex
-    const sMatch = text.match(/(?:S|背景|Situation)\s*[:：]\s*([\s\S]*?)(?=(?:T|任务|Task|A|行动|Action|R|结果|Result|$))/i);
-    const tMatch = text.match(/(?:T|任务|Task)\s*[:：]\s*([\s\S]*?)(?=(?:S|背景|Situation|A|行动|Action|R|结果|Result|$))/i);
-    const aMatch = text.match(/(?:A|行动|Action)\s*[:：]\s*([\s\S]*?)(?=(?:S|背景|Situation|T|任务|Task|R|结果|Result|$))/i);
-    const rMatch = text.match(/(?:R|结果|Result)\s*[:：]\s*([\s\S]*?)(?=(?:S|背景|Situation|T|任务|Task|A|行动|Action|$))/i);
-    
-    let parsedS = sMatch ? sMatch[1].trim() : "";
-    let parsedT = tMatch ? tMatch[1].trim() : "";
-    let parsedA = aMatch ? aMatch[1].trim() : "";
-    let parsedR = rMatch ? rMatch[1].trim() : "";
-    
-    // Heuristic fallback if no markers are matched
-    if (!parsedS && !parsedT && !parsedA && !parsedR) {
-      const cleanText = text.replace(/[\*\-#`]/g, "").trim();
-      const parts = cleanText.split(/[。；\n\r]/).map(s => s.trim()).filter(Boolean);
-      if (parts.length >= 4) {
-        parsedS = parts[0];
-        parsedT = parts[1];
-        parsedA = parts.slice(2, parts.length - 1).join("。");
-        parsedR = parts[parts.length - 1];
-      } else if (parts.length === 3) {
-        parsedS = parts[0];
-        parsedT = parts[1];
-        parsedA = parts[2];
-        parsedR = "";
-      } else if (parts.length === 2) {
-        parsedS = parts[0];
-        parsedT = "";
-        parsedA = parts[1];
-        parsedR = "";
-      } else {
-        parsedS = cleanText;
-      }
-    }
-    
-    if (parsedS) setSituation(parsedS);
-    if (parsedT) setTask(parsedT);
-    if (parsedA) setAction(parsedA);
-    if (parsedR) setResult(parsedR);
-    
-    alert(`已成功将【${label}】一键智能分配并填入 S-T-A-R 各个字段中，你可以在后续步骤中继续精修！`);
   };
 
   // Smart Rewrite: send entire project experience to LLM
@@ -351,32 +258,6 @@ export function StarPage({
       alert(e.message || "智能改写失败，请检查网络与模型配置。");
     } finally {
       setLoadingSmartRewrite(false);
-    }
-  };
-
-  // Generate AI Suggestion for the active segment
-  const handleGenerateSuggestion = async () => {
-    const currentKey = steps[activeStep].key;
-    const currentVal = getStepValue(currentKey);
-    setLoadingSuggestion(true);
-    setAiSuggestion("");
-
-    try {
-      const data = await apiFetch<{ suggestion?: string }>("/api/star/generate-segment", {
-        method: "POST",
-        body: JSON.stringify({
-          segment_type: currentKey.toUpperCase(),
-          input_text: currentVal,
-          jd_text: selectedJdText || null,
-          current_star: { situation, task, action, result },
-          config_id: selectedConfigId || null,
-        }),
-      });
-      setAiSuggestion(data.suggestion || "AI 未能产出合理建议。");
-    } catch (e) {
-      setAiSuggestion("建议生成出错，请确认网络连接与模型配置。");
-    } finally {
-      setLoadingSuggestion(false);
     }
   };
 
@@ -447,8 +328,6 @@ export function StarPage({
     setSelectedJdId("");
     setSelectedJdText("");
     setSelectedJdAdvice([]);
-    setActiveStep(0);
-    setAiSuggestion("");
     setPolishedText("");
     setSmartRewriteText("");
     setSmartRewriteOpen(true);
@@ -467,9 +346,7 @@ export function StarPage({
     setSelectedJdId("");
     setSelectedJdText("");
     setSelectedJdAdvice([]);
-    setActiveStep(0);
-    setAiSuggestion("");
-    setMode("wizard");
+    setMode("polish"); // Go straight to edit & preview workspace
   };
 
   const handleDelete = async (id: string) => {
@@ -868,15 +745,16 @@ export function StarPage({
         </div>
       )}
 
-      {/* Mode 2: S-T-A-R Guided Wizard */}
+      {/* Mode 2: Unified One-Click Smart Rewrite */}
       {mode === "wizard" && (
         <div className="star-fade-in page-stack">
+          {/* Header */}
           <div className="star-wizard-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
             <Button variant="ghost" onClick={() => setMode("list")} style={{ fontSize: "13px" }}>
               ← 返回列表
             </Button>
             <label className="field" style={{ margin: 0 }}>
-              <span style={{ fontSize: "12px", color: "var(--muted)", textTransform: "none" }}>故事名称</span>
+              <span style={{ fontSize: "12px", color: "var(--muted)", textTransform: "none" }}>项目故事名称</span>
               <input
                 type="text"
                 placeholder="例如：腾讯微服务网关重构"
@@ -887,178 +765,131 @@ export function StarPage({
             </label>
           </div>
 
-          {/* Smart Rewrite Collapsible Panel */}
-          <div className="smart-rewrite-panel">
-            <div className="smart-rewrite-header" onClick={() => setSmartRewriteOpen(!smartRewriteOpen)}>
-              <h4>
-                ✨ 一键智能改写
-                <span className="smart-rewrite-badge">推荐</span>
-              </h4>
-              <span className={`smart-rewrite-toggle ${smartRewriteOpen ? "open" : ""}`}>▼</span>
-            </div>
-            {smartRewriteOpen && (
-              <div className="smart-rewrite-body">
-                <p style={{ fontSize: "12px", color: "var(--muted)", margin: 0, lineHeight: "1.5" }}>
-                  直接粘贴完整的项目经历描述（简历片段、面试草稿、甚至随意的笔记都可以），AI 将自动按 STAR 结构拆解并润色成简历级表达。
-                </p>
+          <Card title="✨ 一键智能改写项目经历">
+            <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+              <p style={{ fontSize: "12.5px", color: "var(--muted)", margin: 0, lineHeight: "1.6" }}>
+                直接粘贴完整的原始项目经历描述（简历片段、面试草稿、或随意记录的项目笔记），AI 将自动按 STAR 原则拆解并润色成简历级表达。
+              </p>
 
-                {/* Unified JD selection history import inside smart rewrite page */}
-                <div style={{ display: "flex", flexDirection: "column", gap: "6px", margin: "10px 0 14px 0" }}>
-                  <span style={{ fontSize: "12.5px", fontWeight: "700", color: "var(--text)", display: "flex", alignItems: "center", gap: "6px" }}>
-                    🔗 导入最近的简历与 JD 分析记录：
-                  </span>
-                  <select
-                    value={selectedJdId}
-                    onChange={handleJdSelect}
-                    style={{
-                      width: "100%",
-                      padding: "10px 14px",
-                      fontSize: "13px",
-                      borderRadius: "var(--radius-sm)",
-                      border: "1px solid var(--line-strong)",
-                      background: "var(--surface)",
-                      color: "var(--text)",
-                      outline: "none",
-                      cursor: "pointer",
-                      transition: "border-color 0.2s ease"
-                    }}
-                    onFocus={(e) => e.target.style.borderColor = "var(--accent)"}
-                    onBlur={(e) => e.target.style.borderColor = "var(--line-strong)"}
-                  >
-                    <option value="">-- 选择分析记录 (一键加载该岗位的待修改片段) --</option>
-                    {historyJds.map((item) => {
-                      const name = item.input_json?.company || item.result_json?.draft?.company || "未命名公司";
-                      const title = item.input_json?.title || item.result_json?.draft?.title || "未知岗位";
-                      const adviceCount = item.resumeAdvice?.length || 0;
+              {/* 1. JD History Import Dropdown Selector */}
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px", borderBottom: "1px solid var(--line)", paddingBottom: "16px" }}>
+                <span style={{ fontSize: "12.5px", fontWeight: "700", color: "var(--text)", display: "flex", alignItems: "center", gap: "6px" }}>
+                  🔗 导入最近的简历与 JD 分析记录：
+                </span>
+                <select
+                  value={selectedJdId}
+                  onChange={handleJdSelect}
+                  style={{
+                    width: "100%",
+                    padding: "10px 14px",
+                    fontSize: "13px",
+                    borderRadius: "var(--radius-sm)",
+                    border: "1px solid var(--line-strong)",
+                    background: "var(--surface)",
+                    color: "var(--text)",
+                    outline: "none",
+                    cursor: "pointer",
+                    transition: "border-color 0.2s ease"
+                  }}
+                  onFocus={(e) => e.target.style.borderColor = "var(--accent)"}
+                  onBlur={(e) => e.target.style.borderColor = "var(--line-strong)"}
+                >
+                  <option value="">-- 选择分析记录 (一键加载该岗位的待修改片段) --</option>
+                  {historyJds.map((item) => {
+                    const name = item.input_json?.company || item.result_json?.draft?.company || "未命名公司";
+                    const title = item.input_json?.title || item.result_json?.draft?.title || "未知岗位";
+                    const adviceCount = item.resumeAdvice?.length || 0;
+                    return (
+                      <option key={item.id} value={item.id}>
+                        {name} - {title} ({adviceCount} 条待改写建议)
+                      </option>
+                    );
+                  })}
+                </select>
+              </div>
+
+              {/* 2. Criticized resume chunks list from selected JD */}
+              {selectedJdAdvice.some(item => getOriginalResumeText(item)) && (
+                <div className="quick-fill-advice-segments" style={{ margin: "4px 0", padding: "14px", background: "var(--accent-bg)", borderRadius: "var(--radius)", border: "1px dashed var(--accent)", display: "flex", flexDirection: "column", gap: "10px" }}>
+                  <div style={{ fontSize: "12.5px", fontWeight: "700", color: "var(--accent)", display: "flex", alignItems: "center", gap: "6px" }}>
+                    🎯 <span>快捷填入待改写的原始简历片段：</span>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px", maxHeight: "200px", overflowY: "auto", paddingRight: "4px" }}>
+                    {selectedJdAdvice.map((item) => {
+                      const originalText = getOriginalResumeText(item);
+                      if (!originalText) return null;
                       return (
-                        <option key={item.id} value={item.id}>
-                          {name} - {title} ({adviceCount} 条待改写建议)
-                        </option>
-                      );
-                    })}
-                  </select>
-                </div>
-
-                {selectedJdAdvice.some(item => getOriginalResumeText(item)) && (
-                  <div className="quick-fill-advice-segments" style={{ margin: "12px 0", padding: "12px", background: "rgba(0,0,0,0.02)", borderRadius: "var(--radius-md)", border: "1px dashed var(--line)", display: "flex", flexDirection: "column", gap: "8px" }}>
-                    <div style={{ fontSize: "12px", fontWeight: "700", color: "var(--text)", display: "flex", alignItems: "center", gap: "6px" }}>
-                      🎯 <span>快捷填入待改写的原始简历片段：</span>
-                    </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: "6px", maxHeight: "150px", overflowY: "auto", paddingRight: "4px" }}>
-                      {selectedJdAdvice.map((item) => {
-                        const originalText = getOriginalResumeText(item);
-                        if (!originalText) return null;
-                        return (
-                          <div 
-                            key={item.id} 
-                            style={{ 
-                              display: "flex", 
-                              justifyContent: "space-between", 
-                              alignItems: "center", 
-                              padding: "8px 12px", 
-                              background: "var(--surface)", 
-                              border: "1px solid var(--line)", 
-                              borderRadius: "var(--radius-sm)",
-                              fontSize: "11px",
-                              gap: "12px"
-                            }}
-                          >
-                            <div style={{ display: "flex", flexDirection: "column", gap: "2px", flex: 1, minWidth: 0 }}>
-                              <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                                <span 
-                                  style={{ 
-                                    fontSize: "9px", 
-                                    padding: "1px 4px", 
-                                    borderRadius: "3px",
-                                    fontWeight: "700",
-                                    color: item.priority === "high" ? "#ef4444" : "#f59e0b",
-                                    background: item.priority === "high" ? "rgba(239, 68, 68, 0.1)" : "rgba(245, 158, 11, 0.1)",
-                                    border: `1px solid ${item.priority === "high" ? "rgba(239, 68, 68, 0.2)" : "rgba(245, 158, 11, 0.2)"}`
-                                  }}
-                                >
-                                  {item.priority === "high" ? "必须改" : "建议改"}
-                                </span>
-                                <span style={{ fontWeight: "700", color: "var(--text)", textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>
-                                  {item.issue}
-                                </span>
-                              </div>
-                              <span style={{ color: "var(--muted)", textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>
-                                建议：{item.suggestion}
+                        <div 
+                          key={item.id} 
+                          style={{ 
+                            display: "flex", 
+                            justifyContent: "space-between", 
+                            alignItems: "center", 
+                            padding: "10px 14px", 
+                            background: "var(--surface)", 
+                            border: "1px solid var(--line-strong)", 
+                            borderRadius: "var(--radius-sm)",
+                            fontSize: "12px",
+                            gap: "14px"
+                          }}
+                        >
+                          <div style={{ display: "flex", flexDirection: "column", gap: "4px", flex: 1, minWidth: 0 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                              <span 
+                                style={{ 
+                                  fontSize: "9px", 
+                                  padding: "2px 6px", 
+                                  borderRadius: "3px",
+                                  fontWeight: "700",
+                                  color: item.priority === "high" ? "#ef4444" : "#f59e0b",
+                                  background: item.priority === "high" ? "rgba(239, 68, 68, 0.1)" : "rgba(245, 158, 11, 0.1)",
+                                  border: `1px solid ${item.priority === "high" ? "rgba(239, 68, 68, 0.2)" : "rgba(245, 158, 11, 0.2)"}`
+                                }}
+                              >
+                                {item.priority === "high" ? "必须改" : "建议改"}
+                              </span>
+                              <span style={{ fontWeight: "700", color: "var(--text)", textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>
+                                {item.issue}
                               </span>
                             </div>
-                            <Button
-                              variant="secondary"
-                              style={{ fontSize: "11px", padding: "4px 8px", minHeight: "26px", height: "auto", flexShrink: 0 }}
-                              onClick={() => {
-                                const targetText = `${originalText}\n\n【修改目标】：针对以下简历问题进行针对性智能改写：\n- 问题缺陷：${item.issue}\n- 优化建议：${item.suggestion}`;
-                                setSmartRewriteText(targetText);
-                              }}
-                            >
-                              ✍️ 一键填入改写
-                            </Button>
+                            <span style={{ color: "var(--muted)", textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>
+                              建议：{item.suggestion}
+                            </span>
                           </div>
-                        );
-                      })}
-                    </div>
+                          <Button
+                            variant="secondary"
+                            style={{ fontSize: "11px", padding: "6px 10px", minHeight: "28px", height: "auto", flexShrink: 0 }}
+                            onClick={() => {
+                              const targetText = `${originalText}\n\n【修改目标】：针对以下简历问题进行针对性智能改写：\n- 问题缺陷：${item.issue}\n- 优化建议：${item.suggestion}`;
+                              setSmartRewriteText(targetText);
+                            }}
+                          >
+                            ✍️ 一键填入改写
+                          </Button>
+                        </div>
+                      );
+                    })}
                   </div>
-                )}
+                </div>
+              )}
+
+              {/* 3. Textarea Input */}
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                <span style={{ fontSize: "12.5px", fontWeight: "700", color: "var(--text)" }}>📝 粘贴或预填原始经历描述：</span>
                 <textarea
                   placeholder="在这里粘贴你的完整项目经历...\n\n例如：我在XX公司实习期间，参与了后端微服务网关的重构项目。当时系统的日均请求量已达到500万次，但旧网关存在单点故障和延迟高的问题。我负责设计新的网关架构，采用了Spring Cloud Gateway替换原有的Zuul方案，并引入了Redis做请求限流和缓存。最终网关的P99延迟从200ms降到了50ms，系统可用性从99.5%提升到99.99%。"
                   value={smartRewriteText}
                   onChange={(e) => setSmartRewriteText(e.target.value)}
+                  style={{ minHeight: "180px", resize: "vertical" }}
                 />
-                
-                {loadingSmartRewrite ? (
-                  <StarLoadingAnimation isLoading={true} loadingText="正在深度分析并改写项目经历..." />
-                ) : (
-                  <Button
-                    variant="primary"
-                    onClick={handleSmartRewrite}
-                    disabled={!smartRewriteText.trim() || smartRewriteText.trim().length < 10}
-                    style={{ width: "100%", height: "42px", fontSize: "14px", fontWeight: "700" }}
-                  >
-                    🚀 一键智能改写（将自动填入 STAR 并跳转打磨）
-                  </Button>
-                )}
-                <span style={{ fontSize: "10px", color: "var(--subtle)", textAlign: "center" }}>
-                  每次改写将消耗 1 次生成额度 · 支持 10~8000 字的项目描述
-                </span>
               </div>
-            )}
-          </div>
 
-          <div className="card">
-            {/* Step Bar */}
-            <div className="wizard-step-bar">
-              {steps.map((s, idx) => (
-                <div 
-                  key={s.key} 
-                  className={`wizard-step-indicator ${idx === activeStep ? "active" : ""} ${idx < activeStep ? "completed" : ""}`}
-                  onClick={() => setActiveStep(idx)}
-                >
-                  <div className="wizard-circle">{idx + 1}</div>
-                  <span className="wizard-step-label">{s.label.split(" - ")[0]}</span>
-                </div>
-              ))}
-            </div>
-
-            {/* Split layout: Input Panel vs AI Suggestion / Import Panel */}
-            <div className="wizard-layout">
-              {/* Left Side: Input Box */}
-              <div className="wizard-content-box" style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-                <h4 style={{ color: "var(--accent)", margin: 0, fontSize: "15px", fontWeight: "700" }}>{steps[activeStep].label}</h4>
-                <p style={{ fontSize: "12px", color: "var(--muted)", margin: 0 }}>{steps[activeStep].placeholder}</p>
-                <textarea
-                  placeholder="请输入真实的原始项目经历，哪怕只有几句话、甚至毫无逻辑的草稿也没关系，AI 会引导并重塑您的表达..."
-                  style={{ width: "100%", height: "180px", resize: "none" }}
-                  value={getStepValue(steps[activeStep].key)}
-                  onChange={(e) => setStepValue(steps[activeStep].key, e.target.value)}
-                />
-                
-                {/* Unified Configuration Panel (Always Visible to select before generation) */}
-                <div className="card" style={{ padding: "16px", background: "var(--surface-muted)", marginTop: "12px", display: "flex", flexDirection: "column", gap: "12px", boxShadow: "none" }}>
-                  <label className="field">
-                    <span>关联参考的应聘 JD <small>(可选，AI将结合其要求定制修改建议)</small></span>
+              {/* 4. Configuration Panel (Before Rewrite) */}
+              <div className="card" style={{ padding: "16px", background: "var(--surface-muted)", display: "flex", flexDirection: "column", gap: "14px", boxShadow: "none" }}>
+                <div style={{ fontSize: "12.5px", fontWeight: "700", color: "var(--text)" }}>⚙️ 智能改写风格与大模型配置</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "16px" }}>
+                  <label className="field" style={{ margin: 0 }}>
+                    <span>关联应聘 JD <small>(AI将自动对齐要求)</small></span>
                     <select
                       value={selectedJdId}
                       onChange={handleJdSelect}
@@ -1076,183 +907,147 @@ export function StarPage({
                     </select>
                   </label>
 
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
-                    <label className="field">
-                      <span>选择 AI 模型</span>
-                      <select
-                        value={selectedConfigId}
-                        onChange={(e) => setSelectedConfigId(e.target.value)}
-                      >
-                        <option value="">默认大模型 (全局配置)</option>
-                        {modelConfigs.map((cfg) => (
-                          <option key={cfg.id} value={cfg.id}>
-                            {cfg.name || `${cfg.provider} - ${cfg.modelId}`} {cfg.enabled ? "" : "(未启用)"}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-
-                    <label className="field">
-                      <span>润色表达风格</span>
-                      <select
-                        value={activeStyle}
-                        onChange={(e) => setActiveStyle(e.target.value)}
-                      >
-                        <option value="standard">通用标准风</option>
-                        <option value="big-tech">大厂硬核风</option>
-                        <option value="start-up">敏捷突击风</option>
-                      </select>
-                    </label>
-                  </div>
-                </div>
-
-                <div style={{ display: "flex", gap: "10px", marginTop: "8px" }}>
-                  <Button 
-                    variant="ghost" 
-                    onClick={() => setActiveStep((prev) => Math.max(0, prev - 1))} 
-                    disabled={activeStep === 0}
-                    style={{ flex: 1 }}
-                  >
-                    上一步
-                  </Button>
-                  
-                  {activeStep < 3 ? (
-                    <Button 
-                      variant="secondary" 
-                      onClick={() => setActiveStep((prev) => Math.min(3, prev + 1))}
-                      style={{ flex: 1 }}
+                  <label className="field" style={{ margin: 0 }}>
+                    <span>选择 AI 大模型</span>
+                    <select
+                      value={selectedConfigId}
+                      onChange={(e) => setSelectedConfigId(e.target.value)}
                     >
-                      下一步
-                    </Button>
-                  ) : (
-                    <Button 
-                      variant="primary" 
-                      onClick={() => setMode("polish")}
-                      style={{ flex: 1 }}
+                      <option value="">默认大模型 (使用系统全局配置)</option>
+                      {modelConfigs.map((cfg) => (
+                        <option key={cfg.id} value={cfg.id}>
+                          {cfg.name || `${cfg.provider} - ${cfg.modelId}`} {cfg.enabled ? "" : "(未启用)"}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="field" style={{ margin: 0 }}>
+                    <span>改写润色风格</span>
+                    <select
+                      value={activeStyle}
+                      onChange={(e) => setActiveStyle(e.target.value)}
                     >
-                      前往智能打磨设置 ➔
-                    </Button>
-                  )}
+                      <option value="standard">通用标准风</option>
+                      <option value="big-tech">大厂硬核风</option>
+                      <option value="start-up">敏捷突击风</option>
+                    </select>
+                  </label>
                 </div>
               </div>
 
-              {/* Right Side: AI Assistant suggestion box OR One-click Import suggestions from JD */}
-              <div className="wizard-content-box suggestion-panel" style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-                
-                {/* Condition 1: If JD has been selected and has Resume Advice, display the Import list first */}
-                {selectedJdAdvice.length > 0 ? (
-                  <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <h4 style={{ margin: 0, fontSize: "13px", fontWeight: "700", color: "var(--text)" }}>💡 已选 JD 岗位改写优化建议</h4>
-                      <Badge tone="info">支持一键导入</Badge>
-                    </div>
-                    <div className="advice-import-panel">
-                      {selectedJdAdvice.map((item) => {
-                        const originalText = getOriginalResumeText(item);
-                        return (
-                          <div key={item.id} className="advice-item-card">
-                            <div style={{ color: "var(--accent)", fontWeight: "700" }}>⚠️ 【优化项】：{item.issue}</div>
-                            <div style={{ color: "var(--muted)", margin: "2px 0" }}>建议：{item.suggestion}</div>
-                            {item.example && (
-                              <div style={{ padding: "6px", background: "var(--bg)", borderRadius: "4px", fontSize: "11px", color: "var(--text)", borderLeft: "3px solid var(--accent)" }}>
-                                <strong>示例：</strong>{item.example}
-                              </div>
-                            )}
-                            {originalText && (
-                              <div style={{ padding: "6px", background: "var(--surface-muted)", borderRadius: "4px", fontSize: "11px", color: "var(--text)", borderLeft: "3px solid var(--line-strong)", marginTop: "6px" }}>
-                                <strong>📄 关联原始简历片段 (未优化)：</strong>
-                                <div style={{ marginTop: "4px", whiteSpace: "pre-wrap" }}>{originalText}</div>
-                              </div>
-                            )}
-                            <div style={{ display: "flex", gap: "8px", marginTop: "8px", alignSelf: "flex-end", flexWrap: "wrap", justifyContent: "flex-end" }}>
-                              <Button 
-                                variant="secondary" 
-                                style={{ fontSize: "11px", padding: "4px 8px", minHeight: "28px" }}
-                                onClick={() => handleFillAdvice(item.example || item.suggestion)}
-                              >
-                                ✍️ 导入当前步骤 ({steps[activeStep].label.split(" - ")[0]})
-                              </Button>
-                              {originalText && (
-                                <Button 
-                                  variant="secondary" 
-                                  style={{ fontSize: "11px", padding: "4px 8px", minHeight: "28px" }}
-                                  onClick={() => handleImportAdviceToStar(originalText, "原始简历项目内容")}
-                                >
-                                  🚀 一键填入原始片段 (未优化)
-                                </Button>
-                              )}
-                              <Button 
-                                variant="primary" 
-                                style={{ fontSize: "11px", padding: "4px 8px", minHeight: "28px" }}
-                                onClick={() => handleImportAdviceToStar(item.example || item.suggestion, "优化改写示例")}
-                              >
-                                ✨ 一键填入优化示例
-                              </Button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ) : (
-                  // Condition 2: Regular AI Step Coach suggestion
-                  <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <h4 style={{ margin: 0, fontSize: "13px", fontWeight: "700", color: "var(--text)" }}>🤖 AI 分步引导建议</h4>
-                      <Button 
-                        variant="ghost" 
-                        onClick={handleGenerateSuggestion} 
-                        disabled={loadingSuggestion}
-                        style={{ fontSize: "11px", padding: "4px 8px", minHeight: "28px" }}
-                      >
-                        {loadingSuggestion ? "分析中..." : "✨ 获取本步 AI 指导"}
-                      </Button>
-                    </div>
-                    
-                    <div className="suggestion-box">
-                      {loadingSuggestion ? (
-                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "120px", gap: "10px" }}>
-                          <span style={{ fontSize: "12px", color: "var(--muted)" }}>正在解析已填内容与 JD 上下文...</span>
-                        </div>
-                      ) : aiSuggestion ? (
-                        <div>
-                          {aiSuggestion.split("\n").map((line, i) => {
-                            if (line.trim().startsWith("- ") || line.trim().startsWith("* ")) {
-                              return <li key={i} style={{ marginLeft: "10px", marginBottom: "6px", listStyleType: "disc" }}>{line.replace(/^[-*]\s*/, "")}</li>;
-                            }
-                            return <p key={i} style={{ marginBottom: "8px" }}>{line}</p>;
-                          })}
-                        </div>
-                      ) : (
-                        <p style={{ color: "var(--subtle)" }}>
-                          点击右上角的“获取 AI 指导”按钮。AI 将分析你当前输入的碎片，为你提供补充数据、核心细节的方向指引，并列举大厂句型示例。
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
+              {/* 5. Rewrite trigger button */}
+              {loadingSmartRewrite ? (
+                <StarLoadingAnimation isLoading={true} loadingText="大语言模型正在对项目经历进行深度黄金 STAR 重构与润色中..." />
+              ) : (
+                <Button
+                  variant="primary"
+                  onClick={handleSmartRewrite}
+                  disabled={!smartRewriteText.trim() || smartRewriteText.trim().length < 10}
+                  style={{ width: "100%", height: "46px", fontSize: "14px", fontWeight: "700" }}
+                >
+                  🚀 开始一键智能改写（秒级提取 STAR 故事）
+                </Button>
+              )}
+              <span style={{ fontSize: "10.5px", color: "var(--subtle)", textAlign: "center", margin: "-6px 0 0 0" }}>
+                每次改写将消耗 1 次生成额度 · 支持 10~8000 字的项目描述
+              </span>
             </div>
-          </div>
+          </Card>
         </div>
       )}
 
-      {/* Mode 3: Refinement Workspace */}
+      {/* Mode 3: Refinement Workspace & Direct Editors */}
       {mode === "polish" && (
         <div className="star-fade-in page-stack">
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
             <Button variant="ghost" onClick={() => setMode("wizard")} style={{ fontSize: "13px", display: "flex", alignItems: "center", gap: "6px" }}>
-              ← 返回步骤向导
+              ← 返回一键智能改写
             </Button>
-            <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700" }}>项目故事打磨空间</h3>
+            <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700" }}>项目故事打磨与精修空间</h3>
           </div>
 
           <div className="polish-layout">
-            {/* Left Box: Controls & Style selection prior to generating */}
+            {/* Left Box: Controls & STAR Collapsible Fine-Tuning Editors */}
             <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-              <Card title="打磨设置与配置">
+              <Card title="打磨设置与精修">
                 <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
                   
+                  {/* Story Title Edit Area */}
+                  <label className="field">
+                    <span>项目故事名称 <small>(必填)</small></span>
+                    <input
+                      type="text"
+                      placeholder="项目故事名称..."
+                      value={title}
+                      onChange={(e) => setTitle(e.target.value)}
+                    />
+                  </label>
+
+                  {/* S-T-A-R Fragments editor accordion */}
+                  <div style={{ display: "flex", flexDirection: "column", border: "1px solid var(--line)", borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
+                    <button
+                      type="button"
+                      onClick={() => setStarDetailOpen(!starDetailOpen)}
+                      style={{
+                        width: "100%",
+                        padding: "10px 14px",
+                        background: "var(--surface-muted)",
+                        border: "none",
+                        fontSize: "12.5px",
+                        fontWeight: "700",
+                        color: "var(--text)",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        cursor: "pointer"
+                      }}
+                    >
+                      <span>🛠️ S-T-A-R 细节碎片精修 (可直接编辑)</span>
+                      <span>{starDetailOpen ? "▲" : "▼"}</span>
+                    </button>
+                    {starDetailOpen && (
+                      <div style={{ padding: "12px", background: "var(--surface)", display: "flex", flexDirection: "column", gap: "10px", borderTop: "1px solid var(--line)" }}>
+                        <label className="field" style={{ margin: 0 }}>
+                          <span style={{ fontSize: "11px", fontWeight: "700", color: "var(--accent)" }}>S - 背景 (Situation)</span>
+                          <textarea
+                            value={situation}
+                            onChange={(e) => setSituation(e.target.value)}
+                            style={{ minHeight: "60px", fontSize: "12px", padding: "6px 8px" }}
+                            placeholder="面临的业务或技术痛点..."
+                          />
+                        </label>
+                        <label className="field" style={{ margin: 0 }}>
+                          <span style={{ fontSize: "11px", fontWeight: "700", color: "var(--accent)" }}>T - 任务 (Task)</span>
+                          <textarea
+                            value={task}
+                            onChange={(e) => setTask(e.target.value)}
+                            style={{ minHeight: "60px", fontSize: "12px", padding: "6px 8px" }}
+                            placeholder="需要达成的技术目标..."
+                          />
+                        </label>
+                        <label className="field" style={{ margin: 0 }}>
+                          <span style={{ fontSize: "11px", fontWeight: "700", color: "var(--accent)" }}>A - 行动 (Action)</span>
+                          <textarea
+                            value={action}
+                            onChange={(e) => setAction(e.target.value)}
+                            style={{ minHeight: "80px", fontSize: "12px", padding: "6px 8px" }}
+                            placeholder="采用的技术方案和具体重构行动..."
+                          />
+                        </label>
+                        <label className="field" style={{ margin: 0 }}>
+                          <span style={{ fontSize: "11px", fontWeight: "700", color: "var(--accent)" }}>R - 结果 (Result)</span>
+                          <textarea
+                            value={result}
+                            onChange={(e) => setResult(e.target.value)}
+                            style={{ minHeight: "60px", fontSize: "12px", padding: "6px 8px" }}
+                            placeholder="最终达成的技术指标和业务提升..."
+                          />
+                        </label>
+                      </div>
+                    )}
+                  </div>
+
                   {/* Model Config Dropdown Selector */}
                   <div className="field">
                     <span>选择 AI 模型配置</span>
@@ -1297,26 +1092,15 @@ export function StarPage({
                     </div>
                   </div>
 
-                  {/* STAR Fragments Summary Preview */}
-                  <div style={{ display: "flex", flexDirection: "column", gap: "6px", background: "var(--surface-muted)", padding: "12px", border: "1px solid var(--line)", borderRadius: "var(--radius-sm)", marginTop: "6px" }}>
-                    <span style={{ fontSize: "11px", color: "var(--muted)", fontWeight: "600" }}>当前已填碎片简览:</span>
-                    <div style={{ fontSize: "11px", lineHeight: "1.5", color: "var(--text)", maxHeight: "150px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "4px" }}>
-                      <div><strong>S:</strong> {situation || "未填"}</div>
-                      <div><strong>T:</strong> {task || "未填"}</div>
-                      <div><strong>A:</strong> {action || "未填"}</div>
-                      <div><strong>R:</strong> {result || "未填"}</div>
-                    </div>
-                  </div>
-
                   <Button 
                     variant="primary" 
                     onClick={handlePolishStory}
                     disabled={loadingPolish}
                     style={{ marginTop: "12px", width: "100%", height: "40px" }}
                   >
-                    {loadingPolish ? "正在打磨合成中..." : "✨ 开始智能融合打磨"}
+                    {loadingPolish ? "正在打磨合成中..." : "✨ 重新打磨合成（使用上方编辑的STAR片段）"}
                   </Button>
-                  <span style={{ fontSize: "10px", color: "var(--subtle)", textAlign: "center" }}>提示：每次开始智能打磨将消耗 1 次简历分析额度。</span>
+                  <span style={{ fontSize: "10px", color: "var(--subtle)", textAlign: "center" }}>提示：重新开始打磨将消耗 1 次简历分析额度。</span>
                 </div>
               </Card>
 
@@ -1335,15 +1119,54 @@ export function StarPage({
                   onClick={() => setMode("list")}
                   style={{ flex: 0.8 }}
                 >
-                  取消并返回
+                  返回列表
                 </Button>
               </div>
             </div>
 
-            {/* Right Box: Visual polished Resume Markdown preview */}
+            {/* Right Box: Tabbed visual CV-Markdown preview & editor */}
             <div className="polished-workspace-box">
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--line)", paddingBottom: "12px", marginBottom: "16px" }}>
-                <strong style={{ fontSize: "13px", color: "var(--text)" }}>简历格式精美效果预览</strong>
+                {/* Tabs switcher header */}
+                <div style={{ display: "flex", gap: "4px", background: "var(--surface-muted)", padding: "3px", borderRadius: "16px", border: "1px solid var(--line)" }}>
+                  <button
+                    type="button"
+                    onClick={() => setPreviewTab("render")}
+                    style={{
+                      border: "none",
+                      background: previewTab === "render" ? "var(--surface)" : "transparent",
+                      color: previewTab === "render" ? "var(--accent)" : "var(--muted)",
+                      fontWeight: "700",
+                      fontSize: "11px",
+                      padding: "4px 12px",
+                      borderRadius: "14px",
+                      cursor: "pointer",
+                      boxShadow: previewTab === "render" ? "var(--shadow-sm)" : "none",
+                      transition: "all 150ms ease"
+                    }}
+                  >
+                    🎨 格式化预览
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPreviewTab("markdown")}
+                    style={{
+                      border: "none",
+                      background: previewTab === "markdown" ? "var(--surface)" : "transparent",
+                      color: previewTab === "markdown" ? "var(--accent)" : "var(--muted)",
+                      fontWeight: "700",
+                      fontSize: "11px",
+                      padding: "4px 12px",
+                      borderRadius: "14px",
+                      cursor: "pointer",
+                      boxShadow: previewTab === "markdown" ? "var(--shadow-sm)" : "none",
+                      transition: "all 150ms ease"
+                    }}
+                  >
+                    ✍️ 直接修改源码
+                  </button>
+                </div>
+                
                 <Button 
                   variant="ghost" 
                   onClick={() => {
@@ -1357,15 +1180,38 @@ export function StarPage({
                 </Button>
               </div>
 
-              <div style={{ flex: 1, overflowY: "auto", maxHeight: "480px" }}>
+              <div style={{ flex: 1, display: "flex", flexDirection: "column", overflowY: "auto", maxHeight: "480px" }}>
                 {loadingPolish ? (
-                  <StarLoadingAnimation isLoading={true} loadingText="大语言模型正在对项目碎片进行黄金重塑与润色中..." />
-                ) : polishedText ? (
-                  renderPolishedMarkdown(polishedText)
+                  <StarLoadingAnimation isLoading={true} loadingText="大语言模型正在对项目经历进行重构与润色中..." />
+                ) : previewTab === "render" ? (
+                  polishedText ? (
+                    renderPolishedMarkdown(polishedText)
+                  ) : (
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "180px", color: "var(--subtle)", fontSize: "13px" }}>
+                      没有可预览的文本。请在左侧点击【重新打磨合成】。
+                    </div>
+                  )
                 ) : (
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "180px", color: "var(--subtle)", fontSize: "13px" }}>
-                    请在左侧选择你心仪的模型和想要展示的简历风格，然后点击【开始智能打磨】。
-                  </div>
+                  <textarea
+                    value={polishedText}
+                    onChange={(e) => setPolishedText(e.target.value)}
+                    placeholder="在这里可以直接修改润色后的 Markdown 项目描述..."
+                    style={{
+                      width: "100%",
+                      flex: 1,
+                      minHeight: "360px",
+                      fontFamily: "monospace",
+                      fontSize: "12.5px",
+                      lineHeight: "1.6",
+                      padding: "12px",
+                      border: "1px solid var(--line-strong)",
+                      borderRadius: "var(--radius-sm)",
+                      background: "var(--surface)",
+                      color: "var(--text)",
+                      outline: "none",
+                      resize: "none"
+                    }}
+                  />
                 )}
               </div>
             </div>

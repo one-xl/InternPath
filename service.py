@@ -84,8 +84,8 @@ class CareerPathAIService:
     def user_db(self, user_id: int) -> Database:
         return Database.for_user(user_id)
 
-    def extract_skills(self, jd_text: str) -> JobAnalysis:
-        return self.ai_analyzer.extract_skills(jd_text)
+    def extract_skills(self, jd_text: str, user_id: Optional[Any] = None) -> JobAnalysis:
+        return self.ai_analyzer.extract_skills(jd_text, user_id=user_id)
 
     def build_personal_decision(
         self,
@@ -94,6 +94,7 @@ class CareerPathAIService:
         analysis: JobAnalysis,
         resume_text: str = "",
         knowledge_texts: Optional[List[str]] = None,
+        user_id: Optional[Any] = None,
     ) -> PersonalDecision:
         try:
             return self.ai_analyzer.generate_personal_decision(
@@ -101,6 +102,7 @@ class CareerPathAIService:
                 analysis=analysis,
                 resume_text=resume_text,
                 knowledge_texts=knowledge_texts or [],
+                user_id=user_id,
             )
         except Exception:
             return self._fallback_personal_decision(
@@ -416,7 +418,7 @@ class CareerPathAIService:
         return self.ranker.rank_by_skill(all_courses)
 
     def analyze_jd(self, user_id: int, jd_text: str) -> Tuple[JobAnalysis, List[BilibiliCourse]]:
-        analysis = self.extract_skills(jd_text)
+        analysis = self.extract_skills(jd_text, user_id=user_id)
         courses = self.search_courses(analysis.skills)
         db = self.user_db(user_id)
         jd_record_id = db.save_jd_record(user_id, jd_text, analysis)
@@ -497,12 +499,14 @@ class CareerPathAIService:
         skills: List[str],
         major_profile: str,
         question_count: int = 8,
+        user_id: Optional[Any] = None,
     ) -> FitExamPaper:
         return self.ai_analyzer.generate_fit_exam(
             jd_text=jd_text,
             skills=skills,
             major_profile=major_profile,
             question_count=question_count,
+            user_id=user_id,
         )
 
     def save_fit_exam_attempt(self, attempt: FitExamAttempt) -> int:
@@ -562,6 +566,7 @@ class CareerPathAIService:
             history_lines=lines,
             linear_hint=linear_hint,
             sample_count=len(snaps),
+            user_id=user_id,
         )
 
     def latest_fit_scores(self, user_id: int) -> dict[int, Tuple[float, datetime]]:

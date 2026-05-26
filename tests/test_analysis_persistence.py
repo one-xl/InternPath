@@ -213,7 +213,7 @@ class _FailingAiServiceClient:
 
 
 class _FakeAnalyzer:
-    def extract_skills(self, jd_text: str) -> JobAnalysis:
+    def extract_skills(self, jd_text: str, *args, **kwargs) -> JobAnalysis:
         return JobAnalysis(skills=["Python"], difficulty="中等", job_summary="backend")
 
 

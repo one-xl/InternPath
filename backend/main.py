@@ -672,7 +672,8 @@ def create_app(
                     "parsedResume": parsed_resume,
                     "retrievedChunks": selected,
                     "retrievalSummary": payload.retrievalSummary,
-                }
+                },
+                user_id=user_id
             )
         except DoubaoAnalysisError as exc:
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
@@ -1503,12 +1504,13 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="输入内容过长，请减少无关内容后再分析。")
         chunks = state.service.get_knowledge_chunks_for_analysis(user_id, payload.knowledge_document_ids)
         knowledge_texts = [chunk.get("content", "") for chunk in chunks if chunk.get("content")]
-        analysis = state.service.extract_skills(payload.jd_text)
+        analysis = state.service.extract_skills(payload.jd_text, user_id=user_id)
         decision = state.service.build_personal_decision(
             jd_text=payload.jd_text,
             analysis=analysis,
             resume_text=payload.resume_text,
             knowledge_texts=knowledge_texts,
+            user_id=user_id,
         )
         analysis.personal_decision = decision
         guardrail_report = state.service.analyze_jd_with_guardrails(

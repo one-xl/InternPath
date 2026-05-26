@@ -187,8 +187,15 @@ def build_system_prompt() -> str:
 """
 
 
-def analyze_job_with_doubao(payload: dict[str, Any]) -> dict[str, Any]:
-    client = llm_client()
+def analyze_job_with_doubao(
+    payload: dict[str, Any],
+    user_id: Optional[Any] = None,
+    config_id: Optional[str] = None
+) -> dict[str, Any]:
+    from ai_analyzer import AIAnalyzer
+    analyzer = AIAnalyzer()
+    client, resolved_config_id, provider, model_id = analyzer._client(user_id, config_id)
+
     compact_payload = {
         "jdText": payload.get("jdText", ""),
         "targetType": payload.get("targetType", ""),
@@ -212,7 +219,7 @@ def analyze_job_with_doubao(payload: dict[str, Any]) -> dict[str, Any]:
 
     try:
         response = client.chat.completions.create(
-            model=Config.LLM_MODEL,
+            model=model_id,
             messages=[
                 {"role": "system", "content": build_system_prompt()},
                 {"role": "user", "content": json.dumps(compact_payload, ensure_ascii=False)},
@@ -222,12 +229,13 @@ def analyze_job_with_doubao(payload: dict[str, Any]) -> dict[str, Any]:
         content = strip_json_fence(response.choices[0].message.content or "")
         return normalize_llm_result(json.loads(content))
     except APIConnectionError as exc:
-        raise DoubaoAnalysisError(f"无法连接 Doubao/LLM 服务，请检查网络、代理和 LLM_BASE_URL：{exc}") from exc
+        raise DoubaoAnalysisError(f"无法连接大模型服务，请检查网络、代理和配置：{exc}") from exc
     except APITimeoutError as exc:
-        raise DoubaoAnalysisError(f"Doubao/LLM 请求超时（当前 {Config.LLM_TIMEOUT}s）：{exc}") from exc
+        raise DoubaoAnalysisError(f"大模型请求超时（当前 {Config.LLM_TIMEOUT}s）：{exc}") from exc
     except AuthenticationError as exc:
-        raise DoubaoAnalysisError(f"Doubao/LLM API Key 无效或未授权：{exc}") from exc
+        raise DoubaoAnalysisError(f"大模型 API Key 无效或未授权：{exc}") from exc
     except json.JSONDecodeError as exc:
-        raise DoubaoAnalysisError(f"Doubao/LLM 返回内容不是合法 JSON：{exc}") from exc
+        raise DoubaoAnalysisError(f"大模型返回内容不是合法 JSON：{exc}") from exc
     except Exception as exc:  # noqa: BLE001
-        raise DoubaoAnalysisError(f"Doubao/LLM 分析失败：{exc}") from exc
+        raise DoubaoAnalysisError(f"大模型分析失败：{exc}") from exc
+

@@ -39,14 +39,14 @@ class AIAnalyzer:
         self.model = Config.LLM_MODEL
 
     def _client(self, user_id: Optional[Any] = None, config_id: Optional[str] = None) -> Tuple[OpenAI, Optional[str], str, str]:
-        # 1. If user_id is provided and a specific config_id is requested, try to find it in the database
-        if user_id and config_id and config_id.strip():
+        # 1. If user_id is provided, try to find it in the database
+        if user_id:
             try:
                 from database import Database
                 db = Database()
                 with db.get_connection() as conn:
                     cursor = conn.cursor()
-                    if config_id:
+                    if config_id and config_id.strip():
                         cursor.execute(
                             """
                             SELECT id, provider, model_id, encrypted_api_key, config_json
@@ -143,28 +143,19 @@ class AIAnalyzer:
                                 ), cfg_id, provider, model_id
             except Exception as e:
                 print(f"[STAR_AI] Database model config resolution error: {e}")
-                
-        # 2. Fallback to default .env config
-        key = (Config.LLM_API_KEY or "").strip()
-        if key.lower() in _PLACEHOLDER_KEYS:
-            raise Exception(
-                "未配置有效的 LLM_API_KEY：请在项目根目录创建 .env，"
-                "设置 LLM_API_KEY（参考 .env.example），保存后重启应用。"
-            )
-        self.model = Config.LLM_MODEL
-        return OpenAI(
-            api_key=key,
-            base_url=Config.LLM_BASE_URL,
-            http_client=self._http_client,
-        ), None, "openai", self.model
+                raise Exception(f"大模型解析错误: {e}") from e
 
-    def extract_skills(self, jd_text: str) -> JobAnalysis:
-        client, _, _, _ = self._client()
+        # If no custom model config resolved, raise an exception (system default chat model is empty)
+        raise Exception("系统默认大模型为空，请先在个人中心/设置中配置并启用您的自定义模型。")
+
+
+    def extract_skills(self, jd_text: str, user_id: Optional[Any] = None) -> JobAnalysis:
+        client, _, _, _ = self._client(user_id)
         system_prompt = """
         你是面向个人求职者的 JD 拆解助手。请分析给定岗位 JD，并提取：
         1. skills: 核心技能列表，包含硬技能 and 少量关键软技能。
         2. difficulty: 岗位难度，只能是 "简单"、"中等"、"困难" 之一。
-        3. job_summary: 100-200 字中文摘要，说明岗位职责、能力要求和适合的人。
+        3. job_summary: 100-200 字中文摘要，说明岗位职责、能力要求 and 适合的人。
 
         只返回 JSON，不要添加解释：
         {
@@ -213,8 +204,9 @@ class AIAnalyzer:
         analysis: JobAnalysis,
         resume_text: str = "",
         knowledge_texts: Optional[List[str]] = None,
+        user_id: Optional[Any] = None,
     ) -> PersonalDecision:
-        client, _, _, _ = self._client()
+        client, _, _, _ = self._client(user_id)
         system_prompt = """
         你是一个严格但务实的个人求职产品经理。你的任务不是夸用户，而是帮个人判断这个岗位是否值得投，
         并把 JD 拆成可执行的简历改造和补短板行动。
@@ -276,8 +268,9 @@ class AIAnalyzer:
         skills: List[str],
         major_profile: str,
         question_count: int = 8,
+        user_id: Optional[Any] = None,
     ) -> FitExamPaper:
-        client, _, _, _ = self._client()
+        client, _, _, _ = self._client(user_id)
         qc = max(3, min(int(question_count), 15))
         system_prompt = """
         你是校招/实习测评命题人。根据岗位 JD、技能点与候选人专业背景，出一套四选一单选题。
@@ -350,8 +343,9 @@ class AIAnalyzer:
         history_lines: List[str],
         linear_hint: Optional[float],
         sample_count: int,
+        user_id: Optional[Any] = None,
     ) -> SalaryTrendPrediction:
-        client, _, _, _ = self._client()
+        client, _, _, _ = self._client(user_id)
         system_prompt = """
         你是劳动经济学方向的助理研究员。根据月薪时间序列（单位：千元/月）与样本量，
         给出未来 1-2 个季度的走势判断和一个点预测。只返回 JSON：
@@ -383,6 +377,7 @@ class AIAnalyzer:
             )
         except Exception as e:  # noqa: BLE001
             raise Exception(f"薪酬走势预测失败: {e}") from e
+
 
     def generate_star_segment_suggestion(
         self,

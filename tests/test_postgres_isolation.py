@@ -22,7 +22,7 @@ from service import CareerPathAIService
 
 
 class _FakeAnalyzer:
-    def extract_skills(self, jd_text: str) -> JobAnalysis:
+    def extract_skills(self, jd_text: str, *args, **kwargs) -> JobAnalysis:
         return JobAnalysis(
             skills=["Python", "FastAPI"],
             difficulty="中等",

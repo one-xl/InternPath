@@ -317,7 +317,7 @@ export function StarPage({
       fetchStories();
       alert("项目故事已成功保存！");
     } catch (e) {
-      alert("保存失败，请检查数据。");
+      alert("保存失败：" + (e && (e as Error).message ? (e as Error).message : "请检查数据。"));
     }
   };
 

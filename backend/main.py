@@ -1378,6 +1378,9 @@ def create_app(
             story_id = state.service.save_star_story(user_id, story)
             return {"id": str(story_id), "ok": True}
         except Exception as exc:
+            import traceback, sys
+            print("[STAR_SAVE_500]", str(exc), file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
 
     @app.put("/api/star/stories/{story_id}")

@@ -167,7 +167,7 @@ export function StarPage({
       setSelectedJdId(preselectedContext.jdId);
       const item = historyJds.find((x) => x.id === preselectedContext.jdId);
       if (item) {
-        const jdText = item.input_json?.jdText || item.result_json?.draft?.jdText || "";
+        const jdText = (item as any).draft?.jdText || (item as any).jdText || item.input_json?.jdText || item.result_json?.draft?.jdText || "";
         setSelectedJdText(jdText);
         const adviceList = item.resumeAdvice || [];
         setSelectedJdAdvice(adviceList);
@@ -200,7 +200,7 @@ export function StarPage({
       return;
     }
     const item = historyJds.find((x) => x.id === id);
-    const jdText = item?.input_json?.jdText || item?.result_json?.draft?.jdText || "";
+    const jdText = (item as any)?.draft?.jdText || (item as any)?.jdText || item?.input_json?.jdText || item?.result_json?.draft?.jdText || "";
     setSelectedJdText(jdText);
     setSelectedJdAdvice(item?.resumeAdvice || []);
   };
@@ -796,8 +796,8 @@ export function StarPage({
                 >
                   <option value="">-- 选择分析记录 (一键加载该岗位的待修改片段) --</option>
                   {historyJds.map((item) => {
-                    const name = item.input_json?.company || item.result_json?.draft?.company || "未命名公司";
-                    const title = item.input_json?.title || item.result_json?.draft?.title || "未知岗位";
+                    const name = (item as any).draft?.company || (item as any).companyName || (item as any).company || item.input_json?.company || item.result_json?.draft?.company || "未命名公司";
+                    const title = (item as any).draft?.title || (item as any).jobTitle || (item as any).title || item.input_json?.title || item.result_json?.draft?.title || "未知岗位";
                     const adviceCount = item.resumeAdvice?.length || 0;
                     return (
                       <option key={item.id} value={item.id}>
@@ -896,8 +896,8 @@ export function StarPage({
                     >
                       <option value="">-- 不关联 (使用通用打磨模式) --</option>
                       {historyJds.map((item) => {
-                        const name = item.input_json?.company || item.result_json?.draft?.company || "未命名公司";
-                        const title = item.input_json?.title || item.result_json?.draft?.title || "未知岗位";
+                        const name = (item as any).draft?.company || (item as any).companyName || (item as any).company || item.input_json?.company || item.result_json?.draft?.company || "未命名公司";
+                        const title = (item as any).draft?.title || (item as any).jobTitle || (item as any).title || item.input_json?.title || item.result_json?.draft?.title || "未知岗位";
                         return (
                           <option key={item.id} value={item.id}>
                             {name} - {title}

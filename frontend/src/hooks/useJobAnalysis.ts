@@ -213,6 +213,11 @@ export function useJobAnalysis() {
         throw new Error("请先配置大语言模型。");
       }
 
+      const chatConfigWithHighTimeout = {
+        ...input.chatConfig,
+        timeoutMs: Math.max(input.chatConfig.timeoutMs ?? 300000, 300000)
+      };
+
       // 10. Check if the embedding provider is supported
       if (
         input.embeddingConfig.provider !== "doubao" &&
@@ -272,7 +277,7 @@ export function useJobAnalysis() {
       progress.setRunningStep("jd_embedding");
       
       // Stage A: Decompose JD into structural requirements and constraints
-      const parsedJD = await parseJobDescription(input.draft.jdText, input.chatConfig);
+      const parsedJD = await parseJobDescription(input.draft.jdText, chatConfigWithHighTimeout);
       
       // Stage B: Vectorize entire JD text for legacy/fallback search compatibility
       const jdEmbedding = await embedTextWithConfig(input.draft.jdText, input.embeddingConfig);
@@ -337,28 +342,73 @@ export function useJobAnalysis() {
       progress.setRunningStep("gemini_analysis");
       
       // Stage A: Hard constraints audit checking
+      progress.updateStepMetadata("gemini_analysis", {
+        subState: "checking_constraints",
+        subProgress: 15
+      });
       const hardConstraintsResult = await checkHardConstraints(
         parsedJD,
         input.parsedResume,
-        input.chatConfig
+        chatConfigWithHighTimeout
       );
       
       // Stage B: Structured evidence-constrained Gemini analysis
-      const chatResult = await analyzeJobWithChatConfig({
-        jdText: input.draft.jdText,
-        targetType: input.draft.targetType || input.draft.level,
-        jobDirection: input.draft.jobDirection || input.draft.title,
-        retrievedChunks,
-        config: input.chatConfig,
-        
-        // Pass structural context
-        parsedJD,
-        requirementMatches: requirementMatchesResult,
-        hardConstraintsResult,
-        userExtraContext: input.draft.candidateMaterial
+      progress.updateStepMetadata("gemini_analysis", {
+        subState: "deep_analyzing",
+        subProgress: 35
       });
+
+      // Smoothly emulated sub-progress bar updates for long reasoning/response time
+      let currentSubProgress = 35;
+      const progressTimer = window.setInterval(() => {
+        if (currentSubProgress < 95) {
+          if (currentSubProgress < 60) {
+            currentSubProgress += 4;
+          } else if (currentSubProgress < 80) {
+            progress.updateStepMetadata("gemini_analysis", {
+              subState: "generating_advice",
+              subProgress: Math.round(currentSubProgress)
+            });
+            currentSubProgress += 2.5;
+          } else {
+            progress.updateStepMetadata("gemini_analysis", {
+              subState: "building_roadmap",
+              subProgress: Math.round(currentSubProgress)
+            });
+            currentSubProgress += 1.2;
+          }
+          progress.updateStepMetadata("gemini_analysis", {
+            subProgress: Math.min(Math.round(currentSubProgress), 95)
+          });
+        }
+      }, 2000);
+      
+      let chatResult;
+      try {
+        chatResult = await analyzeJobWithChatConfig({
+          jdText: input.draft.jdText,
+          targetType: input.draft.targetType || input.draft.level,
+          jobDirection: input.draft.jobDirection || input.draft.title,
+          retrievedChunks,
+          config: chatConfigWithHighTimeout,
+          
+          // Pass structural context
+          parsedJD,
+          requirementMatches: requirementMatchesResult,
+          hardConstraintsResult,
+          userExtraContext: input.draft.candidateMaterial
+        });
+      } finally {
+        window.clearInterval(progressTimer);
+      }
+
+      progress.updateStepMetadata("gemini_analysis", {
+        subState: "completed",
+        subProgress: 100
+      });
+
       progress.completeStep("gemini_analysis", {
-        retryCount: (chatResult as any).retryCount || 0
+        retryCount: (chatResult as any)?.retryCount || 0
       });
 
       // Step 6: saving

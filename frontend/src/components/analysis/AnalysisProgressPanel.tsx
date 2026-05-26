@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import type { AnalysisRunStatus, AnalysisStep } from "../../types/analysis";
 import type { ChatModelConfig } from "../../types/modelConfig";
 import { AnalysisStepItem } from "./AnalysisStepItem";
+import { InteractiveMatchScanner } from "./InteractiveMatchScanner";
 
 interface AnalysisProgressPanelProps {
   status: AnalysisRunStatus;
@@ -76,6 +77,10 @@ export function AnalysisProgressPanel({
   const embeddingModelId = validateStep?.metadata?.embeddingModelId || "未配置";
   const chatModelId = validateStep?.metadata?.chatModelId || "未配置";
 
+  const geminiStep = steps.find(s => s.id === "gemini_analysis");
+  const subState = geminiStep?.metadata?.subState;
+  const subProgress = geminiStep?.metadata?.subProgress ?? 0;
+
   return (
     <div className="analysis-progress-card">
       <div className="progress-card-header">
@@ -93,6 +98,14 @@ export function AnalysisProgressPanel({
         </div>
         <span className="status-label">{status.toUpperCase()}</span>
       </div>
+
+      {status !== "success" && status !== "failed" && (
+        <InteractiveMatchScanner 
+          status={status} 
+          subState={subState || (status === "analyzing" ? "deep_analyzing" : status)} 
+          subProgress={status === "analyzing" ? subProgress : undefined} 
+        />
+      )}
 
       <div className="steps-container">
         {steps.map((step, index) => (

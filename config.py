@@ -52,7 +52,7 @@ class Config:
     LLM_API_KEY: str = os.getenv("LLM_API_KEY", "your_api_key_here")
     LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "https://api.deepseek.com").rstrip("/")
     LLM_MODEL: str = os.getenv("LLM_MODEL", "deepseek-chat")
-    LLM_TIMEOUT: float = get_float_env("LLM_TIMEOUT", 120.0)
+    LLM_TIMEOUT: float = get_float_env("LLM_TIMEOUT", 300.0)
     AI_SERVICE_BASE_URL: str = os.getenv("AI_SERVICE_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")

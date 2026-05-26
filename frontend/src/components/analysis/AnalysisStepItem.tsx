@@ -140,10 +140,46 @@ export function AnalysisStepItem({ step, index, activeChatConfig }: AnalysisStep
   const renderExtraHelperInfo = () => {
     if (status === "running") {
       if (step.id === "gemini_analysis") {
+        const subState = metadata?.subState;
+        const subProgress = metadata?.subProgress ?? 0;
+        
+        let subStateText = "正在准备多维匹配分析...";
+        let subStateColor = "var(--muted)";
+        if (subState === "checking_constraints") {
+          subStateText = "🔍 正在核对学历、年限、地点等硬性过滤门槛...";
+          subStateColor = "#3b82f6";
+        } else if (subState === "deep_analyzing") {
+          subStateText = "🧠 正在结合检索经历片段进行多维深度技能双向匹配...";
+          subStateColor = "#a855f7";
+        } else if (subState === "generating_advice") {
+          subStateText = "💡 正在挖掘简历描述缺陷并计算优化润色建议...";
+          subStateColor = "#f59e0b";
+        } else if (subState === "building_roadmap") {
+          subStateText = "🗺️ 正在定位技能差额规划针对性面试与学习路径...";
+          subStateColor = "#14b8a6";
+        } else if (subState === "completed") {
+          subStateText = "✅ 分析完成！即将渲染结果页面...";
+          subStateColor = "#10b981";
+        }
+
         return (
-          <p className="step-helper-text accent-text">
-            正在调用 {modelName} 深度大模型生成结构化求职分析，这一阶段包含简历多角度交叉匹配和深度推理，可能需要几秒到几十秒，请耐心等待。
-          </p>
+          <div className="analysis-substate-wrapper" style={{ marginTop: "8px" }}>
+            <p className="step-helper-text accent-text" style={{ color: subStateColor, fontWeight: 500, fontSize: "13px", margin: "4px 0", display: "flex", alignItems: "center", gap: "6px" }}>
+              {subStateText}
+            </p>
+            <div className="step-progress-bar-container" style={{ height: "6px", background: "rgba(0,0,0,0.06)", borderRadius: "3px", overflow: "hidden", marginTop: "6px" }}>
+              <div 
+                className="step-progress-bar" 
+                style={{ 
+                  width: `${subProgress}%`, 
+                  background: subStateColor, 
+                  boxShadow: `0 0 4px ${subStateColor}`,
+                  transition: "width 0.4s ease-out, background-color 0.4s ease",
+                  height: "100%"
+                }}
+              />
+            </div>
+          </div>
         );
       }
       if (step.id === "resume_embedding" && metadata?.chunksCount) {

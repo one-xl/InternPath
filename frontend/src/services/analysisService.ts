@@ -35,7 +35,10 @@ export async function analyzeJobWithResumeRag(input: ResumeRagAnalysisInput): Pr
     targetType: input.targetType,
     jobDirection: input.jobDirection,
     retrievedChunks,
-    config: input.chatConfig,
+    config: {
+      ...input.chatConfig,
+      timeoutMs: Math.max(input.chatConfig.timeoutMs ?? 300000, 300000)
+    },
   });
 
   const averageScore = Math.round(

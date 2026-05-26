@@ -836,7 +836,7 @@ def create_app(
         res = None
         try:
             async with httpx.AsyncClient() as client:
-                res = await client.post(url, headers=headers, json=request_json, timeout=120.0)
+                res = await client.post(url, headers=headers, json=request_json, timeout=300.0)
                 success = res.status_code == 200
                 if wrap_openai and res.status_code == 200:
                     try:
@@ -997,7 +997,7 @@ def create_app(
         res = None
         try:
             async with httpx.AsyncClient() as client:
-                res = await client.post(url, headers=headers, json=payload.requestBody, timeout=60.0)
+                res = await client.post(url, headers=headers, json=payload.requestBody, timeout=120.0)
                 success = res.status_code == 200
                 return Response(
                     content=res.content,

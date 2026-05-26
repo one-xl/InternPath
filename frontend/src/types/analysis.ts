@@ -134,6 +134,8 @@ export interface AnalysisStep {
     embeddingModelId?: string;
     chatModelId?: string;
     retryCount?: number;
+    subState?: string;
+    subProgress?: number;
   };
 }
 

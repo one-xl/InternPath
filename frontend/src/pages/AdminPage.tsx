@@ -65,8 +65,8 @@ export function AdminPage() {
   const [selectedConfigId, setSelectedConfigId] = useState<string | null>(null);
   
   // Config Form Fields
-  const [formProvider, setFormProvider] = useState("gemini");
-  const [formModelId, setFormModelId] = useState("gemini-2.5-flash");
+  const [formProvider, setFormProvider] = useState("custom");
+  const [formModelId, setFormModelId] = useState("");
   const [formName, setFormName] = useState("");
   const [formApiKey, setFormApiKey] = useState("");
   const [formEnabled, setFormEnabled] = useState(true);
@@ -229,7 +229,7 @@ export function AdminPage() {
         const pathname = parsedUrl.pathname;
 
         if (rawUrl.includes("generativelanguage.googleapis.com")) {
-          provider = "gemini";
+          provider = "custom";
           const modelsMatch = pathname.match(/\/models\/([^:/]+)/);
           if (modelsMatch && !modelId) {
             modelId = modelsMatch[1];
@@ -238,7 +238,7 @@ export function AdminPage() {
         } else {
           provider = "openai-compatible";
           if (rawUrl.includes("volces.com") || rawUrl.includes("ark.cn-beijing")) {
-            provider = "doubao";
+            provider = "doubao-multimodal";
           }
           
           let cleanPath = pathname;
@@ -1127,8 +1127,8 @@ export function AdminPage() {
               onClick={() => {
                 setIsEditMode(false);
                 setSelectedConfigId(null);
-                setFormProvider("gemini");
-                setFormModelId("gemini-2.5-flash");
+                setFormProvider("custom");
+                setFormModelId("");
                 setFormName("");
                 setFormApiKey("");
                 setFormEnabled(true);
@@ -1281,10 +1281,8 @@ export function AdminPage() {
                 style={{ background: "#1a1a1a", border: "1px solid rgba(255,255,255,0.15)", borderRadius: "var(--radius-md)", color: "#fff", padding: "6px 12px", fontSize: "13px" }}
               >
                 <option value="">所有提供商</option>
-                <option value="gemini">Gemini</option>
-                <option value="openai-compatible">OpenAI-Compatible</option>
-                <option value="doubao">Doubao / Volcano</option>
-                <option value="custom">Custom</option>
+                <option value="custom">大语言模型</option>
+                <option value="doubao-multimodal">向量模型</option>
               </select>
             </div>
 
@@ -1448,10 +1446,8 @@ export function AdminPage() {
                 style={{ background: "#1a1a1a", border: "1px solid rgba(255,255,255,0.15)", borderRadius: "var(--radius-md)", color: "#fff", padding: "6px 12px", fontSize: "13px" }}
               >
                 <option value="">所有提供商</option>
-                <option value="gemini">Gemini</option>
-                <option value="openai-compatible">OpenAI-Compatible</option>
-                <option value="doubao">Doubao / Volcano</option>
-                <option value="custom">Custom</option>
+                <option value="custom">大语言模型</option>
+                <option value="doubao-multimodal">向量模型</option>
               </select>
             </div>
 
@@ -1614,16 +1610,14 @@ export function AdminPage() {
                 value={formProvider}
                 onChange={(e) => {
                   setFormProvider(e.target.value);
-                  if (e.target.value === "gemini") setFormModelId("gemini-2.5-flash");
-                  else if (e.target.value === "doubao") setFormModelId("ep-m-20260416004638-52mb2");
+                  if (e.target.value === "custom") setFormModelId("");
+                  else if (e.target.value === "doubao-multimodal") setFormModelId("");
                   else setFormModelId("");
                 }}
                 style={{ background: "#1e1e1e", border: "1px solid rgba(255,255,255,0.15)", borderRadius: "var(--radius-md)", color: "#fff", padding: "8px 12px", fontSize: "13px" }}
               >
-                <option value="gemini">Gemini</option>
-                <option value="openai-compatible">OpenAI Compatible (如 DeepSeek / 豆包 Ark)</option>
-                <option value="doubao">豆包 Text Embedding (向量模型)</option>
-                <option value="custom">Custom (自定义结构)</option>
+                <option value="custom">大语言模型 (Chat/LLM)</option>
+                <option value="doubao-multimodal">向量模型 (Embedding)</option>
               </select>
             </div>
 
@@ -1633,7 +1627,7 @@ export function AdminPage() {
                 type="text"
                 required
                 value={formName}
-                placeholder="如: 服务器托管 Gemini 极速分析"
+                placeholder="如: 我的自定义模型"
                 onChange={(e) => setFormName(e.target.value)}
                 style={{ background: "#1e1e1e", border: "1px solid rgba(255,255,255,0.15)", borderRadius: "var(--radius-md)", color: "#fff", padding: "8px 12px", fontSize: "13px" }}
               />
@@ -1645,7 +1639,7 @@ export function AdminPage() {
                 type="text"
                 required
                 value={formModelId}
-                placeholder="如: gemini-2.5-flash 或 ep-m-xxx"
+                placeholder="如: gpt-4o-mini 或你的模型 ID"
                 onChange={(e) => setFormModelId(e.target.value)}
                 style={{ background: "#1e1e1e", border: "1px solid rgba(255,255,255,0.15)", borderRadius: "var(--radius-md)", color: "#fff", padding: "8px 12px", fontSize: "13px" }}
               />
@@ -1663,7 +1657,7 @@ export function AdminPage() {
               />
             </div>
 
-            {(formProvider === "openai-compatible" || formProvider === "custom" || formProvider === "doubao") && (
+            {(formProvider === "custom" || formProvider === "doubao-multimodal") && (
               <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                 <label style={{ fontSize: "12px", color: "rgba(255,255,255,0.7)" }}>接口地址 (Base URL) *</label>
                 <input

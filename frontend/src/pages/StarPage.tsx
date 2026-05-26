@@ -143,10 +143,13 @@ export function StarPage({
   const fetchConfigs = async () => {
     try {
       const data = await apiFetch<{ configs: any[] }>("/api/configs");
-      const list = data.configs || [];
+      const all = data.configs || [];
+      // Filter to only chat/LLM models (exclude embedding/vector models)
+      const chatProviders = ["openai-compatible", "custom"];
+      const list = all.filter((c: any) => chatProviders.includes(c.provider));
       setModelConfigs(list);
-      // Default to first enabled config
-      const enabled = list.filter(c => c.enabled);
+      // Default to first enabled chat config
+      const enabled = list.filter((c: any) => c.enabled);
       if (enabled.length > 0) {
         setSelectedConfigId(enabled[0].id);
       }
@@ -880,8 +883,12 @@ export function StarPage({
                   placeholder="在这里粘贴你的完整项目经历...\n\n例如：我在XX公司实习期间，参与了后端微服务网关的重构项目。当时系统的日均请求量已达到500万次，但旧网关存在单点故障和延迟高的问题。我负责设计新的网关架构，采用了Spring Cloud Gateway替换原有的Zuul方案，并引入了Redis做请求限流和缓存。最终网关的P99延迟从200ms降到了50ms，系统可用性从99.5%提升到99.99%。"
                   value={smartRewriteText}
                   onChange={(e) => setSmartRewriteText(e.target.value)}
+                  maxLength={2000}
                   style={{ minHeight: "180px", resize: "vertical" }}
                 />
+                <span style={{ fontSize: "11px", color: smartRewriteText.length >= 2000 ? "var(--danger)" : "var(--text-muted)", textAlign: "right" }}>
+                  {smartRewriteText.length} / 2000
+                </span>
               </div>
 
               {/* 4. Configuration Panel (Before Rewrite) */}
@@ -1012,36 +1019,52 @@ export function StarPage({
                           <textarea
                             value={situation}
                             onChange={(e) => setSituation(e.target.value)}
+                            maxLength={300}
                             style={{ minHeight: "60px", fontSize: "12px", padding: "6px 8px" }}
                             placeholder="面临的业务或技术痛点..."
                           />
+                          <span style={{ fontSize: "10px", color: situation.length >= 300 ? "var(--danger)" : "var(--text-muted)", textAlign: "right", display: "block" }}>
+                            {situation.length} / 300
+                          </span>
                         </label>
                         <label className="field" style={{ margin: 0 }}>
                           <span style={{ fontSize: "11px", fontWeight: "700", color: "var(--accent)" }}>T - 任务 (Task)</span>
                           <textarea
                             value={task}
                             onChange={(e) => setTask(e.target.value)}
+                            maxLength={300}
                             style={{ minHeight: "60px", fontSize: "12px", padding: "6px 8px" }}
                             placeholder="需要达成的技术目标..."
                           />
+                          <span style={{ fontSize: "10px", color: task.length >= 300 ? "var(--danger)" : "var(--text-muted)", textAlign: "right", display: "block" }}>
+                            {task.length} / 300
+                          </span>
                         </label>
                         <label className="field" style={{ margin: 0 }}>
                           <span style={{ fontSize: "11px", fontWeight: "700", color: "var(--accent)" }}>A - 行动 (Action)</span>
                           <textarea
                             value={action}
                             onChange={(e) => setAction(e.target.value)}
+                            maxLength={500}
                             style={{ minHeight: "80px", fontSize: "12px", padding: "6px 8px" }}
                             placeholder="采用的技术方案和具体重构行动..."
                           />
+                          <span style={{ fontSize: "10px", color: action.length >= 500 ? "var(--danger)" : "var(--text-muted)", textAlign: "right", display: "block" }}>
+                            {action.length} / 500
+                          </span>
                         </label>
                         <label className="field" style={{ margin: 0 }}>
                           <span style={{ fontSize: "11px", fontWeight: "700", color: "var(--accent)" }}>R - 结果 (Result)</span>
                           <textarea
                             value={result}
                             onChange={(e) => setResult(e.target.value)}
+                            maxLength={300}
                             style={{ minHeight: "60px", fontSize: "12px", padding: "6px 8px" }}
                             placeholder="最终达成的技术指标和业务提升..."
                           />
+                          <span style={{ fontSize: "10px", color: result.length >= 300 ? "var(--danger)" : "var(--text-muted)", textAlign: "right", display: "block" }}>
+                            {result.length} / 300
+                          </span>
                         </label>
                       </div>
                     )}

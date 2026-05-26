@@ -3343,8 +3343,8 @@ class Database:
             if self.is_postgres:
                 cursor.execute(
                     """
-                    INSERT INTO model_configs (id, user_id, provider, model_id, display_name, encrypted_api_key, is_server_managed, enabled, config_json, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO model_configs (id, user_id, provider, model_id, display_name, encrypted_api_key, is_server_managed, enabled, config_json, created_at, updated_at, owner_type)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'user')
                     """,
                     (new_id, user_id, provider, model_id, display_name, encrypted_key, is_server_managed, enabled, cfg_json_str, now, now)
                 )
@@ -3352,8 +3352,8 @@ class Database:
             else:
                 cursor.execute(
                     """
-                    INSERT INTO model_configs (id, user_id, provider, model_id, display_name, encrypted_api_key, is_server_managed, enabled, config_json, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO model_configs (id, user_id, provider, model_id, display_name, encrypted_api_key, is_server_managed, enabled, config_json, created_at, updated_at, owner_type)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'user')
                     """,
                     (new_id, user_id, provider, model_id, display_name, encrypted_key, 1 if is_server_managed else 0, 1 if enabled else 0, cfg_json_str, now, now)
                 )

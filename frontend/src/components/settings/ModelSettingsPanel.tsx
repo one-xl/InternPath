@@ -53,7 +53,7 @@ export function ModelSettingsPanel({
 
       <Card
         title="向量模型配置"
-        description="优先推荐 Doubao Text Embedding，用于对 JD 和简历文本 chunks 做向量化召回。多模态向量仅作为高级能力预留。"
+        description="用于对 JD 和简历文本 chunks 做向量化召回。"
         action={
           <Button
             type="button"
@@ -63,7 +63,7 @@ export function ModelSettingsPanel({
               setShowEmbeddingForm(true);
             }}
           >
-            新增 Doubao 配置
+            新增向量模型配置
           </Button>
         }
       >
@@ -98,7 +98,7 @@ export function ModelSettingsPanel({
 
       <Card
         title="大语言模型配置"
-        description="优先支持 Gemini。用户只需要填写 API Key、Model ID 和生成参数，请求细节由系统自动封装。"
+        description="支持 OpenAI 兼容的大语言模型。填写 API Key、Base URL 和 Model ID 即可使用。"
         action={
           <Button
             type="button"
@@ -108,7 +108,7 @@ export function ModelSettingsPanel({
               setShowChatForm(true);
             }}
           >
-            新增 Gemini 配置
+            新增大语言模型配置
           </Button>
         }
       >

@@ -793,7 +793,7 @@ def create_app(
                     detail="您的账号生成额度已用尽，请联系管理员增加次数。"
                 )
 
-        if payload.provider not in {"gemini", "openai-compatible", "custom"}:
+        if payload.provider and ("embed" in payload.provider.lower() or "doubao" in payload.provider.lower()):
             raise HTTPException(status_code=400, detail="Unsupported chat provider")
             
         check_rate_limit(f"chat_comp:{user_id}", 10, 3600, skip=user is not None and user.role == "admin")
@@ -967,7 +967,7 @@ def create_app(
                     detail="您的账号生成额度已用尽，请联系管理员增加次数。"
                 )
 
-        if "doubao" not in payload.provider and "volc" not in payload.provider and payload.provider != "openai-compatible" and payload.provider != "custom":
+        if not payload.provider or ("embed" not in payload.provider.lower() and "doubao" not in payload.provider.lower() and "volc" not in payload.provider.lower()):
             raise HTTPException(status_code=400, detail="Unsupported embedding provider")
             
         check_rate_limit(f"embeddings:{user_id}", 30, 3600, skip=user is not None and user.role == "admin")

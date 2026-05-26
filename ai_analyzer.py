@@ -677,6 +677,8 @@ class AIAnalyzer:
                 model=self.model,
                 messages=messages,
                 temperature=0.3,
+                response_format={"type": "json_object"},
+                max_tokens=4096,
             )
             output_text = (response.choices[0].message.content or "").strip()
             success = True
@@ -689,23 +691,13 @@ class AIAnalyzer:
         except Exception as first_err:
             err_msg = str(first_err).lower()
             if "blocked" in err_msg or "content_filter" in err_msg:
-                try:
-                    stream = client.chat.completions.create(
-                        model=self.model,
-                        messages=messages,
-                        temperature=0.3,
-                        stream=True,
-                    )
-                    chunks: list[str] = []
-                    for chunk in stream:
-                        delta = chunk.choices[0].delta if chunk.choices else None
-                        if delta and delta.content:
-                            chunks.append(delta.content)
-                    output_text = "".join(chunks).strip()
-                    success = True
-                except Exception as stream_err:
-                    error_type = type(stream_err).__name__
-                    raise Exception(f"STAR 智能改写失败: {stream_err}") from stream_err
+                error_type = type(first_err).__name__
+                raise Exception(
+                    "该模型的内容安全策略拒绝了此请求（输入内容可能触发了审核）。"
+                    "请尝试：(1) 切换其他模型配置；(2) 简化或调整输入内容；"
+                    "(3) 检查模型服务商的安全过滤设置。"
+                    f" 原始错误: {first_err}"
+                ) from first_err
             else:
                 error_type = type(first_err).__name__
                 raise Exception(f"STAR 智能改写失败: {first_err}") from first_err

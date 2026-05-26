@@ -10,7 +10,9 @@ export async function fetchConfigs(): Promise<ModelConfigState> {
   let activeChat: string | undefined;
 
   for (const c of configs) {
-    if (c.provider === "gemini" || c.provider === "openai-compatible" || c.provider === "custom") {
+    // Chat/LLM providers: openai-compatible, custom, or any provider that is not embedding-specific
+    const isEmbedding = c.provider && (c.provider.includes("doubao") || c.provider.includes("embed"));
+    if (!isEmbedding) {
       const chat: ChatModelConfig = {
         id: c.id,
         type: "chat",

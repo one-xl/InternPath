@@ -5,11 +5,23 @@ export async function apiFetch<T>(url: string, options: RequestInit = {}): Promi
     ...options,
   });
   if (!res.ok) {
-    const err: any = new Error(`API ${res.status}`);
-    err.status = res.status;
+    let message = `API ${res.status}`;
+    let detail = "";
     try {
-      err.responseBody = await res.text();
+      const text = await res.text();
+      try {
+        const parsed = JSON.parse(text);
+        detail = parsed.detail || "";
+        if (detail) {
+          message = detail;
+        }
+      } catch {
+        detail = text;
+      }
     } catch {}
+    const err: any = new Error(message);
+    err.status = res.status;
+    err.responseBody = detail;
     throw err;
   }
   return res.json();

@@ -109,7 +109,7 @@ export function ResultPage({ result, isSaved, onNewAnalysis, onSave, onCopyAdvic
       <DecisionCard result={result} />
       <MatchScorePanel result={result} />
       <ResumeEvidenceCard result={result} />
-      <ResumeChunkPreview chunks={result.retrievedResumeChunks ?? []} />
+      <ResumeChunkPreview chunks={result.retrievedResumeChunks ?? []} advice={result.resumeAdvice ?? []} />
       <ResumeAdviceList advice={result.resumeAdvice ?? []} />
       <AdviceEvidenceCard result={result} />
       <LearningPlanPanel suggestions={result.learningSuggestions ?? []} />

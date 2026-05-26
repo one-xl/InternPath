@@ -1,10 +1,12 @@
 import { useState } from "react";
 import type { ResumeChunk } from "../../types/resume";
+import type { ResumeAdvice } from "../../types/analysis";
 import { Badge } from "../ui/Badge";
 import { Card } from "../ui/Card";
 
 interface ResumeChunkPreviewProps {
   chunks: ResumeChunk[];
+  advice?: ResumeAdvice[];
   title?: string;
   description?: string;
   emptyText?: string;
@@ -12,6 +14,7 @@ interface ResumeChunkPreviewProps {
 
 export function ResumeChunkPreview({
   chunks,
+  advice = [],
   title = "本次分析参考的简历片段",
   description = "系统根据 JD 从你的简历中检索出最相关的经历片段，并基于这些内容生成投递决策和简历改造建议。",
   emptyText = "暂无检索片段。",
@@ -26,12 +29,37 @@ export function ResumeChunkPreview({
         <div className="chunk-list">
           {chunks.map((chunk) => {
             const expanded = expandedId === chunk.id;
+            // Check if this chunk is criticized by any RAG advice
+            const associatedAdvice = advice.filter((a) => a.basedOnChunkIds?.includes(chunk.id));
+            const hasAdvice = associatedAdvice.length > 0;
+            const highestPriority = associatedAdvice.some((a) => a.priority === "high")
+              ? "high"
+              : associatedAdvice.some((a) => a.priority === "medium")
+              ? "medium"
+              : "low";
+
             return (
-              <article className="chunk-card" key={chunk.id}>
+              <article className="chunk-card" key={chunk.id} style={hasAdvice ? { borderLeft: `4px solid ${highestPriority === "high" ? "var(--accent-danger)" : "var(--accent-warning)"}` } : undefined}>
                 <button type="button" onClick={() => setExpandedId(expanded ? null : chunk.id)} aria-expanded={expanded}>
-                  <span>
+                  <span style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
                     <strong>{chunk.section || "简历片段"}</strong>
                     <small>{chunk.metadata?.source || "上传简历"} · #{chunk.index + 1}</small>
+                    {hasAdvice && (
+                      <span
+                        className="blink-text"
+                        style={{
+                          fontSize: "10px",
+                          fontWeight: "700",
+                          padding: "2px 6px",
+                          borderRadius: "4px",
+                          background: highestPriority === "high" ? "rgba(239, 68, 68, 0.12)" : "rgba(245, 158, 11, 0.12)",
+                          color: highestPriority === "high" ? "#ef4444" : "#f59e0b",
+                          border: `1px solid ${highestPriority === "high" ? "rgba(239, 68, 68, 0.25)" : "rgba(245, 158, 11, 0.25)"}`
+                        }}
+                      >
+                        ⚠️ 待改写优化 ({associatedAdvice.length} 项建议)
+                      </span>
+                    )}
                   </span>
                   <Badge tone="info">{Math.round(chunk.score ?? 0)}%</Badge>
                 </button>

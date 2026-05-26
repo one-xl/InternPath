@@ -858,6 +858,69 @@ export function StarPage({ onGenerationUsed }: { onGenerationUsed?: () => void }
                 <p style={{ fontSize: "12px", color: "var(--muted)", margin: 0, lineHeight: "1.5" }}>
                   直接粘贴完整的项目经历描述（简历片段、面试草稿、甚至随意的笔记都可以），AI 将自动按 STAR 结构拆解并润色成简历级表达。
                 </p>
+                {selectedJdAdvice.some(item => getOriginalResumeText(item)) && (
+                  <div className="quick-fill-advice-segments" style={{ margin: "12px 0", padding: "12px", background: "rgba(0,0,0,0.02)", borderRadius: "var(--radius-md)", border: "1px dashed var(--line)", display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <div style={{ fontSize: "12px", fontWeight: "700", color: "var(--text)", display: "flex", alignItems: "center", gap: "6px" }}>
+                      🎯 <span>快捷填入待改写的原始简历片段：</span>
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px", maxHeight: "150px", overflowY: "auto", paddingRight: "4px" }}>
+                      {selectedJdAdvice.map((item) => {
+                        const originalText = getOriginalResumeText(item);
+                        if (!originalText) return null;
+                        return (
+                          <div 
+                            key={item.id} 
+                            style={{ 
+                              display: "flex", 
+                              justifyContent: "space-between", 
+                              alignItems: "center", 
+                              padding: "8px 12px", 
+                              background: "var(--surface)", 
+                              border: "1px solid var(--line)", 
+                              borderRadius: "var(--radius-sm)",
+                              fontSize: "11px",
+                              gap: "12px"
+                            }}
+                          >
+                            <div style={{ display: "flex", flexDirection: "column", gap: "2px", flex: 1, minWidth: 0 }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                <span 
+                                  style={{ 
+                                    fontSize: "9px", 
+                                    padding: "1px 4px", 
+                                    borderRadius: "3px",
+                                    fontWeight: "700",
+                                    color: item.priority === "high" ? "#ef4444" : "#f59e0b",
+                                    background: item.priority === "high" ? "rgba(239, 68, 68, 0.1)" : "rgba(245, 158, 11, 0.1)",
+                                    border: `1px solid ${item.priority === "high" ? "rgba(239, 68, 68, 0.2)" : "rgba(245, 158, 11, 0.2)"}`
+                                  }}
+                                >
+                                  {item.priority === "high" ? "必须改" : "建议改"}
+                                </span>
+                                <span style={{ fontWeight: "700", color: "var(--text)", textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>
+                                  {item.issue}
+                                </span>
+                              </div>
+                              <span style={{ color: "var(--muted)", textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>
+                                建议：{item.suggestion}
+                              </span>
+                            </div>
+                            <Button
+                              variant="secondary"
+                              style={{ fontSize: "11px", padding: "4px 8px", minHeight: "26px", height: "auto", flexShrink: 0 }}
+                              onClick={() => {
+                                const targetText = `${originalText}\n\n【修改目标】：针对以下简历问题进行针对性智能改写：\n- 问题缺陷：${item.issue}\n- 优化建议：${item.suggestion}`;
+                                setSmartRewriteText(targetText);
+                              }}
+                            >
+                              ✍️ 一键填入改写
+                            </Button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
                 <textarea
                   placeholder="在这里粘贴你的完整项目经历...\n\n例如：我在XX公司实习期间，参与了后端微服务网关的重构项目。当时系统的日均请求量已达到500万次，但旧网关存在单点故障和延迟高的问题。我负责设计新的网关架构，采用了Spring Cloud Gateway替换原有的Zuul方案，并引入了Redis做请求限流和缓存。最终网关的P99延迟从200ms降到了50ms，系统可用性从99.5%提升到99.99%。"
                   value={smartRewriteText}

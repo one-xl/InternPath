@@ -9,14 +9,37 @@ export async function apiFetch<T>(url: string, options: RequestInit = {}): Promi
     let detail = "";
     try {
       const text = await res.text();
+      detail = text;
       try {
         const parsed = JSON.parse(text);
-        detail = parsed.detail || "";
-        if (detail) {
-          message = detail;
+        if (parsed && parsed.detail) {
+          if (typeof parsed.detail === "string") {
+            message = parsed.detail;
+          } else if (Array.isArray(parsed.detail)) {
+            message = parsed.detail.map((err: any) => {
+              const loc = err.loc ? `[${err.loc.join(".")}] ` : "";
+              return `${loc}${err.msg || JSON.stringify(err)}`;
+            }).join("; ");
+          } else {
+            message = JSON.stringify(parsed.detail);
+          }
+        } else if (parsed && parsed.message) {
+          message = parsed.message;
         }
       } catch {
-        detail = text;
+        // Not a JSON response
+        if (text && text.length < 200 && !text.includes("<html") && !text.includes("<HTML")) {
+          message = text;
+        } else if (text) {
+          // Try to extract title/heading from HTML
+          const titleMatch = text.match(/<title>([\s\S]*?)<\/title>/i);
+          const h1Match = text.match(/<h1>([\s\S]*?)<\/h1>/i);
+          if (h1Match && h1Match[1]) {
+            message = h1Match[1].trim();
+          } else if (titleMatch && titleMatch[1]) {
+            message = titleMatch[1].trim();
+          }
+        }
       }
     } catch {}
     const err: any = new Error(message);

@@ -1622,6 +1622,7 @@ class Database:
         return count
 
     def save_star_story(self, user_id: Any, story: StarStory) -> Any:
+        from uuid import uuid4
         with self.get_connection() as conn:
             cursor = conn.cursor()
             now_str = datetime.now().isoformat()

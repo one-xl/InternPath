@@ -913,7 +913,6 @@ export function StarPage({
                       value={selectedConfigId}
                       onChange={(e) => setSelectedConfigId(e.target.value)}
                     >
-                      <option value="">默认大模型 (使用系统全局配置)</option>
                       {modelConfigs.map((cfg) => (
                         <option key={cfg.id} value={cfg.id}>
                           {cfg.name || `${cfg.provider} - ${cfg.modelId}`} {cfg.enabled ? "" : "(未启用)"}
@@ -1055,7 +1054,6 @@ export function StarPage({
                       value={selectedConfigId}
                       onChange={(e) => setSelectedConfigId(e.target.value)}
                     >
-                      <option value="">默认大模型 (使用系统全局配置)</option>
                       {modelConfigs.map((cfg) => (
                         <option key={cfg.id} value={cfg.id}>
                           {cfg.name || `${cfg.provider} - ${cfg.modelId}`} {cfg.enabled ? "" : "(未启用)"}

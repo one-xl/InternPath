@@ -637,11 +637,12 @@ class AIAnalyzer:
   "polishedText": "完整的润色后简历项目描述（Markdown格式）"
 }}"""
 
+        jd_prompt = f"用户正在应聘的岗位 JD：\n{jd_text}" if jd_text else "（未提供应聘 JD）"
         user_prompt = f"""以下是用户的原始项目经历描述：
 
 {original_text}
 
-{f"用户正在应聘的岗位 JD：\n{jd_text}" if jd_text else "（未提供应聘 JD）"}"""
+{jd_prompt}"""
 
         import time
         import json as json_mod

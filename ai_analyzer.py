@@ -594,3 +594,136 @@ class AIAnalyzer:
                     )
                 except Exception as ex:
                     print(f"[STAR_AI] Failed to log usage: {ex}")
+
+    def smart_rewrite_star(
+        self,
+        *,
+        original_text: str,
+        style: str = "standard",
+        jd_text: Optional[str] = None,
+        user_id: Optional[Any] = None,
+        config_id: Optional[str] = None,
+    ) -> dict:
+        client, resolved_config_id, provider, model_id = self._client(user_id, config_id)
+
+        style_prompt = ""
+        if style == "big-tech":
+            style_prompt = "【大厂风】：措辞高级，突出微服务、分布式、高并发、高可用、架构设计、业务闭环、团队方法论。"
+        elif style == "start-up":
+            style_prompt = "【初创/突击风】：突出从0到1、独立交付、低成本快迭代、业务快速变现、全栈 ownership。"
+        else:
+            style_prompt = "【通用标准风】：逻辑严密，条理清晰，专业技术扎实，符合主流中大型公司简历评估金标准。"
+
+        system_prompt = f"""你是极其顶级的技术简历撰写专家。用户将提供一段原始的项目经历描述（可能是简历片段、面试草稿、或随意记录的项目笔记），你需要：
+
+1. 按照 STAR 原则（Situation 背景、Task 任务、Action 行动、Result 结果）对原文进行深度拆解分析。
+2. 同时按照指定风格将原文改写润色成一段可直接贴入简历的项目描述。
+
+风格要求：{style_prompt}
+
+润色规范：
+- 项目描述以 2-3 句概述开头，说明项目性质和背景
+- 之后以 3-5 个 Bullet Points 输出核心职责与成果
+- Bullet Points 将 Action 和 Result 深度结合
+- 对量化数字指标进行加粗
+- 使用 Markdown 格式
+
+输出格式要求：严格输出以下 JSON 格式，不要包含任何其他文字、代码块标记或说明：
+{{
+  "situation": "拆解出的项目背景（1-3句话）",
+  "task": "拆解出的核心任务目标（1-2句话）",
+  "action": "拆解出的具体技术行动（2-4句话）",
+  "result": "拆解出的量化成果（1-3句话）",
+  "polishedText": "完整的润色后简历项目描述（Markdown格式）"
+}}"""
+
+        user_prompt = f"""以下是用户的原始项目经历描述：
+
+{original_text}
+
+{f"用户正在应聘的岗位 JD：\n{jd_text}" if jd_text else "（未提供应聘 JD）"}"""
+
+        import time
+        import json as json_mod
+        start_time = time.time()
+        success = False
+        error_type = None
+        prompt_tokens = 0
+        completion_tokens = 0
+        total_tokens = 0
+        output_text = ""
+
+        try:
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.3,
+            )
+            output_text = (response.choices[0].message.content or "").strip()
+            success = True
+
+            usage = getattr(response, "usage", None)
+            if usage:
+                prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
+                completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+                total_tokens = getattr(usage, "total_tokens", 0) or 0
+
+            # Parse JSON from response (strip markdown code fence if present)
+            clean = output_text
+            if clean.startswith("```"):
+                clean = clean.split("\n", 1)[-1]
+            if clean.endswith("```"):
+                clean = clean.rsplit("```", 1)[0]
+            clean = clean.strip()
+
+            parsed = json_mod.loads(clean)
+            return {
+                "situation": parsed.get("situation", ""),
+                "task": parsed.get("task", ""),
+                "action": parsed.get("action", ""),
+                "result": parsed.get("result", ""),
+                "polishedText": parsed.get("polishedText", ""),
+            }
+        except json_mod.JSONDecodeError:
+            # Fallback: return raw text as polishedText
+            return {
+                "situation": "",
+                "task": "",
+                "action": "",
+                "result": "",
+                "polishedText": output_text,
+            }
+        except Exception as e:
+            error_type = type(e).__name__
+            raise Exception(f"STAR 智能改写失败: {e}") from e
+        finally:
+            duration = int((time.time() - start_time) * 1000)
+            if user_id:
+                try:
+                    from database import Database
+                    db = Database()
+                    input_chars = len(system_prompt) + len(user_prompt)
+                    output_chars = len(output_text)
+                    db.log_model_usage(
+                        user_id=user_id,
+                        config_id=resolved_config_id,
+                        assignment_id=None,
+                        analysis_id=None,
+                        provider=provider,
+                        model_id=model_id,
+                        usage_type="chat",
+                        endpoint="/api/star/smart-rewrite",
+                        success=success,
+                        error_type=error_type,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens,
+                        input_chars=input_chars,
+                        output_chars=output_chars,
+                        latency_ms=duration
+                    )
+                except Exception as ex:
+                    print(f"[STAR_AI] Failed to log usage: {ex}")

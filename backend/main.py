@@ -103,6 +103,13 @@ class StarStoryPolishRequest(BaseModel):
     config_id: Optional[str] = Field(None, max_length=100)
 
 
+class StarSmartRewriteRequest(BaseModel):
+    original_text: str = Field(..., min_length=10, max_length=8000)
+    style: str = Field("standard", max_length=50)
+    jd_text: Optional[str] = Field(None, max_length=4000)
+    config_id: Optional[str] = Field(None, max_length=100)
+
+
 class StarStoryCreateRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=100)
     situation: str = Field("", max_length=4000)
@@ -410,7 +417,9 @@ def create_app(
 
     limiter = SlidingWindowLimiter()
 
-    def check_rate_limit(key: str, limit: int, window_seconds: int):
+    def check_rate_limit(key: str, limit: int, window_seconds: int, skip: bool = False):
+        if skip:
+            return
         if not limiter.is_allowed(key, limit, window_seconds):
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -786,7 +795,7 @@ def create_app(
         if payload.provider not in {"gemini", "openai-compatible", "custom"}:
             raise HTTPException(status_code=400, detail="Unsupported chat provider")
             
-        check_rate_limit(f"chat_comp:{user_id}", 10, 3600)
+        check_rate_limit(f"chat_comp:{user_id}", 10, 3600, skip=user is not None and user.role == "admin")
         
         model_id = payload.modelId.strip()
         api_key, resolved_config_id, resolved_assignment_id = state.auth_db.get_model_api_key_v2(
@@ -960,7 +969,7 @@ def create_app(
         if "doubao" not in payload.provider and "volc" not in payload.provider and payload.provider != "openai-compatible" and payload.provider != "custom":
             raise HTTPException(status_code=400, detail="Unsupported embedding provider")
             
-        check_rate_limit(f"embeddings:{user_id}", 30, 3600)
+        check_rate_limit(f"embeddings:{user_id}", 30, 3600, skip=user is not None and user.role == "admin")
         
         api_key, resolved_config_id, resolved_assignment_id = state.auth_db.get_model_api_key_v2(
             user_id, payload.provider, payload.modelId.strip(), payload.configId
@@ -1059,7 +1068,8 @@ def create_app(
         payload: TestConnectionRequest,
         user_id: Any = Depends(current_user_id)
     ) -> dict[str, Any]:
-        check_rate_limit(f"test_conn:{user_id}", 10, 3600)
+        user_for_rate = state.auth_db.get_user_by_id(user_id)
+        check_rate_limit(f"test_conn:{user_id}", 10, 3600, skip=user_for_rate is not None and user_for_rate.role == "admin")
         
         model_id = payload.modelId.strip()
         api_key, resolved_config_id, resolved_assignment_id = state.auth_db.get_model_api_key_v2(
@@ -1318,6 +1328,32 @@ def create_app(
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
 
+    @app.post("/api/star/smart-rewrite")
+    def smart_rewrite_star(
+        payload: StarSmartRewriteRequest,
+        user_id: Any = Depends(current_user_id)
+    ) -> dict[str, Any]:
+        user = state.auth_db.get_user_by_id(user_id)
+        if user and user.role != "admin":
+            if user.generation_limit is None or user.generation_limit <= 0:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="您的账号生成额度已用尽，请联系管理员增加次数。"
+                )
+        try:
+            result = state.service.smart_rewrite_star(
+                original_text=payload.original_text,
+                style=payload.style,
+                jd_text=payload.jd_text,
+                user_id=user_id,
+                config_id=payload.config_id,
+            )
+            if user and user.role != "admin":
+                state.auth_db.decrement_user_generation_limit(user_id)
+            return result
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+
     @app.get("/api/star/stories")
     def list_star_stories(user_id: Any = Depends(current_user_id)) -> dict[str, Any]:
         stories = state.service.list_star_stories(user_id)
@@ -1462,7 +1498,7 @@ def create_app(
                     detail="您的账号生成额度已用尽，请联系管理员增加次数。"
                 )
 
-        check_rate_limit(f"analyze:{user_id}", 10, 3600)
+        check_rate_limit(f"analyze:{user_id}", 10, 3600, skip=user is not None and user.role == "admin")
         if len(payload.jd_text) > 5000:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="输入内容过长，请减少无关内容后再分析。")
         chunks = state.service.get_knowledge_chunks_for_analysis(user_id, payload.knowledge_document_ids)

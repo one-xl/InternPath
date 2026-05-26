@@ -611,6 +611,23 @@ class CareerPathAIService:
             config_id=config_id,
         )
 
+    def smart_rewrite_star(
+        self,
+        *,
+        original_text: str,
+        style: str = "standard",
+        jd_text: Optional[str] = None,
+        user_id: Optional[Any] = None,
+        config_id: Optional[str] = None,
+    ) -> dict:
+        return self.ai_analyzer.smart_rewrite_star(
+            original_text=original_text,
+            style=style,
+            jd_text=jd_text,
+            user_id=user_id,
+            config_id=config_id,
+        )
+
     def save_star_story(self, user_id: Any, story: StarStory) -> Any:
         return self.user_db(user_id).save_star_story(user_id, story)
 

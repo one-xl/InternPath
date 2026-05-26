@@ -3,6 +3,7 @@ import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
 import { Badge } from "../components/ui/Badge";
 import { EmptyState } from "../components/ui/EmptyState";
+import { StarLoadingAnimation } from "../components/StarLoadingAnimation";
 import { gsap } from "gsap";
 import { useGSAP } from "@gsap/react";
 import { apiFetch } from "../services/apiClient";
@@ -82,6 +83,11 @@ export function StarPage({ onGenerationUsed }: { onGenerationUsed?: () => void }
   const [polishedText, setPolishedText] = useState("");
   const [loadingPolish, setLoadingPolish] = useState(false);
   const [activeStyle, setActiveStyle] = useState("standard");
+
+  // Smart Rewrite states
+  const [smartRewriteOpen, setSmartRewriteOpen] = useState(true);
+  const [smartRewriteText, setSmartRewriteText] = useState("");
+  const [loadingSmartRewrite, setLoadingSmartRewrite] = useState(false);
 
   const steps = [
     { key: "situation", label: "S - 背景 (Situation)", placeholder: "当时面临什么业务场景、技术痛点、性能瓶颈或产品重构需求？" },
@@ -265,6 +271,46 @@ export function StarPage({ onGenerationUsed }: { onGenerationUsed?: () => void }
     alert(`已成功将【${label}】一键智能分配并填入 S-T-A-R 各个字段中，你可以在后续步骤中继续精修！`);
   };
 
+  // Smart Rewrite: send entire project experience to LLM
+  const handleSmartRewrite = async () => {
+    if (!smartRewriteText.trim() || smartRewriteText.trim().length < 10) {
+      alert("请输入至少 10 个字符的项目经历描述。");
+      return;
+    }
+    setLoadingSmartRewrite(true);
+    try {
+      const data = await apiFetch<{
+        situation?: string;
+        task?: string;
+        action?: string;
+        result?: string;
+        polishedText?: string;
+      }>("/api/star/smart-rewrite", {
+        method: "POST",
+        body: JSON.stringify({
+          original_text: smartRewriteText,
+          style: activeStyle,
+          jd_text: selectedJdText || null,
+          config_id: selectedConfigId || null,
+        }),
+      });
+      // Fill S/T/A/R fields
+      if (data.situation) setSituation(data.situation);
+      if (data.task) setTask(data.task);
+      if (data.action) setAction(data.action);
+      if (data.result) setResult(data.result);
+      if (data.polishedText) setPolishedText(data.polishedText);
+      onGenerationUsed?.();
+      // Auto-jump to polish mode to show results
+      setMode("polish");
+      setSmartRewriteOpen(false);
+    } catch (e: any) {
+      alert(e.message || "智能改写失败，请检查网络与模型配置。");
+    } finally {
+      setLoadingSmartRewrite(false);
+    }
+  };
+
   // Generate AI Suggestion for the active segment
   const handleGenerateSuggestion = async () => {
     const currentKey = steps[activeStep].key;
@@ -361,6 +407,8 @@ export function StarPage({ onGenerationUsed }: { onGenerationUsed?: () => void }
     setActiveStep(0);
     setAiSuggestion("");
     setPolishedText("");
+    setSmartRewriteText("");
+    setSmartRewriteOpen(true);
     setMode("wizard");
   };
 
@@ -646,6 +694,79 @@ export function StarPage({ onGenerationUsed }: { onGenerationUsed?: () => void }
           gap: 6px;
           box-shadow: var(--shadow-sm);
         }
+        .smart-rewrite-panel {
+          background: linear-gradient(135deg, var(--surface) 0%, var(--accent-bg) 100%);
+          border: 1.5px solid var(--accent);
+          border-radius: var(--radius);
+          padding: 0;
+          margin-bottom: 20px;
+          overflow: hidden;
+          transition: box-shadow 0.3s ease;
+        }
+        .smart-rewrite-panel:hover {
+          box-shadow: 0 4px 20px rgba(180, 83, 9, 0.1);
+        }
+        .smart-rewrite-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 14px 18px;
+          cursor: pointer;
+          user-select: none;
+        }
+        .smart-rewrite-header:hover {
+          background: rgba(180, 83, 9, 0.04);
+        }
+        .smart-rewrite-header h4 {
+          margin: 0;
+          font-size: 14px;
+          font-weight: 700;
+          color: var(--accent);
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+        .smart-rewrite-body {
+          padding: 0 18px 18px 18px;
+          display: flex;
+          flex-direction: column;
+          gap: 14px;
+        }
+        .smart-rewrite-body textarea {
+          width: 100%;
+          min-height: 140px;
+          resize: vertical;
+          border-radius: var(--radius-sm);
+          border: 1px solid var(--line-strong);
+          padding: 12px;
+          font-size: 13px;
+          line-height: 1.6;
+          background: var(--surface);
+          color: var(--text);
+          transition: border-color 0.2s ease;
+        }
+        .smart-rewrite-body textarea:focus {
+          border-color: var(--accent);
+          outline: none;
+          box-shadow: 0 0 0 3px rgba(180, 83, 9, 0.08);
+        }
+        .smart-rewrite-badge {
+          font-size: 10px;
+          padding: 2px 8px;
+          border-radius: 10px;
+          background: var(--accent);
+          color: var(--surface);
+          font-weight: 700;
+          letter-spacing: 0.3px;
+        }
+        .smart-rewrite-toggle {
+          font-size: 18px;
+          color: var(--accent);
+          transition: transform 0.3s ease;
+        }
+        .smart-rewrite-toggle.open {
+          transform: rotate(180deg);
+        }
       `}</style>
 
       {/* Mode 1: Stories Dashboard List */}
@@ -721,6 +842,45 @@ export function StarPage({ onGenerationUsed }: { onGenerationUsed?: () => void }
                 style={{ width: "260px" }}
               />
             </label>
+          </div>
+
+          {/* Smart Rewrite Collapsible Panel */}
+          <div className="smart-rewrite-panel">
+            <div className="smart-rewrite-header" onClick={() => setSmartRewriteOpen(!smartRewriteOpen)}>
+              <h4>
+                ✨ 一键智能改写
+                <span className="smart-rewrite-badge">推荐</span>
+              </h4>
+              <span className={`smart-rewrite-toggle ${smartRewriteOpen ? "open" : ""}`}>▼</span>
+            </div>
+            {smartRewriteOpen && (
+              <div className="smart-rewrite-body">
+                <p style={{ fontSize: "12px", color: "var(--muted)", margin: 0, lineHeight: "1.5" }}>
+                  直接粘贴完整的项目经历描述（简历片段、面试草稿、甚至随意的笔记都可以），AI 将自动按 STAR 结构拆解并润色成简历级表达。
+                </p>
+                <textarea
+                  placeholder="在这里粘贴你的完整项目经历...\n\n例如：我在XX公司实习期间，参与了后端微服务网关的重构项目。当时系统的日均请求量已达到500万次，但旧网关存在单点故障和延迟高的问题。我负责设计新的网关架构，采用了Spring Cloud Gateway替换原有的Zuul方案，并引入了Redis做请求限流和缓存。最终网关的P99延迟从200ms降到了50ms，系统可用性从99.5%提升到99.99%。"
+                  value={smartRewriteText}
+                  onChange={(e) => setSmartRewriteText(e.target.value)}
+                />
+                
+                {loadingSmartRewrite ? (
+                  <StarLoadingAnimation isLoading={true} loadingText="正在深度分析并改写项目经历..." />
+                ) : (
+                  <Button
+                    variant="primary"
+                    onClick={handleSmartRewrite}
+                    disabled={!smartRewriteText.trim() || smartRewriteText.trim().length < 10}
+                    style={{ width: "100%", height: "42px", fontSize: "14px", fontWeight: "700" }}
+                  >
+                    🚀 一键智能改写（将自动填入 STAR 并跳转打磨）
+                  </Button>
+                )}
+                <span style={{ fontSize: "10px", color: "var(--subtle)", textAlign: "center" }}>
+                  每次改写将消耗 1 次生成额度 · 支持 10~8000 字的项目描述
+                </span>
+              </div>
+            )}
           </div>
 
           <div className="card">
@@ -1055,9 +1215,7 @@ export function StarPage({ onGenerationUsed }: { onGenerationUsed?: () => void }
 
               <div style={{ flex: 1, overflowY: "auto", maxHeight: "480px" }}>
                 {loadingPolish ? (
-                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "180px", gap: "10px" }}>
-                    <span style={{ fontSize: "12px", color: "var(--muted)" }}>大语言模型正在对项目碎片进行黄金重塑与润色中...</span>
-                  </div>
+                  <StarLoadingAnimation isLoading={true} loadingText="大语言模型正在对项目碎片进行黄金重塑与润色中..." />
                 ) : polishedText ? (
                   renderPolishedMarkdown(polishedText)
                 ) : (

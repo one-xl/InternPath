@@ -39,8 +39,8 @@ class AIAnalyzer:
         self.model = Config.LLM_MODEL
 
     def _client(self, user_id: Optional[Any] = None, config_id: Optional[str] = None) -> Tuple[OpenAI, Optional[str], str, str]:
-        # 1. If user_id is provided, try to find an enabled custom model configuration in the database
-        if user_id:
+        # 1. If user_id is provided and a specific config_id is requested, try to find it in the database
+        if user_id and config_id and config_id.strip():
             try:
                 from database import Database
                 db = Database()

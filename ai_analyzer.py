@@ -672,6 +672,15 @@ class AIAnalyzer:
             {"role": "user", "content": user_prompt},
         ]
 
+        # Ensure "json" is present in the messages to satisfy some providers like Doubao/OpenAI
+        has_json = False
+        for msg in messages:
+            if "json" in (msg.get("content") or "").lower():
+                has_json = True
+                break
+        if not has_json and messages:
+            messages[-1]["content"] += "\n\nReturn the output in JSON format."
+
         try:
             response = client.chat.completions.create(
                 model=self.model,

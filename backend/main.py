@@ -242,6 +242,15 @@ def openai_chat_body(model_id: str, request_body: dict) -> dict:
     response_mime = gen_config.get("responseMimeType")
     if response_mime == "application/json":
         openai_body["response_format"] = {"type": "json_object"}
+        # Ensure the prompt contains the word 'json' to satisfy the constraint of some providers like Doubao/OpenAI
+        has_json_word = False
+        for msg in messages:
+            if "json" in msg.get("content", "").lower():
+                has_json_word = True
+                break
+        if not has_json_word and messages:
+            # Append JSON instruction to the last message
+            messages[-1]["content"] += "\n\nReturn the output in JSON format."
         
     return openai_body
 
@@ -1139,7 +1148,7 @@ def create_app(
                     url = openai_chat_url(base_url)
                     test_body = {
                         "model": payload.modelId,
-                        "messages": [{"role": "user", "content": "Return exactly: {\"ok\": true}"}],
+                        "messages": [{"role": "user", "content": "Return exactly: {\"ok\": true} in JSON format."}],
                         "temperature": 0,
                         "max_tokens": 256,
                         "response_format": {"type": "json_object"},

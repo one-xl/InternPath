@@ -180,10 +180,34 @@ export function StarPage({
         if (adv) {
           const chunks = (item as any).parsedResume?.chunks || (item as any).retrievedResumeChunks || [];
           const basedOn = adv.basedOnChunkIds || [];
-          const matched = chunks.filter((c: any) => basedOn.includes(c.id));
-          const originalText = matched.length > 0
-            ? matched.map((c: any) => c.content || c.text || "").join("\n").trim()
-            : "";
+          
+          let originalText = "";
+          if (chunks.length && basedOn.length) {
+            const matched = chunks.filter((c: any) => {
+              if (!c.id) return false;
+              return basedOn.some((id: string) => {
+                if (!id) return false;
+                const cidStr = String(c.id).toLowerCase();
+                const idStr = String(id).toLowerCase();
+                return cidStr === idStr || cidStr.endsWith("-" + idStr) || idStr.endsWith("-" + cidStr);
+              });
+            });
+            if (matched.length > 0) {
+              originalText = matched.map((c: any) => c.content || c.text || "").join("\n").trim();
+            }
+          }
+
+          if (!originalText) {
+            const legacyText = 
+              (item as any).candidateMaterial || 
+              (item as any).input_json?.resumeText || 
+              (item as any).draft?.resumeText || 
+              (item as any).resumeText || 
+              "";
+            if (legacyText && legacyText.trim()) {
+              originalText = legacyText.trim();
+            }
+          }
           
           if (originalText) {
             const targetText = `${originalText}\n\n【修改目标】：针对以下简历问题进行针对性智能改写：\n- 问题缺陷：${adv.issue}\n- 优化建议：${adv.suggestion}`;
@@ -215,12 +239,34 @@ export function StarPage({
     const chunks = (currentJdItem as any).parsedResume?.chunks || (currentJdItem as any).retrievedResumeChunks || [];
     const basedOn = adviceItem.basedOnChunkIds || [];
 
-    if (!chunks.length || !basedOn.length) return "";
-
-    const matched = chunks.filter((c: any) => basedOn.includes(c.id));
-    if (matched.length > 0) {
-      return matched.map((c: any) => c.content || c.text || "").join("\n").trim();
+    // 1. If we have RAG chunks and citation IDs, try to match robustly
+    if (chunks.length && basedOn.length) {
+      const matched = chunks.filter((c: any) => {
+        if (!c.id) return false;
+        return basedOn.some((id: string) => {
+          if (!id) return false;
+          const cidStr = String(c.id).toLowerCase();
+          const idStr = String(id).toLowerCase();
+          return cidStr === idStr || cidStr.endsWith("-" + idStr) || idStr.endsWith("-" + cidStr);
+        });
+      });
+      if (matched.length > 0) {
+        return matched.map((c: any) => c.content || c.text || "").join("\n").trim();
+      }
     }
+
+    // 2. Fallback: If no chunks matched or chunks are empty (e.g. legacy text input flow), use raw candidate resume text
+    const legacyText = 
+      (currentJdItem as any).candidateMaterial || 
+      (currentJdItem as any).input_json?.resumeText || 
+      (currentJdItem as any).draft?.resumeText || 
+      (currentJdItem as any).resumeText || 
+      "";
+    
+    if (legacyText && legacyText.trim()) {
+      return legacyText.trim();
+    }
+
     return "";
   };
 

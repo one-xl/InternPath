@@ -4,7 +4,7 @@ import sqlite3
 from datetime import datetime
 from typing import Any, List, Optional, Tuple
 
-from auth import hash_password, normalize_username, verify_password_hash
+from auth import hash_password, normalize_username, verify_password_hash, parse_password_hash
 from config import Config
 from models import (
     BilibiliCourse,
@@ -3699,8 +3699,9 @@ class Database:
         conn = self.get_connection()
         cursor = conn.cursor()
         try:
-            cursor.execute("SELECT 1 FROM users WHERE username = ?", ("admin@example.com",))
-            if cursor.fetchone() is None:
+            cursor.execute("SELECT password_hash FROM users WHERE username = ?", ("admin@example.com",))
+            row = cursor.fetchone()
+            if row is None:
                 hashed = hash_password("ChangeMe123!")
                 now = datetime.now().isoformat()
                 if self.is_postgres:
@@ -3716,8 +3717,19 @@ class Database:
                 conn.commit()
                 print("【安全提示】本地默认账号仅用于开发，请在生产环境中修改密码。")
             else:
-                cursor.execute("UPDATE users SET role = 'admin' WHERE username = ?", ("admin@example.com",))
-                conn.commit()
+                stored_hash = row[0]
+                if parse_password_hash(stored_hash) is None:
+                    # Self-heal corrupted password hash
+                    hashed = hash_password("ChangeMe123!")
+                    cursor.execute(
+                        "UPDATE users SET password_hash = ?, role = 'admin' WHERE username = ?",
+                        (hashed, "admin@example.com")
+                    )
+                    conn.commit()
+                    print("【安全修复】检测到默认管理员哈希已损坏，已自动修复并重置为 ChangeMe123!")
+                else:
+                    cursor.execute("UPDATE users SET role = 'admin' WHERE username = ?", ("admin@example.com",))
+                    conn.commit()
         except Exception as e:
             print(f"Error seeding user: {e}")
         finally:

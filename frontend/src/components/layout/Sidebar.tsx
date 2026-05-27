@@ -1,4 +1,4 @@
-import type { PageKey } from "../../types/navigation";
+﻿import type { PageKey } from "../../types/navigation";
 
 const navItems: { key: PageKey; label: string; icon: React.ReactNode }[] = [
   {
@@ -84,12 +84,14 @@ export function Sidebar({
   onLogout,
   userRole,
   generationLimit,
+  variant = "desktop",
 }: {
   activePage: PageKey;
   onNavigate: (page: PageKey) => void;
   onLogout?: () => void;
   userRole?: string;
   generationLimit?: number;
+  variant?: "desktop" | "drawer";
 }) {
   const visibleItems = userRole === "admin"
     ? [
@@ -108,6 +110,73 @@ export function Sidebar({
       ]
     : navItems;
 
+  // ─── Drawer variant (mobile) ───
+  if (variant === "drawer") {
+    return (
+      <div className="drawer-sidebar">
+        <div className="drawer-sidebar-brand">
+          <strong>InternPath</strong>
+          <span>Personal Desk</span>
+        </div>
+        <div className="drawer-sidebar-nav">
+          {visibleItems.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              className={item.key === activePage ? "active" : ""}
+              onClick={() => onNavigate(item.key)}
+            >
+              {item.icon}
+              {item.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Remaining Generation Limit Card */}
+        {userRole !== "admin" && generationLimit !== undefined && (
+          <div className="drawer-sidebar-limit">
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}>
+              <span>剩余分析额度</span>
+              <strong style={{ color: generationLimit > 0 ? "var(--accent)" : "var(--danger)" }}>
+                {generationLimit} 次
+              </strong>
+            </div>
+            <div style={{
+              width: "100%",
+              height: "4px",
+              background: "var(--line)",
+              borderRadius: "2px",
+              overflow: "hidden"
+            }}>
+              <div style={{
+                width: `${Math.min(100, (generationLimit / 5) * 100)}%`,
+                height: "100%",
+                background: generationLimit > 1 ? "var(--accent)" : "var(--danger)",
+                transition: "width 300ms ease"
+              }} />
+            </div>
+          </div>
+        )}
+
+        {onLogout && (
+          <button
+            type="button"
+            className="drawer-sidebar-logout"
+            onClick={onLogout}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+              <polyline points="16 17 21 12 16 7" />
+              <line x1="21" y1="12" x2="9" y2="12" />
+            </svg>
+            退出登录
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  // ─── Desktop variant (original, unchanged) ───
   return (
     <aside className="sidebar">
       <div className="sidebar-brand">

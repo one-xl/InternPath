@@ -177,23 +177,48 @@ class EvidenceCheckNode(BaseNode):
         return f"claims: {len(state.data.get('claims', []))}"
 
     def run(self, state: WorkflowState) -> WorkflowState:
+        from app.verification.evidence_checker import verify_claims_section_aware
         chunks = state.data.get("retrieval", {}).get("retrievedChunks") or state.data.get("resumeContext", {}).get("allChunks", [])
-        evidence_keywords = extract_keywords(" ".join(chunk.get("text", "") for chunk in chunks))
+        
+        claims = state.data.get("claims", [])
+        claims_texts = [claim["claimText"] for claim in claims]
+        verification_results = verify_claims_section_aware(claims_texts, chunks)
+        
         results = []
         supported = weak = unsupported = contradicted = 0
-        for claim in state.data.get("claims", []):
-            claim_keywords = extract_keywords(claim["claimText"])
-            matched = sorted(claim_keywords & evidence_keywords)
-            confidence = len(matched) / len(claim_keywords) if claim_keywords else 0.0
-            if confidence >= 0.5:
-                status = "supported"
+        
+        for claim, v_res in zip(claims, verification_results):
+            status = v_res["status"]
+            confidence = v_res["confidenceScore"]
+            
+            if status == "supported":
                 supported += 1
-            elif confidence >= WEAK_THRESHOLD:
-                status = "weak"
+            elif status == "weak":
                 weak += 1
             else:
-                status = "unsupported"
                 unsupported += 1
+                
+            ev_chunks = []
+            if v_res.get("evidence"):
+                matching_chunk_id = v_res["evidence"]["chunkId"]
+                matching_chunk = next((c for c in chunks if c.get("chunkId") == matching_chunk_id), None)
+                if matching_chunk:
+                    ev_chunks.append({
+                        "documentId": matching_chunk["documentId"],
+                        "chunkId": matching_chunk["chunkId"],
+                        "sourceType": matching_chunk.get("sourceType") or matching_chunk.get("metadata", {}).get("sourceType", "KNOWLEDGE_BASE"),
+                        "fileName": matching_chunk.get("fileName") or matching_chunk.get("metadata", {}).get("fileName", ""),
+                        "text": matching_chunk.get("text", "")[:500],
+                        "sectionType": matching_chunk.get("sectionType") or matching_chunk.get("metadata", {}).get("sectionType", "generic_section"),
+                        "sectionTitle": matching_chunk.get("sectionTitle") or matching_chunk.get("metadata", {}).get("sectionTitle", "Document Content"),
+                        "hierarchy": matching_chunk.get("hierarchy") or matching_chunk.get("metadata", {}).get("hierarchy") or ["Document Content"],
+                        "importance": float(matching_chunk.get("importance") or matching_chunk.get("metadata", {}).get("importance", 0.60)),
+                        "keywords": matching_chunk.get("keywords") or matching_chunk.get("metadata", {}).get("keywords", []),
+                        "metadata": matching_chunk.get("metadata", {})
+                    })
+            if not ev_chunks and chunks:
+                ev_chunks = claim_evidence_chunks(chunks, confidence)
+                
             results.append(
                 {
                     "claimId": claim["claimId"],
@@ -201,11 +226,13 @@ class EvidenceCheckNode(BaseNode):
                     "claimType": claim["claimType"],
                     "status": status,
                     "confidenceScore": round(confidence, 3),
-                    "reason": build_verification_reason(status, matched),
-                    "evidenceChunks": claim_evidence_chunks(chunks, confidence),
-                    "matchedKeywords": matched,
+                    "reason": build_verification_reason(status, v_res["matched_keywords"]),
+                    "evidenceChunks": ev_chunks,
+                    "matchedKeywords": v_res["matched_keywords"],
+                    "evidence": v_res.get("evidence")
                 }
             )
+            
         total = supported + weak + unsupported + contradicted
         state.data["verification"] = {
             "verificationResults": results,
@@ -294,21 +321,31 @@ class CitationNode(BaseNode):
 
     def run(self, state: WorkflowState) -> WorkflowState:
         citations = []
+        idx = 1
         for result in state.data.get("verification", {}).get("verificationResults", []):
             if result["status"] == "unsupported":
                 continue
             for chunk in result.get("evidenceChunks", [])[:1]:
                 citations.append(
                     {
+                        "citationId": f"cite-{idx}",
                         "claimId": result["claimId"],
                         "claimText": result["claimText"],
-                        "sourceType": chunk.get("sourceType", ""),
                         "documentId": chunk.get("documentId", ""),
+                        "sectionId": chunk.get("sectionId") or chunk.get("metadata", {}).get("sectionId") or f"sec-{chunk.get('sourceType', chunk.get('metadata', {}).get('sourceType', 'other'))}-pre",
+                        "sectionType": chunk.get("sectionType") or chunk.get("metadata", {}).get("sectionType") or "generic_section",
+                        "sectionTitle": chunk.get("sectionTitle") or chunk.get("metadata", {}).get("sectionTitle") or "Document Content",
+                        "hierarchy": chunk.get("hierarchy") or chunk.get("metadata", {}).get("hierarchy") or ["Document Content"],
                         "chunkId": chunk.get("chunkId", ""),
-                        "fileName": chunk.get("fileName", ""),
+                        "fileName": chunk.get("fileName") or chunk.get("metadata", {}).get("fileName", ""),
+                        "retrievalScore": result.get("confidenceScore", 0.90),
+                        "retrievalReasons": chunk.get("retrievalReasons", ["bm25_match"]),
                         "evidenceText": chunk.get("text", "")[:300],
+                        # Maintain legacy fields for compatibility
+                        "sourceType": chunk.get("sourceType") or chunk.get("metadata", {}).get("sourceType", ""),
                     }
                 )
+                idx += 1
         state.data["citations"] = citations
         return state
 
@@ -365,11 +402,156 @@ class QualityEvaluationNode(BaseNode):
         return f"quality: {quality.get('finalQualityScore', 0)}, gate: {quality.get('qualityGateStatus', '-')}"
 
 
+class SectionParserNode(BaseNode):
+    node_name = "SectionParserNode"
+
+    def input_summary(self, state: WorkflowState) -> str:
+        return f"JD text: {len(state.request.jdText)} chars; Resume text: {len(state.request.resumeText)} chars"
+
+    def run(self, state: WorkflowState) -> WorkflowState:
+        from app.rag.section_parser import parse_sections
+        jd_sections = parse_sections(state.request.jdText, source_type="jd")
+        resume_sections = parse_sections(state.request.resumeText, source_type="resume")
+        
+        state.data["jdSections"] = jd_sections
+        state.data["resumeSections"] = resume_sections
+        state.workflow_logs.append({
+            "nodeName": self.node_name,
+            "status": "success",
+            "durationMs": 1,
+            "inputSummary": self.input_summary(state),
+            "outputSummary": self.output_summary(state)
+        })
+        return state
+
+    def output_summary(self, state: WorkflowState) -> str:
+        return f"Parsed {len(state.data.get('jdSections', []))} JD sections and {len(state.data.get('resumeSections', []))} resume sections."
+
+
+class MetadataChunkNode(BaseNode):
+    node_name = "MetadataChunkNode"
+
+    def input_summary(self, state: WorkflowState) -> str:
+        ctx = state.data.get("resumeContext", {})
+        return f"documents count: {ctx.get('documentCount', 0)}"
+
+    def run(self, state: WorkflowState) -> WorkflowState:
+        # Note: metadata inheritance is run seamlessly inside build_chunks
+        state.workflow_logs.append({
+            "nodeName": self.node_name,
+            "status": "success",
+            "durationMs": 1,
+            "inputSummary": self.input_summary(state),
+            "outputSummary": self.output_summary(state)
+        })
+        return state
+
+    def output_summary(self, state: WorkflowState) -> str:
+        ctx = state.data.get("resumeContext", {})
+        return f"Chunks generated: {ctx.get('chunkCount', 0)} chunks inherited section metadata."
+
+
+class EmbeddingFormatNode(BaseNode):
+    node_name = "EmbeddingFormatNode"
+
+    def input_summary(self, state: WorkflowState) -> str:
+        ctx = state.data.get("resumeContext", {})
+        return f"chunks: {ctx.get('chunkCount', 0)}"
+
+    def run(self, state: WorkflowState) -> WorkflowState:
+        # Structured embedding is pre-generated in build_chunks
+        state.workflow_logs.append({
+            "nodeName": self.node_name,
+            "status": "success",
+            "durationMs": 1,
+            "inputSummary": self.input_summary(state),
+            "outputSummary": self.output_summary(state)
+        })
+        return state
+
+    def output_summary(self, state: WorkflowState) -> str:
+        return "Structured embedding texts generated successfully."
+
+
+class HybridRetrievalNode(BaseNode):
+    node_name = "HybridRetrievalNode"
+
+    def input_summary(self, state: WorkflowState) -> str:
+        keywords = state.data.get("jdParse", {}).get("techKeywords", [])
+        return f"query: {', '.join(keywords[:6])}; enableRag={state.request.options.enableRag}"
+
+    def run(self, state: WorkflowState) -> WorkflowState:
+        from app.rag.hybrid_retriever import retrieve_hybrid
+        ctx = state.data.get("resumeContext", {})
+        evidence_chunks = ctx.get("contextDocuments") or ctx.get("allChunks") or []
+        
+        if state.request.options.enableRag:
+            query = " ".join(state.data.get("jdParse", {}).get("techKeywords", [])) or state.request.jdText[:500]
+            hybrid_results = retrieve_hybrid(evidence_chunks, query, 15)
+        else:
+            hybrid_results = []
+            
+        state.data["hybridRetrieval"] = {
+            "hybridChunks": hybrid_results,
+            "evidenceCount": len(hybrid_results)
+        }
+        
+        state.workflow_logs.append({
+            "nodeName": self.node_name,
+            "status": "success",
+            "durationMs": 2,
+            "inputSummary": self.input_summary(state),
+            "outputSummary": self.output_summary(state)
+        })
+        return state
+
+    def output_summary(self, state: WorkflowState) -> str:
+        return f"Hybrid retrieved chunks: {state.data.get('hybridRetrieval', {}).get('evidenceCount', 0)}"
+
+
+class SemanticRankingNode(BaseNode):
+    node_name = "SemanticRankingNode"
+
+    def input_summary(self, state: WorkflowState) -> str:
+        hybrid = state.data.get("hybridRetrieval", {}).get("hybridChunks", [])
+        return f"hybrid candidates count: {len(hybrid)}"
+
+    def run(self, state: WorkflowState) -> WorkflowState:
+        from app.rag.semantic_ranker import rerank_chunks
+        hybrid_chunks = state.data.get("hybridRetrieval", {}).get("hybridChunks", [])
+        query = " ".join(state.data.get("jdParse", {}).get("techKeywords", [])) or state.request.jdText[:500]
+        
+        ranked = rerank_chunks(hybrid_chunks, query, 8)
+        
+        state.data["retrieval"] = {
+            "retrievedChunks": ranked,
+            "citationsDraft": build_citations_from_chunks(ranked),
+            "evidenceCount": len(ranked)
+        }
+        
+        state.workflow_logs.append({
+            "nodeName": self.node_name,
+            "status": "success",
+            "durationMs": 2,
+            "inputSummary": self.input_summary(state),
+            "outputSummary": self.output_summary(state)
+        })
+        return state
+
+    def output_summary(self, state: WorkflowState) -> str:
+        return f"Ranked Top {state.data.get('retrieval', {}).get('evidenceCount', 0)} chunks."
+
+
 def build_analyze_jd_workflow() -> WorkflowEngine:
     return WorkflowEngine(
         [
             JDParserNode(),
             ResumeContextNode(),
+            SectionParserNode(),
+            MetadataChunkNode(),
+            EmbeddingFormatNode(),
+            HybridRetrievalNode(),
+            SemanticRankingNode(),
             RAGRetrieverNode(),
             DraftReportNode(),
             ClaimExtractionNode(),
@@ -405,27 +587,74 @@ def workflow_response(task_id: str, state: WorkflowState) -> dict[str, Any]:
 
 
 def build_chunks(documents: list[Any]) -> list[dict[str, Any]]:
+    from app.rag.chunker import chunk_document_with_sections
     out: list[dict[str, Any]] = []
     for doc in documents:
         raw = doc.model_dump() if hasattr(doc, "model_dump") else dict(doc)
         document_id = str(raw.get("documentId", "")).strip()
         content = str(raw.get("content", ""))
         metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
-        if not document_id or not content.strip():
+        if not document_id:
             continue
-        for idx, text in enumerate(chunk_text(content, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP)):
-            chunk_id = str(raw.get("chunkId") or f"{document_id}#chunk-{idx}")
-            out.append(
-                {
-                    "documentId": document_id,
-                    "chunkId": chunk_id,
-                    "text": content if raw.get("chunkId") else text,
-                    "score": raw.get("score"),
-                    "metadata": {**metadata, "chunkIndex": metadata.get("chunkIndex", idx)},
-                }
-            )
-            if raw.get("chunkId"):
-                break
+            
+        # If it's already a single chunk with a chunkId (pre-chunked legacy flow)
+        if raw.get("chunkId") or raw.get("chunk_id"):
+            chunk_id = str(raw.get("chunkId") or raw.get("chunk_id"))
+            text = content or str(raw.get("text", ""))
+            
+            # Map default metadata
+            out.append({
+                "documentId": document_id,
+                "chunkId": chunk_id,
+                "text": text,
+                "score": raw.get("score"),
+                "sectionId": raw.get("sectionId") or f"sec-{metadata.get('sourceType', 'other')}-pre",
+                "sectionType": raw.get("sectionType") or "generic_section",
+                "sectionTitle": raw.get("sectionTitle") or "Document Content",
+                "hierarchy": raw.get("hierarchy") or ["Document Content"],
+                "semanticType": raw.get("semanticType") or "general",
+                "importance": float(raw.get("importance", 0.60)),
+                "keywords": raw.get("keywords") or [],
+                "embeddingText": raw.get("embeddingText") or text,
+                "fileName": raw.get("fileName") or metadata.get("fileName") or "",
+                "sourceType": raw.get("sourceType") or metadata.get("sourceType") or "other",
+                "metadata": {**metadata, "chunkIndex": metadata.get("chunkIndex", 0)},
+            })
+            continue
+            
+        if not content.strip():
+            continue
+            
+        # Metadata-aware chunking
+        source_type = str(metadata.get("sourceType", "generic")).lower()
+        file_name = str(metadata.get("fileName", "document.txt"))
+        
+        doc_chunks = chunk_document_with_sections(
+            content=content,
+            document_id=document_id,
+            file_name=file_name,
+            source_type=source_type,
+            chunk_size=CHUNK_SIZE,
+            overlap=CHUNK_OVERLAP
+        )
+        
+        for c in doc_chunks:
+            out.append({
+                "documentId": c["documentId"],
+                "chunkId": c["chunkId"],
+                "text": c["chunkText"],
+                "score": c.get("score"),
+                "sectionId": c.get("sectionId"),
+                "sectionType": c.get("sectionType"),
+                "sectionTitle": c.get("sectionTitle"),
+                "hierarchy": c.get("hierarchy"),
+                "semanticType": c.get("semanticType"),
+                "importance": c.get("importance"),
+                "keywords": c.get("keywords"),
+                "embeddingText": c.get("embeddingText"),
+                "metadata": c.get("metadata")
+            })
+            
     return out
 
 

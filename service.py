@@ -54,22 +54,40 @@ def build_knowledge_chunks(
     source_type: str,
     file_name: str,
 ) -> List[dict]:
-    chunks = []
-    for index, text in enumerate(chunk_text_light(raw_text)):
-        chunks.append(
-            {
-                "chunkIndex": index,
-                "text": text,
-                "tokenCount": len(text),
-                "metadata": {
-                    "documentId": str(document_id),
-                    "sourceType": source_type,
-                    "fileName": file_name,
-                    "chunkIndex": index,
-                },
-            }
-        )
-    return chunks
+    import sys
+    from pathlib import Path
+    ai_service_path = str(Path(__file__).resolve().parent / "ai-service")
+    if ai_service_path not in sys.path:
+        sys.path.insert(0, ai_service_path)
+        
+    from app.rag.chunker import chunk_document_with_sections
+    
+    chunks = chunk_document_with_sections(
+        content=raw_text,
+        document_id=str(document_id),
+        file_name=file_name,
+        source_type=source_type
+    )
+    
+    # Map properties to keep save_knowledge_chunks compatibility
+    mapped_chunks = []
+    for c in chunks:
+        mapped_chunks.append({
+            "chunkIndex": c["chunkIndex"],
+            "text": c["chunkText"],
+            "tokenCount": len(c["chunkText"]),
+            "sectionId": c.get("sectionId"),
+            "sectionType": c.get("sectionType"),
+            "sectionTitle": c.get("sectionTitle"),
+            "hierarchy": c.get("hierarchy"),
+            "semanticType": c.get("semanticType"),
+            "importance": c.get("importance"),
+            "keywords": c.get("keywords"),
+            "embeddingText": c.get("embeddingText"),
+            "metadata": c.get("metadata")
+        })
+        
+    return mapped_chunks
 
 
 class CareerPathAIService:

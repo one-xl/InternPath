@@ -526,7 +526,15 @@ class Database:
                     chunk_text TEXT,
                     token_count INTEGER,
                     metadata_json TEXT,
-                    created_at TEXT
+                    created_at TEXT,
+                    section_id VARCHAR(255),
+                    section_type VARCHAR(255),
+                    section_title VARCHAR(255),
+                    hierarchy_json TEXT,
+                    semantic_type VARCHAR(255),
+                    importance REAL,
+                    keywords_json TEXT,
+                    embedding_text TEXT
                 );
                 """
             )
@@ -609,6 +617,24 @@ class Database:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_chunk_user_doc ON knowledge_chunk(user_id, document_id);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_job_postings_user ON job_postings(user_id);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_fit_exam_attempts_user ON fit_exam_attempts(user_id);")
+
+            # PostgreSQL columns migration for knowledge_chunk
+            if not self._column_exists(cursor, "knowledge_chunk", "section_id"):
+                cursor.execute("ALTER TABLE knowledge_chunk ADD COLUMN section_id VARCHAR(255)")
+            if not self._column_exists(cursor, "knowledge_chunk", "section_type"):
+                cursor.execute("ALTER TABLE knowledge_chunk ADD COLUMN section_type VARCHAR(255)")
+            if not self._column_exists(cursor, "knowledge_chunk", "section_title"):
+                cursor.execute("ALTER TABLE knowledge_chunk ADD COLUMN section_title VARCHAR(255)")
+            if not self._column_exists(cursor, "knowledge_chunk", "hierarchy_json"):
+                cursor.execute("ALTER TABLE knowledge_chunk ADD COLUMN hierarchy_json TEXT")
+            if not self._column_exists(cursor, "knowledge_chunk", "semantic_type"):
+                cursor.execute("ALTER TABLE knowledge_chunk ADD COLUMN semantic_type VARCHAR(255)")
+            if not self._column_exists(cursor, "knowledge_chunk", "importance"):
+                cursor.execute("ALTER TABLE knowledge_chunk ADD COLUMN importance REAL")
+            if not self._column_exists(cursor, "knowledge_chunk", "keywords_json"):
+                cursor.execute("ALTER TABLE knowledge_chunk ADD COLUMN keywords_json TEXT")
+            if not self._column_exists(cursor, "knowledge_chunk", "embedding_text"):
+                cursor.execute("ALTER TABLE knowledge_chunk ADD COLUMN embedding_text TEXT")
 
             # 11. Sessions table for persistent authentication
             cursor.execute(
@@ -863,6 +889,14 @@ class Database:
                     token_count INTEGER,
                     metadata_json TEXT,
                     created_at TEXT,
+                    section_id TEXT,
+                    section_type TEXT,
+                    section_title TEXT,
+                    hierarchy_json TEXT,
+                    semantic_type TEXT,
+                    importance REAL,
+                    keywords_json TEXT,
+                    embedding_text TEXT,
                     FOREIGN KEY (document_id) REFERENCES knowledge_document(id)
                 )
                 """
@@ -914,6 +948,24 @@ class Database:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_chunk_user_doc ON knowledge_chunk(user_id, document_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_job_postings_user ON job_postings(user_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_fit_exam_attempts_user ON fit_exam_attempts(user_id)")
+
+            # SQLite columns migration for knowledge_chunk
+            if not self._column_exists(cursor, "knowledge_chunk", "section_id"):
+                cursor.execute("ALTER TABLE knowledge_chunk ADD COLUMN section_id TEXT")
+            if not self._column_exists(cursor, "knowledge_chunk", "section_type"):
+                cursor.execute("ALTER TABLE knowledge_chunk ADD COLUMN section_type TEXT")
+            if not self._column_exists(cursor, "knowledge_chunk", "section_title"):
+                cursor.execute("ALTER TABLE knowledge_chunk ADD COLUMN section_title TEXT")
+            if not self._column_exists(cursor, "knowledge_chunk", "hierarchy_json"):
+                cursor.execute("ALTER TABLE knowledge_chunk ADD COLUMN hierarchy_json TEXT")
+            if not self._column_exists(cursor, "knowledge_chunk", "semantic_type"):
+                cursor.execute("ALTER TABLE knowledge_chunk ADD COLUMN semantic_type TEXT")
+            if not self._column_exists(cursor, "knowledge_chunk", "importance"):
+                cursor.execute("ALTER TABLE knowledge_chunk ADD COLUMN importance REAL")
+            if not self._column_exists(cursor, "knowledge_chunk", "keywords_json"):
+                cursor.execute("ALTER TABLE knowledge_chunk ADD COLUMN keywords_json TEXT")
+            if not self._column_exists(cursor, "knowledge_chunk", "embedding_text"):
+                cursor.execute("ALTER TABLE knowledge_chunk ADD COLUMN embedding_text TEXT")
 
             # Create standard table setup for SQLite new columns
             cursor.execute(
@@ -2529,11 +2581,29 @@ class Database:
             text = str(chunk.get("text") or chunk.get("chunk_text") or "")
             chunk_index = int(chunk.get("chunkIndex", chunk.get("chunk_index", index)))
             token_count = int(chunk.get("tokenCount", chunk.get("token_count", len(text))))
+            
+            section_id = chunk.get("sectionId") or metadata.get("sectionId")
+            section_type = chunk.get("sectionType") or metadata.get("sectionType") or "generic_section"
+            section_title = chunk.get("sectionTitle") or metadata.get("sectionTitle") or "Document Content"
+            
+            hierarchy = chunk.get("hierarchy") or metadata.get("hierarchy") or [section_title]
+            hierarchy_json = self._dump_json(hierarchy)
+            
+            semantic_type = chunk.get("semanticType") or metadata.get("semanticType") or "general"
+            importance = float(chunk.get("importance", metadata.get("importance", 0.60)))
+            
+            keywords = chunk.get("keywords") or metadata.get("keywords") or []
+            keywords_json = self._dump_json(keywords)
+            
+            embedding_text = chunk.get("embeddingText") or chunk.get("embedding_text") or text
+
             cursor.execute(
                 """
                 INSERT INTO knowledge_chunk (
-                    user_id, document_id, chunk_index, chunk_text, token_count, metadata_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    user_id, document_id, chunk_index, chunk_text, token_count, metadata_json, created_at,
+                    section_id, section_type, section_title, hierarchy_json, semantic_type, importance,
+                    keywords_json, embedding_text
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     user_id,
@@ -2543,6 +2613,14 @@ class Database:
                     token_count,
                     self._dump_json(metadata),
                     now,
+                    section_id,
+                    section_type,
+                    section_title,
+                    hierarchy_json,
+                    semantic_type,
+                    importance,
+                    keywords_json,
+                    embedding_text,
                 ),
             )
         conn.commit()
@@ -2616,10 +2694,23 @@ class Database:
         params.append(user_id)
         conn = self.get_connection()
         cursor = conn.cursor()
+        
+        # Check available columns to stay backwards-compatible with old DBs during transitional phase
+        available_cols = [
+            row[1].lower() for row in cursor.execute("PRAGMA table_info(knowledge_chunk)").fetchall()
+        ]
+        
+        extra_selects = ""
+        if "section_id" in available_cols:
+            extra_selects = (
+                ", c.section_id, c.section_type, c.section_title, c.hierarchy_json, "
+                "c.semantic_type, c.importance, c.keywords_json, c.embedding_text"
+            )
+            
         cursor.execute(
             f"""
             SELECT c.id, c.user_id, c.document_id, c.chunk_index, c.chunk_text, c.token_count,
-                   c.metadata_json, c.created_at, d.title, d.file_name, d.source_type
+                   c.metadata_json, c.created_at, d.title, d.file_name, d.source_type {extra_selects}
             FROM knowledge_chunk c
             JOIN knowledge_document d ON d.id = c.document_id
             WHERE c.document_id IN ({placeholders}) AND c.user_id = ?
@@ -2629,8 +2720,10 @@ class Database:
         )
         rows = cursor.fetchall()
         conn.close()
-        return [
-            {
+        
+        results = []
+        for row in rows:
+            chunk_dict = {
                 "id": row[0],
                 "user_id": row[1],
                 "document_id": row[2],
@@ -2643,8 +2736,30 @@ class Database:
                 "file_name": row[9] or "",
                 "source_type": row[10] or "other",
             }
-            for row in rows
-        ]
+            
+            # Populate backward-compatible defaults or read from query
+            if extra_selects:
+                chunk_dict["sectionId"] = row[11]
+                chunk_dict["sectionType"] = row[12] or "generic_section"
+                chunk_dict["sectionTitle"] = row[13] or "Document Content"
+                chunk_dict["hierarchy"] = self._load_json(row[14], [chunk_dict["sectionTitle"]])
+                chunk_dict["semanticType"] = row[15] or "general"
+                chunk_dict["importance"] = float(row[16] or 0.60)
+                chunk_dict["keywords"] = self._load_json(row[17], [])
+                chunk_dict["embeddingText"] = row[18] or chunk_dict["chunk_text"]
+            else:
+                chunk_dict["sectionId"] = f"sec-{chunk_dict['source_type']}-pre"
+                chunk_dict["sectionType"] = "generic_section"
+                chunk_dict["sectionTitle"] = "Document Content"
+                chunk_dict["hierarchy"] = ["Document Content"]
+                chunk_dict["semanticType"] = "general"
+                chunk_dict["importance"] = 0.60;
+                chunk_dict["keywords"] = []
+                chunk_dict["embeddingText"] = chunk_dict["chunk_text"]
+                
+            results.append(chunk_dict)
+            
+        return results
 
     def delete_knowledge_document(
         self,

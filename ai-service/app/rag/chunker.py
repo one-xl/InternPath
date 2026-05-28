@@ -71,3 +71,110 @@ def _chunk_by_paragraphs(text: str, *, chunk_size: int, overlap: int) -> list[st
     if current:
         chunks.append(current)
     return chunks
+
+
+def chunk_document_with_sections(
+    content: str,
+    *,
+    document_id: str,
+    file_name: str,
+    source_type: str,
+    chunk_size: int = 800,
+    overlap: int = 120
+) -> list[dict]:
+    """
+    Parse document into sections, then slice each section into boundary-respecting chunks.
+    Automatically extracts keywords, maps semantic types, inherits parent section metadata,
+    and pre-generates structured embedding text.
+    """
+    from app.rag.section_parser import parse_sections
+    from app.rag.embedding_formatter import format_embedding_text
+    from app.verification.evidence_checker import extract_keywords
+
+    sections = parse_sections(content, source_type=source_type)
+    all_chunks = []
+    chunk_idx = 0
+
+    for section in sections:
+        sec_content = section["content"]
+        sec_id = section["sectionId"]
+        sec_type = section["sectionType"]
+        sec_title = section["title"]
+        importance = section["importance"]
+        hierarchy = section["hierarchy"]
+        
+        # Map semantic type
+        if sec_type in ("project_experience", "work_experience", "open_source", "research"):
+            semantic_type = "experience"
+        elif sec_type in ("skills", "tech_stack"):
+            semantic_type = "skills"
+        elif sec_type in ("education", "education_requirement"):
+            semantic_type = "education"
+        else:
+            semantic_type = "general"
+            
+        # Chunk within section content (preserves boundaries)
+        sub_chunks = chunk_text(sec_content, chunk_size=chunk_size, overlap=overlap)
+        
+        for idx, sub_text in enumerate(sub_chunks):
+            # Extract conservative keywords for this chunk
+            chunk_keywords = extract_keywords(sub_text)
+            
+            chunk_data = {
+                "chunkId": f"{document_id}#chunk-{chunk_idx}",
+                "documentId": document_id,
+                "sectionId": sec_id,
+                "sectionType": sec_type,
+                "sectionTitle": sec_title,
+                "hierarchy": hierarchy,
+                "semanticType": semantic_type,
+                "importance": importance,
+                "keywords": list(chunk_keywords),
+                "chunkIndex": chunk_idx,
+                "chunkText": sub_text,
+                "sourceType": source_type,
+                "fileName": file_name,
+                "metadata": {
+                    "sourceType": source_type,
+                    "fileName": file_name,
+                    "chunkIndex": chunk_idx,
+                    "sectionType": sec_type,
+                    "sectionTitle": sec_title,
+                    "hierarchy": hierarchy,
+                    "semanticType": semantic_type,
+                    "importance": importance,
+                    "keywords": list(chunk_keywords)
+                }
+            }
+            
+            # Formulate structured embedding text
+            chunk_data["embeddingText"] = format_embedding_text(chunk_data)
+            all_chunks.append(chunk_data)
+            chunk_idx += 1
+            
+    # Fallback in case of empty document
+    if not all_chunks:
+        all_chunks.append({
+            "chunkId": f"{document_id}#chunk-0",
+            "documentId": document_id,
+            "sectionId": f"sec-{source_type}-pre",
+            "sectionType": "generic_section",
+            "sectionTitle": "Document Content",
+            "hierarchy": ["Document Content"],
+            "semanticType": "general",
+            "importance": 0.60,
+            "keywords": [],
+            "chunkIndex": 0,
+            "chunkText": content,
+            "sourceType": source_type,
+            "fileName": file_name,
+            "embeddingText": content,
+            "metadata": {
+                "sourceType": source_type,
+                "fileName": file_name,
+                "chunkIndex": 0
+            }
+        })
+        
+    return all_chunks
+

@@ -54,3 +54,6 @@ frontend/tsconfig.tsbuildinfo
 .pytest_cache/
 .pytest_tmp/
 pytest_tmp_backend/
+
+# Local Scratch folder containing deployment scripts with secrets
+scratch/

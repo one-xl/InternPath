@@ -28,10 +28,23 @@ export interface ResumeChunk {
   keywords?: string[];
   score?: number;
   embedding?: number[];
+  sectionId?: string;
+  sectionType?: string;
+  sectionTitle?: string;
+  hierarchy?: string[];
+  semanticType?: string;
+  importance?: number;
+  retrievalReasons?: string[];
+  embeddingText?: string;
   metadata?: {
     pageNumber?: number;
     heading?: string;
     source?: string;
+    sectionType?: string;
+    sectionTitle?: string;
+    hierarchy?: string[];
+    semanticType?: string;
+    importance?: number;
   };
 }
 

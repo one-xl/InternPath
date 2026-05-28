@@ -45,8 +45,21 @@ export function ResumeChunkPreview({
               <article className="chunk-card" key={chunk.id} style={hasAdvice ? { borderLeft: `4px solid ${highestPriority === "high" ? "var(--accent-danger)" : "var(--accent-warning)"}` } : undefined}>
                 <button type="button" onClick={() => setExpandedId(expanded ? null : chunk.id)} aria-expanded={expanded}>
                   <span style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", flex: 1 }}>
-                    <strong>{chunk.section || "简历片段"}</strong>
-                    <small>{chunk.metadata?.source || "上传简历"} · #{chunk.index + 1}</small>
+                    <strong>{chunk.hierarchy && chunk.hierarchy.length > 0 ? chunk.hierarchy.join(" > ") : (chunk.sectionTitle || chunk.section || "简历片段")}</strong>
+                    <small>
+                      {chunk.metadata?.source || "上传简历"} · #{chunk.index + 1}
+                      {chunk.semanticType ? ` · ${chunk.semanticType}` : ""}
+                      {chunk.importance !== undefined ? ` · 权重: ${chunk.importance.toFixed(2)}` : ""}
+                    </small>
+                    {chunk.retrievalReasons && chunk.retrievalReasons.length > 0 && (
+                      <span style={{ display: "inline-flex", gap: "4px", flexWrap: "wrap" }}>
+                        {chunk.retrievalReasons.map((reason) => (
+                          <span key={reason} style={{ fontSize: "8.5px", background: "rgba(255,255,255,0.06)", color: "var(--muted)", padding: "1px 4px", borderRadius: "2px", border: "1px solid var(--line)" }}>
+                            {reason}
+                          </span>
+                        ))}
+                      </span>
+                    )}
                     {hasAdvice && (
                       <span
                         className="blink-text"
@@ -64,9 +77,13 @@ export function ResumeChunkPreview({
                       </span>
                     )}
                   </span>
-                  <Badge tone="info">{Math.round(chunk.score ?? 0)}%</Badge>
+                  <Badge tone="info">
+                    {chunk.score !== undefined 
+                      ? `score: ${(chunk.score > 1 ? chunk.score / 100 : chunk.score).toFixed(2)} (${Math.round(chunk.score > 1 ? chunk.score : chunk.score * 100)}%)` 
+                      : "score: 1.00 (100%)"}
+                  </Badge>
                 </button>
-                <p>{expanded ? chunk.content : `${chunk.content.slice(0, 120)}${chunk.content.length > 120 ? "..." : ""}`}</p>
+                <p style={{ marginTop: "8px", color: "var(--text-light)" }}>{expanded ? chunk.content : `${chunk.content.slice(0, 120)}${chunk.content.length > 120 ? "..." : ""}`}</p>
                 
                 {hasAdvice && expanded && onGoToRewrite && (
                   <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "12px", padding: "10px", background: "rgba(0,0,0,0.02)", borderRadius: "var(--radius-sm)", border: "1px dashed var(--line)" }}>

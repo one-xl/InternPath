@@ -21,6 +21,20 @@ sys.path.append(PROJECT_ROOT)
 from config import Config
 from database import Database
 
+def clean_null_bytes(val):
+    if isinstance(val, str):
+        # Remove both actual null byte and JSON unicode escaped representation of it
+        val = val.replace("\x00", "").replace("\\u0000", "")
+        val = val.replace("\\\\u0000", "")
+        return val
+    elif isinstance(val, dict):
+        return {k: clean_null_bytes(v) for k, v in val.items()}
+    elif isinstance(val, list):
+        return [clean_null_bytes(x) for x in val]
+    elif isinstance(val, tuple):
+        return tuple(clean_null_bytes(x) for x in val)
+    return val
+
 def main():
     print("=========================================================")
     print("          InternPath - Production Database Migrator       ")
@@ -164,7 +178,10 @@ def main():
                     
             placeholders = ", ".join(["%s"] * len(column_names))
             insert_query = f"INSERT INTO {table} ({cols_str}) VALUES ({placeholders})"
-            pg_cursor.executemany(insert_query, mapped_rows)
+            
+            # Clean null bytes from all migrated rows to prevent Postgres JSON conversion errors
+            cleaned_mapped_rows = [clean_null_bytes(r) for r in mapped_rows]
+            pg_cursor.executemany(insert_query, cleaned_mapped_rows)
             print(f" - '{table}': Migrated {len(mapped_rows)} rows.")
             
             # Reset integer auto-increment PK sequences in Postgres

@@ -11,8 +11,8 @@ interface SettingsPageProps {
   onDeleteChat: (id: string) => void;
   onSetActiveEmbedding: (id: string) => void;
   onSetActiveChat: (id: string) => void;
-  onTestEmbedding: (config: EmbeddingModelConfig) => void;
-  onTestChat: (config: ChatModelConfig) => void;
+  onTestEmbedding: (config: EmbeddingModelConfig) => void | Promise<any>;
+  onTestChat: (config: ChatModelConfig) => void | Promise<any>;
   onClearAll: () => void;
 }
 

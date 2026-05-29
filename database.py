@@ -3463,7 +3463,23 @@ class Database:
         if not self._is_api_key_placeholder(api_key):
             encrypted_key = self.encrypt_api_key(api_key)
             
-        cfg_json_str = config_json if isinstance(config_json, str) else (json.dumps(config_json, ensure_ascii=False) if config_json else None)
+        cfg_dict = {}
+        if config_json:
+            if isinstance(config_json, str):
+                try:
+                    cfg_dict = json.loads(config_json)
+                except Exception:
+                    cfg_dict = {}
+            elif isinstance(config_json, dict):
+                cfg_dict = dict(config_json)
+        
+        cfg_dict["modelId"] = model_id
+        cfg_dict["model_id"] = model_id
+        cfg_dict["provider"] = provider
+        if display_name:
+            cfg_dict["name"] = display_name
+            cfg_dict["display_name"] = display_name
+        cfg_json_str = json.dumps(cfg_dict, ensure_ascii=False)
         
         row = None
         if config_id:
@@ -3480,6 +3496,12 @@ class Database:
         from uuid import uuid4
         new_id = config_id or str(uuid4())
         
+        # For PostgreSQL, BOOLEAN columns must receive Python bool, not 0/1 integers.
+        # For SQLite, use 0/1 integers as SQLite has no native bool type.
+        pg_bool = self.is_postgres
+        sm_val = bool(is_server_managed) if pg_bool else (1 if is_server_managed else 0)
+        en_val = bool(enabled) if pg_bool else (1 if enabled else 0)
+
         if row:
             existing_id = row[0]
             if encrypted_key:
@@ -3489,7 +3511,7 @@ class Database:
                     SET provider = ?, model_id = ?, display_name = ?, encrypted_api_key = ?, is_server_managed = ?, enabled = ?, config_json = ?, updated_at = ?
                     WHERE id = ?
                     """,
-                    (provider, model_id, display_name, encrypted_key, 1 if is_server_managed else 0, 1 if enabled else 0, cfg_json_str, now, existing_id)
+                    (provider, model_id, display_name, encrypted_key, sm_val, en_val, cfg_json_str, now, existing_id)
                 )
             else:
                 cursor.execute(
@@ -3498,29 +3520,19 @@ class Database:
                     SET provider = ?, model_id = ?, display_name = ?, is_server_managed = ?, enabled = ?, config_json = ?, updated_at = ?
                     WHERE id = ?
                     """,
-                    (provider, model_id, display_name, 1 if is_server_managed else 0, 1 if enabled else 0, cfg_json_str, now, existing_id)
+                    (provider, model_id, display_name, sm_val, en_val, cfg_json_str, now, existing_id)
                 )
             ret_id = existing_id
         else:
-            if self.is_postgres:
-                cursor.execute(
-                    """
-                    INSERT INTO model_configs (id, user_id, provider, model_id, display_name, encrypted_api_key, is_server_managed, enabled, config_json, created_at, updated_at, owner_type)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'user')
-                    """,
-                    (new_id, user_id, provider, model_id, display_name, encrypted_key, is_server_managed, enabled, cfg_json_str, now, now)
-                )
-                ret_id = new_id
-            else:
-                cursor.execute(
-                    """
-                    INSERT INTO model_configs (id, user_id, provider, model_id, display_name, encrypted_api_key, is_server_managed, enabled, config_json, created_at, updated_at, owner_type)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'user')
-                    """,
-                    (new_id, user_id, provider, model_id, display_name, encrypted_key, 1 if is_server_managed else 0, 1 if enabled else 0, cfg_json_str, now, now)
-                )
-                ret_id = new_id
-                
+            cursor.execute(
+                """
+                INSERT INTO model_configs (id, user_id, provider, model_id, display_name, encrypted_api_key, is_server_managed, enabled, config_json, created_at, updated_at, owner_type)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'user')
+                """,
+                (new_id, user_id, provider, model_id, display_name, encrypted_key, sm_val, en_val, cfg_json_str, now, now)
+            )
+            ret_id = new_id
+
         conn.commit()
         conn.close()
         return ret_id
@@ -3571,6 +3583,7 @@ class Database:
             item["id"] = r[0]
             item["provider"] = r[2]
             item["modelId"] = r[3]
+            item["model_id"] = r[3]
             item["name"] = r[4] or extra.get("name", "")
             item["enabled"] = bool(r[7])
             item["apiKey"] = "••••••••" if r[5] else ""
@@ -3951,6 +3964,7 @@ class Database:
             item["id"] = r[0]
             item["provider"] = r[2]
             item["modelId"] = r[3]
+            item["model_id"] = r[3]
             item["name"] = r[4] or extra.get("name") or extra.get("display_name") or ""
             item["apiKey"] = "••••••••" if r[5] else ""
             item["enabled"] = bool(r[7])
@@ -3979,6 +3993,7 @@ class Database:
             item["id"] = r[0]
             item["provider"] = r[2]
             item["modelId"] = r[3]
+            item["model_id"] = r[3]
             item["name"] = r[4] or extra.get("name") or extra.get("display_name") or ""
             item["apiKey"] = "服务器托管"
             item["enabled"] = bool(r[7])
@@ -4318,6 +4333,7 @@ class Database:
             item["id"] = cfg_id
             item["provider"] = r[2]
             item["modelId"] = r[3]
+            item["model_id"] = r[3]
             item["name"] = r[4] or extra.get("name") or extra.get("display_name") or ""
             item["apiKey"] = "••••••••" if r[5] else ""
             item["enabled"] = bool(r[7])
@@ -4342,7 +4358,14 @@ class Database:
         now = datetime.now().isoformat()
         
         encrypted_key = self.encrypt_api_key(api_key) if api_key else None
-        cfg_json_str = json.dumps(config_json or {}, ensure_ascii=False)
+        cfg_dict = dict(config_json) if config_json else {}
+        cfg_dict["modelId"] = model_id
+        cfg_dict["model_id"] = model_id
+        cfg_dict["provider"] = provider
+        if display_name:
+            cfg_dict["name"] = display_name
+            cfg_dict["display_name"] = display_name
+        cfg_json_str = json.dumps(cfg_dict, ensure_ascii=False)
         
         if self.is_postgres:
             cursor.execute(
@@ -4409,6 +4432,12 @@ class Database:
             params.append((1 if enabled else 0) if not self.is_postgres else enabled)
             
         if config_json is not None:
+            config_json["modelId"] = model_id
+            config_json["model_id"] = model_id
+            config_json["provider"] = provider
+            if display_name:
+                config_json["name"] = display_name
+                config_json["display_name"] = display_name
             updates.append("config_json = ?")
             params.append(json.dumps(config_json, ensure_ascii=False))
             
@@ -4734,3 +4763,118 @@ class Database:
             "pageSize": page_size,
             "totalPages": (total_count + page_size - 1) // page_size if page_size > 0 else 1
         }
+
+    def get_cached_embedding(self, user_id: Any, content_hash: str, provider: str, model_id: str) -> Optional[List[float]]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            if self.is_postgres:
+                cursor.execute(
+                    """
+                    SELECT embedding, metadata_json 
+                    FROM embeddings 
+                    WHERE user_id = %s AND content_hash = %s
+                    """,
+                    (user_id, content_hash)
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT embedding, metadata_json 
+                    FROM embeddings 
+                    WHERE user_id = ? AND content_hash = ?
+                    """,
+                    (user_id, content_hash)
+                )
+            rows = cursor.fetchall()
+            for row in rows:
+                emb_val, meta_str = row
+                meta = safe_json_load(meta_str, {})
+                if meta.get("provider") == provider and meta.get("model_id") == model_id:
+                    if isinstance(emb_val, str):
+                        if emb_val.startswith("[") and emb_val.endswith("]"):
+                            try:
+                                return json.loads(emb_val)
+                            except:
+                                try:
+                                    cleaned = emb_val.strip("[]")
+                                    return [float(x) for x in cleaned.split(",") if x.strip()]
+                                except:
+                                    pass
+                        else:
+                            try:
+                                cleaned = emb_val.strip("[]")
+                                return [float(x) for x in cleaned.split(",") if x.strip()]
+                            except:
+                                pass
+                    elif isinstance(emb_val, list):
+                        return emb_val
+                    elif emb_val is not None:
+                        try:
+                            return list(emb_val)
+                        except:
+                            pass
+            return None
+        except Exception as e:
+            print(f"[DATABASE] Error getting cached embedding: {e}")
+            return None
+        finally:
+            conn.close()
+
+    def save_embedding(
+        self, 
+        user_id: Any, 
+        content_hash: str, 
+        embedding: List[float], 
+        provider: str, 
+        model_id: str, 
+        source_type: str = "chunk", 
+        source_id: Optional[str] = None, 
+        analysis_id: Optional[str] = None
+    ) -> None:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            from uuid import uuid4
+            new_id = str(uuid4())
+            meta = {
+                "provider": provider,
+                "model_id": model_id,
+                "dimensions": len(embedding)
+            }
+            meta_str = json.dumps(meta)
+            
+            if self.is_postgres:
+                has_pgvector = False
+                try:
+                    cursor.execute("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
+                    has_pgvector = cursor.fetchone() is not None
+                except:
+                    pass
+                
+                if has_pgvector:
+                    emb_val = "[" + ",".join(str(x) for x in embedding) + "]"
+                else:
+                    emb_val = json.dumps(embedding)
+                    
+                cursor.execute(
+                    """
+                    INSERT INTO embeddings (id, user_id, analysis_id, source_type, source_id, content_hash, embedding, metadata_json)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (new_id, user_id, analysis_id, source_type, source_id, content_hash, emb_val, meta_str)
+                )
+            else:
+                emb_val = json.dumps(embedding)
+                cursor.execute(
+                    """
+                    INSERT INTO embeddings (id, user_id, analysis_id, source_type, source_id, content_hash, embedding, metadata_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (new_id, user_id, analysis_id, source_type, source_id, content_hash, emb_val, meta_str)
+                )
+            conn.commit()
+        except Exception as e:
+            print(f"[DATABASE] Error saving embedding: {e}")
+        finally:
+            conn.close()

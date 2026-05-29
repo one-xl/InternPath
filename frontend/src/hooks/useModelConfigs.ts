@@ -76,7 +76,7 @@ export function useModelConfigs(enabled = true) {
     saveActive(next.active);
   }
 
-  async function saveEmbeddingConfig(config: EmbeddingModelConfig) {
+  const saveEmbeddingConfig = useCallback(async (config: EmbeddingModelConfig) => {
     const stamped = stamp(config);
     try {
       await saveConfigToServer({
@@ -94,11 +94,12 @@ export function useModelConfigs(enabled = true) {
       });
     } catch (err) {
       console.error("[model-configs] Save embedding config failed:", err);
+      throw err;
     }
     await reload();
-  }
+  }, [reload]);
 
-  async function saveChatConfig(config: ChatModelConfig) {
+  const saveChatConfig = useCallback(async (config: ChatModelConfig) => {
     const stamped = stamp(config);
     try {
       await saveConfigToServer({
@@ -118,11 +119,12 @@ export function useModelConfigs(enabled = true) {
       });
     } catch (err) {
       console.error("[model-configs] Save chat config failed:", err);
+      throw err;
     }
     await reload();
-  }
+  }, [reload]);
 
-  async function deleteEmbeddingConfig(id: string) {
+  const deleteEmbeddingConfig = useCallback(async (id: string) => {
     try {
       await deleteConfigFromServer(id);
     } catch (err) {
@@ -138,9 +140,9 @@ export function useModelConfigs(enabled = true) {
     };
     persistState(next);
     await reload();
-  }
+  }, [reload, state]);
 
-  async function deleteChatConfig(id: string) {
+  const deleteChatConfig = useCallback(async (id: string) => {
     try {
       await deleteConfigFromServer(id);
     } catch (err) {
@@ -156,17 +158,17 @@ export function useModelConfigs(enabled = true) {
     };
     persistState(next);
     await reload();
-  }
+  }, [reload, state]);
 
-  function setActiveEmbeddingConfig(id: string) {
+  const setActiveEmbeddingConfig = useCallback((id: string) => {
     persistState({ ...state, active: { ...state.active, embeddingConfigId: id } });
-  }
+  }, [state]);
 
-  function setActiveChatConfig(id: string) {
+  const setActiveChatConfig = useCallback((id: string) => {
     persistState({ ...state, active: { ...state.active, chatConfigId: id } });
-  }
+  }, [state]);
 
-  async function testEmbeddingConfig(config: EmbeddingModelConfig) {
+  const testEmbeddingConfig = useCallback(async (config: EmbeddingModelConfig) => {
     const testing = { ...config, testStatus: "testing" as const, testMessage: "正在测试连接..." };
     setState((prev) => ({
       ...prev,
@@ -185,9 +187,9 @@ export function useModelConfigs(enabled = true) {
       embeddingConfigs: prev.embeddingConfigs.map((c) => (c.id === updated.id ? updated : c)),
     }));
     return result;
-  }
+  }, []);
 
-  async function testChatConfig(config: ChatModelConfig) {
+  const testChatConfig = useCallback(async (config: ChatModelConfig) => {
     const testing = { ...config, testStatus: "testing" as const, testMessage: "正在测试连接..." };
     setState((prev) => ({
       ...prev,
@@ -211,9 +213,9 @@ export function useModelConfigs(enabled = true) {
       chatConfigs: prev.chatConfigs.map((c) => (c.id === updated.id ? updated : c)),
     }));
     return result;
-  }
+  }, []);
 
-  async function clearAllConfigs() {
+  const clearAllConfigs = useCallback(async () => {
     for (const c of state.embeddingConfigs) {
       try { await deleteConfigFromServer(c.id); } catch {}
     }
@@ -221,7 +223,7 @@ export function useModelConfigs(enabled = true) {
       try { await deleteConfigFromServer(c.id); } catch {}
     }
     persistState({ embeddingConfigs: [], chatConfigs: [], active: {} });
-  }
+  }, [state.embeddingConfigs, state.chatConfigs]);
 
   return {
     state,

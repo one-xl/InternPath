@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import type { ChatModelConfig, EmbeddingModelConfig } from "../../types/modelConfig";
+type AnyModelConfig = EmbeddingModelConfig | ChatModelConfig;
 import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
 import { ActiveModelSummary } from "./ActiveModelSummary";
@@ -12,14 +13,14 @@ interface ModelSettingsPanelProps {
   chatConfigs: ChatModelConfig[];
   activeEmbeddingConfig?: EmbeddingModelConfig;
   activeChatConfig?: ChatModelConfig;
-  onSaveEmbedding: (config: EmbeddingModelConfig) => void;
-  onSaveChat: (config: ChatModelConfig) => void;
+  onSaveEmbedding: (config: EmbeddingModelConfig) => Promise<void> | void;
+  onSaveChat: (config: ChatModelConfig) => Promise<void> | void;
   onDeleteEmbedding: (id: string) => void;
   onDeleteChat: (id: string) => void;
   onSetActiveEmbedding: (id: string) => void;
   onSetActiveChat: (id: string) => void;
-  onTestEmbedding: (config: EmbeddingModelConfig) => void;
-  onTestChat: (config: ChatModelConfig) => void;
+  onTestEmbedding: (config: EmbeddingModelConfig) => void | Promise<any>;
+  onTestChat: (config: ChatModelConfig) => void | Promise<any>;
   onClearAll: () => void;
 }
 
@@ -42,6 +43,16 @@ export function ModelSettingsPanel({
   const [editingChat, setEditingChat] = useState<ChatModelConfig | undefined>();
   const [showEmbeddingForm, setShowEmbeddingForm] = useState(false);
   const [showChatForm, setShowChatForm] = useState(false);
+
+  const handleEditEmbedding = useCallback((item: AnyModelConfig) => {
+    setEditingEmbedding(item as EmbeddingModelConfig);
+    setShowEmbeddingForm(true);
+  }, []);
+
+  const handleEditChat = useCallback((item: AnyModelConfig) => {
+    setEditingChat(item as ChatModelConfig);
+    setShowChatForm(true);
+  }, []);
 
   function clearAll() {
     if (window.confirm("确定清除所有模型配置吗？API Key 也会从当前浏览器本地存储中删除。")) onClearAll();
@@ -70,8 +81,8 @@ export function ModelSettingsPanel({
         {showEmbeddingForm && (
           <EmbeddingModelForm
             editingConfig={editingEmbedding}
-            onSave={(config) => {
-              onSaveEmbedding(config);
+            onSave={async (config) => {
+              await onSaveEmbedding(config);
               setShowEmbeddingForm(false);
             }}
             onCancel={() => setShowEmbeddingForm(false)}
@@ -83,13 +94,10 @@ export function ModelSettingsPanel({
               key={config.id}
               config={config}
               active={config.id === activeEmbeddingConfig?.id}
-              onEdit={(item) => {
-                setEditingEmbedding(item);
-                setShowEmbeddingForm(true);
-              }}
+              onEdit={handleEditEmbedding}
               onDelete={onDeleteEmbedding}
               onSetActive={onSetActiveEmbedding}
-              onTest={onTestEmbedding}
+              onTest={onTestEmbedding as (config: AnyModelConfig) => void}
             />
           ))}
           {!embeddingConfigs.length && <p className="muted-line">还没有向量模型配置。</p>}
@@ -115,8 +123,8 @@ export function ModelSettingsPanel({
         {showChatForm && (
           <ChatModelForm
             editingConfig={editingChat}
-            onSave={(config) => {
-              onSaveChat(config);
+            onSave={async (config) => {
+              await onSaveChat(config);
               setShowChatForm(false);
             }}
             onCancel={() => setShowChatForm(false)}
@@ -128,13 +136,10 @@ export function ModelSettingsPanel({
               key={config.id}
               config={config}
               active={config.id === activeChatConfig?.id}
-              onEdit={(item) => {
-                setEditingChat(item);
-                setShowChatForm(true);
-              }}
+              onEdit={handleEditChat}
               onDelete={onDeleteChat}
               onSetActive={onSetActiveChat}
-              onTest={onTestChat}
+              onTest={onTestChat as (config: AnyModelConfig) => void}
             />
           ))}
           {!chatConfigs.length && <p className="muted-line">还没有大语言模型配置。</p>}

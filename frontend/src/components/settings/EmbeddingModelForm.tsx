@@ -40,29 +40,40 @@ export function EmbeddingModelForm({
   onCancel,
 }: {
   editingConfig?: EmbeddingModelConfig;
-  onSave: (config: EmbeddingModelConfig) => void;
+  onSave: (config: EmbeddingModelConfig) => Promise<void> | void;
   onCancel: () => void;
 }) {
   const [draft, setDraft] = useState<EmbeddingModelConfig>(() => {
     const base = editingConfig ?? createDefault();
     return { ...base, apiKey: "" };
   });
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const base = editingConfig ?? createDefault();
     setDraft({ ...base, apiKey: "" });
+    setError(null);
   }, [editingConfig]);
 
-  function submit() {
+  async function submit() {
     if (!draft.baseUrl?.trim() || !draft.modelId.trim()) return;
-    onSave({
-      ...draft,
-      provider: "doubao-multimodal",
-      name: providerLabel(draft.provider),
-      endpoint: draft.endpoint || DOUBAO_MULTIMODAL_EMBEDDING_ENDPOINT,
-      inputType: "multimodal",
-      updatedAt: new Date().toISOString(),
-    });
+    setIsSaving(true);
+    setError(null);
+    try {
+      await onSave({
+        ...draft,
+        provider: "doubao-multimodal",
+        name: providerLabel(draft.provider),
+        endpoint: draft.endpoint || DOUBAO_MULTIMODAL_EMBEDDING_ENDPOINT,
+        inputType: "multimodal",
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err: any) {
+      console.error("[EmbeddingModelForm] Save failed:", err);
+      setError(err.message || "保存配置失败，请检查配置参数及网络状态");
+      setIsSaving(false);
+    }
   }
 
   const isDoubao = draft.provider === "doubao-multimodal";
@@ -78,7 +89,7 @@ export function EmbeddingModelForm({
         <h3>{editingConfig ? "编辑 Doubao 向量模型" : "新增 Doubao 向量模型"}</h3>
         <p>
           当前项目使用 Doubao Multimodal Embedding 作为统一向量模型。即使输入是普通文本，也会按多模态接口要求包装为：
-          <code>[{"{"} type: "text", text: "..." {"}"}]</code>。该接口也可扩展支持图片、扫描件、作品集截图和视频材料。
+          <code>[{"{"} type: "text", text: "..." {"}"}]</code>。该接口也可扩展支持图片、扫描件、作品集截图 and 视频材料。
         </p>
       </div>
 
@@ -110,6 +121,7 @@ export function EmbeddingModelForm({
               modelId: DEFAULT_MULTIMODAL_MODEL,
               _suggestedEndpoint: undefined
             })}
+            disabled={isSaving}
           >
             一键切换为 Doubao 多模态向量接口
           </Button>
@@ -131,6 +143,7 @@ export function EmbeddingModelForm({
             value={draft.modelId}
             onChange={(event) => setDraft({ ...draft, modelId: event.target.value })}
             placeholder={DEFAULT_MULTIMODAL_MODEL}
+            disabled={isSaving}
           />
           <small>
             可填 {DEFAULT_MULTIMODAL_MODEL}，或火山方舟控制台你实际开通的接入点 Endpoint ID。
@@ -138,12 +151,12 @@ export function EmbeddingModelForm({
         </label>
         <label className="field">
           <span>Base URL</span>
-          <input value={draft.baseUrl ?? ""} onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })} />
+          <input value={draft.baseUrl ?? ""} onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })} disabled={isSaving} />
         </label>
 
         <label className="field">
           <span>Endpoint</span>
-          <input value={draft.endpoint ?? ""} onChange={(event) => setDraft({ ...draft, endpoint: event.target.value })} />
+          <input value={draft.endpoint ?? ""} onChange={(event) => setDraft({ ...draft, endpoint: event.target.value })} disabled={isSaving} />
           <small>
             多模态接口固定建议为 /embeddings/multimodal，请求体包含 encoding_format 与 dimensions。
           </small>
@@ -155,6 +168,7 @@ export function EmbeddingModelForm({
             <select
               value={draft.dimensions ?? 1024}
               onChange={(event) => setDraft({ ...draft, dimensions: Number(event.target.value) as 1024 | 2048 })}
+              disabled={isSaving}
             >
               <option value="1024">1024 (默认)</option>
               <option value="2048">2048</option>
@@ -165,6 +179,7 @@ export function EmbeddingModelForm({
             <select
               value={draft.encodingFormat ?? "float"}
               onChange={(event) => setDraft({ ...draft, encodingFormat: event.target.value as any })}
+              disabled={isSaving}
             >
               <option value="float">float</option>
               <option value="base64">base64</option>
@@ -176,15 +191,32 @@ export function EmbeddingModelForm({
               type="number"
               value={draft.timeoutMs ?? 60000}
               onChange={(event) => setDraft({ ...draft, timeoutMs: Number(event.target.value) })}
+              disabled={isSaving}
             />
           </label>
         </div>
       </div>
+
+      {error && (
+        <div style={{
+          marginTop: "16px",
+          padding: "10px 14px",
+          background: "#fef2f2",
+          border: "1px solid #fca5a5",
+          borderRadius: "6px",
+          color: "#b91c1c",
+          fontSize: "13px",
+          fontWeight: "600"
+        }}>
+          ❌ {error}
+        </div>
+      )}
+
       <div className="settings-actions">
-        <Button type="button" variant="primary" onClick={submit} disabled={!draft.baseUrl?.trim() || !draft.modelId.trim()}>
-          保存配置
+        <Button type="button" variant="primary" onClick={submit} disabled={!draft.baseUrl?.trim() || !draft.modelId.trim() || isSaving}>
+          {isSaving ? "正在保存..." : "保存配置"}
         </Button>
-        <Button type="button" variant="ghost" onClick={onCancel}>
+        <Button type="button" variant="ghost" onClick={onCancel} disabled={isSaving}>
           取消
         </Button>
       </div>

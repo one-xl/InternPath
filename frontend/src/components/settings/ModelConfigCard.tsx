@@ -1,3 +1,4 @@
+import { memo } from "react";
 import type { ChatModelConfig, EmbeddingModelConfig } from "../../types/modelConfig";
 import { formatDateTime } from "../../utils/format";
 import { maskApiKey } from "../../utils/modelConfigStorage";
@@ -5,23 +6,25 @@ import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { ModelTestButton } from "./ModelTestButton";
 
-interface ModelConfigCardProps<T extends EmbeddingModelConfig | ChatModelConfig> {
-  config: T;
+type AnyModelConfig = EmbeddingModelConfig | ChatModelConfig;
+
+interface ModelConfigCardProps {
+  config: AnyModelConfig;
   active: boolean;
-  onEdit: (config: T) => void;
+  onEdit: (config: AnyModelConfig) => void;
   onDelete: (id: string) => void;
   onSetActive: (id: string) => void;
-  onTest: (config: T) => void;
+  onTest: (config: AnyModelConfig) => void;
 }
 
-export function ModelConfigCard<T extends EmbeddingModelConfig | ChatModelConfig>({
+export const ModelConfigCard = memo(function ModelConfigCardInner({
   config,
   active,
   onEdit,
   onDelete,
   onSetActive,
   onTest,
-}: ModelConfigCardProps<T>) {
+}: ModelConfigCardProps) {
   function confirmDelete() {
     if (window.confirm(`确定删除配置「${config.name}」吗？`)) onDelete(config.id);
   }
@@ -58,4 +61,4 @@ export function ModelConfigCard<T extends EmbeddingModelConfig | ChatModelConfig
       <ModelTestButton status={config.testStatus} message={config.testMessage} diagnostics={config.testDiagnostics} onTest={() => onTest(config)} />
     </article>
   );
-}
+});

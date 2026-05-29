@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect, useRef } from "react";
+import { useMemo, useState, useEffect, useRef, useCallback } from "react";
 import { AppShell } from "./components/layout/AppShell";
 import { ErrorBoundary } from "./components/ui/ErrorBoundary";
 import { useHistory } from "./hooks/useHistory";
@@ -210,6 +210,25 @@ export default function App() {
       console.warn("Failed to write active analysis session to localStorage:", e);
     }
 
+    // Check for cached vector result from a previous failed run of the same draft & configurations
+    let vectorResultCache = undefined;
+    const activeDraft = draftId ? draftsControl.drafts.find((d) => d.id === draftId) : null;
+    if (activeDraft?.vectorResultCache) {
+      const cache = activeDraft.vectorResultCache;
+      const sameJd = activeDraft.jdText === draft.jdText;
+      const sameResume = activeDraft.resumeFile?.id === resumeUpload.resumeFile?.id;
+      const sameEmbedConfig = activeDraft.embeddingConfigId === modelConfigs.activeEmbeddingConfig?.id;
+
+      if (sameJd && sameResume && sameEmbedConfig && cache.parsedJD && cache.retrievedChunks && cache.retrievedChunks.length > 0) {
+        const reuse = window.confirm(
+          "检测到上一次分析失败时的向量比对结果，且简历、JD 和向量模型未发生改变。是否直接跳过向量比对，开始大模型分析以节省时间？"
+        );
+        if (reuse) {
+          vectorResultCache = cache;
+        }
+      }
+    }
+
     const runResult = await analysis.runAnalysis({
       draft,
       resumeFile: resumeUpload.resumeFile,
@@ -222,7 +241,8 @@ export default function App() {
       sourceDraftId: draftId || undefined,
       onSaveHistory: (res) => {
         history.saveRecord(toHistoryRecord(res, "watching"));
-      }
+      },
+      vectorResultCache
     });
 
     if (runResult.ok) {
@@ -272,6 +292,12 @@ export default function App() {
             chatProvider: modelConfigs.activeChatConfig?.provider,
             chatModelId: modelConfigs.activeChatConfig?.modelId,
           },
+          vectorResultCache: runResult.partialResult ? {
+            parsedJD: runResult.partialResult.parsedJD,
+            retrievedChunks: runResult.partialResult.retrievedChunks,
+            requirementMatches: runResult.partialResult.requirementMatches,
+            hardConstraintsResult: runResult.partialResult.hardConstraintsResult,
+          } : undefined,
         });
 
         setActiveDraftId(saved.id);
@@ -611,8 +637,8 @@ export default function App() {
             onDeleteChat={modelConfigs.deleteChatConfig}
             onSetActiveEmbedding={modelConfigs.setActiveEmbeddingConfig}
             onSetActiveChat={modelConfigs.setActiveChatConfig}
-            onTestEmbedding={(config) => void modelConfigs.testEmbeddingConfig(config)}
-            onTestChat={(config) => void modelConfigs.testChatConfig(config)}
+            onTestEmbedding={modelConfigs.testEmbeddingConfig}
+            onTestChat={modelConfigs.testChatConfig}
             onClearAll={modelConfigs.clearAllConfigs}
           />
         )}

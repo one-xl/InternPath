@@ -52,5 +52,6 @@ function mapServerDraft(raw: any): AnalysisDraft {
     lastAnalysisAttempt: input.lastAnalysisAttempt,
     modelUsageSnapshot: input.modelUsageSnapshot,
     metadata: input.metadata,
+    vectorResultCache: input.vectorResultCache,
   };
 }

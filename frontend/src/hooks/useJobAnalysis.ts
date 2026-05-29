@@ -30,7 +30,12 @@ export type AnalysisRunResult =
       ok: false;
       failedStep: AnalysisStepId;
       errorMessage: string;
-      partialResult?: unknown;
+      partialResult?: {
+        parsedJD?: any;
+        retrievedChunks?: ResumeChunk[];
+        requirementMatches?: any;
+        hardConstraintsResult?: any;
+      };
     };
 
 interface RunAnalysisInput {
@@ -44,6 +49,12 @@ interface RunAnalysisInput {
   activeChatConfigId?: string;
   sourceDraftId?: string;
   onSaveHistory?: (result: AnalysisResult) => void | Promise<void>;
+  vectorResultCache?: {
+    parsedJD?: any;
+    retrievedChunks?: ResumeChunk[];
+    requirementMatches?: any;
+    hardConstraintsResult?: any;
+  };
 }
 
 export function toUserFriendlyAnalysisError(
@@ -155,6 +166,10 @@ export function useJobAnalysis() {
     progress.setRunningStep("validate");
 
     let currentStepId: AnalysisStepId = "validate";
+    let parsedJD: any = undefined;
+    let requirementMatchesResult: any = undefined;
+    let retrievedChunks: ResumeChunk[] = [];
+    let hardConstraintsResult: any = undefined;
 
     try {
       console.info("[analysis] start clicked");
@@ -245,92 +260,120 @@ export function useJobAnalysis() {
         chatModelId: input.chatConfig.modelId
       });
 
-      // Step 2: embedding_resume
-      currentStepId = "resume_embedding";
-      progress.setStatus("embedding_resume");
-      progress.setRunningStep("resume_embedding");
-      
-      progress.updateStepMetadata("resume_embedding", {
-        embeddedChunksCount: 0,
-        chunksCount: input.chunks.length
-      });
+      // Determine if we can reuse vector cache
+      const cache = input.vectorResultCache;
+      const canReuseCache = 
+        cache &&
+        cache.parsedJD &&
+        cache.retrievedChunks &&
+        cache.retrievedChunks.length > 0;
 
-      const embeddedChunks = await embedChunksWithConfig(
-        input.chunks,
-        input.embeddingConfig,
-        {
-          onProgress: ({ completed, total }) => {
-            progress.updateStepMetadata("resume_embedding", {
-              embeddedChunksCount: completed,
-              chunksCount: total
-            });
-          }
-        }
-      );
-      progress.completeStep("resume_embedding", {
-        embeddedChunksCount: embeddedChunks.length
-      });
+      if (canReuseCache) {
+        console.info("[analysis] Reusing cached vector results from previous attempt.");
+        
+        // Populate the variables directly from cache
+        parsedJD = cache.parsedJD;
+        retrievedChunks = cache.retrievedChunks || [];
+        requirementMatchesResult = cache.requirementMatches;
+        hardConstraintsResult = cache.hardConstraintsResult;
 
-      // Step 3: embedding_jd
-      currentStepId = "jd_embedding";
-      progress.setStatus("embedding_jd");
-      progress.setRunningStep("jd_embedding");
-      
-      // Stage A: Decompose JD into structural requirements and constraints
-      const parsedJD = await parseJobDescription(input.draft.jdText, chatConfigWithHighTimeout);
-      
-      // Stage B: Vectorize entire JD text for legacy/fallback search compatibility
-      const jdEmbedding = await embedTextWithConfig(input.draft.jdText, input.embeddingConfig);
-      progress.completeStep("jd_embedding");
+        // Instantly complete Step 2, Step 3, Step 4 in progress UI
+        progress.completeStep("resume_embedding", {
+          embeddedChunksCount: retrievedChunks.length,
+          cacheReused: true
+        });
+        progress.completeStep("jd_embedding", { cacheReused: true });
+        progress.completeStep("retrieve_chunks", {
+          retrievedChunksCount: retrievedChunks.length,
+          cacheReused: true
+        });
+      } else {
+        // Step 2: embedding_resume
+        currentStepId = "resume_embedding";
+        progress.setStatus("embedding_resume");
+        progress.setRunningStep("resume_embedding");
+        
+        progress.updateStepMetadata("resume_embedding", {
+          embeddedChunksCount: 0,
+          chunksCount: input.chunks.length
+        });
 
-      // Step 4: retrieving
-      currentStepId = "retrieve_chunks";
-      progress.setStatus("retrieving");
-      progress.setRunningStep("retrieve_chunks");
-      
-      // Stage A: Core multi-requirement vector retrieval
-      const requirementMatchesResult = await retrieveEvidenceForRequirements(
-        parsedJD,
-        embeddedChunks,
-        input.embeddingConfig,
-        { topK: 3, threshold: 0.3 }
-      );
-      
-      // Stage B: Deduplicate evidence chunks to build flat array for compatible rendering
-      const seenChunkIds = new Set<string>();
-      const retrievedChunks: ResumeChunk[] = [];
-      
-      requirementMatchesResult.requirement_matches.forEach((rm) => {
-        rm.matched_evidence.forEach((ev) => {
-          if (!seenChunkIds.has(ev.evidence_id)) {
-            seenChunkIds.add(ev.evidence_id);
-            const originalChunk = embeddedChunks.find((c) => c.id === ev.evidence_id);
-            if (originalChunk) {
-              retrievedChunks.push({
-                ...originalChunk,
-                score: ev.similarity // Store highest retrieved similarity
+        const embeddedChunks = await embedChunksWithConfig(
+          input.chunks,
+          input.embeddingConfig,
+          {
+            onProgress: ({ completed, total }) => {
+              progress.updateStepMetadata("resume_embedding", {
+                embeddedChunksCount: completed,
+                chunksCount: total
               });
             }
           }
+        );
+        progress.completeStep("resume_embedding", {
+          embeddedChunksCount: embeddedChunks.length
         });
-      });
-      
-      // Sort flat list by similarity score descending
-      retrievedChunks.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
-      
-      // Fallback: if no requirement matches returned any chunks, use whole-JD similarity
-      if (retrievedChunks.length === 0) {
-        const legacyChunks = retrieveTopChunksByCosineSimilarity({
-          jdEmbedding,
-          chunks: embeddedChunks,
-          topK: 8,
+
+        // Step 3: embedding_jd
+        currentStepId = "jd_embedding";
+        progress.setStatus("embedding_jd");
+        progress.setRunningStep("jd_embedding");
+        
+        // Stage A: Decompose JD into structural requirements and constraints
+        parsedJD = await parseJobDescription(input.draft.jdText, chatConfigWithHighTimeout);
+        
+        // Stage B: Vectorize entire JD text for legacy/fallback search compatibility
+        const jdEmbedding = await embedTextWithConfig(input.draft.jdText, input.embeddingConfig);
+        progress.completeStep("jd_embedding");
+
+        // Step 4: retrieving
+        currentStepId = "retrieve_chunks";
+        progress.setStatus("retrieving");
+        progress.setRunningStep("retrieve_chunks");
+        
+        // Stage A: Core multi-requirement vector retrieval
+        requirementMatchesResult = await retrieveEvidenceForRequirements(
+          parsedJD,
+          embeddedChunks,
+          input.embeddingConfig,
+          { topK: 3, threshold: 0.3 }
+        );
+        
+        // Stage B: Deduplicate evidence chunks to build flat array for compatible rendering
+        const seenChunkIds = new Set<string>();
+        
+        requirementMatchesResult.requirement_matches.forEach((rm: any) => {
+          rm.matched_evidence.forEach((ev: any) => {
+            if (!seenChunkIds.has(ev.evidence_id)) {
+              seenChunkIds.add(ev.evidence_id);
+              const originalChunk = embeddedChunks.find((c) => c.id === ev.evidence_id);
+              if (originalChunk) {
+                retrievedChunks.push({
+                  ...originalChunk,
+                  score: ev.similarity // Store highest retrieved similarity
+                });
+              }
+            }
+          });
         });
-        retrievedChunks.push(...legacyChunks);
+        
+        // Sort flat list by similarity score descending
+        retrievedChunks.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+        
+        // Fallback: if no requirement matches returned any chunks, use whole-JD similarity
+        if (retrievedChunks.length === 0) {
+          const legacyChunks = retrieveTopChunksByCosineSimilarity({
+            jdEmbedding,
+            chunks: embeddedChunks,
+            topK: 8,
+          });
+          retrievedChunks.push(...legacyChunks);
+        }
+        
+        progress.completeStep("retrieve_chunks", {
+          retrievedChunksCount: retrievedChunks.length
+        });
       }
-      
-      progress.completeStep("retrieve_chunks", {
-        retrievedChunksCount: retrievedChunks.length
-      });
 
       if (!retrievedChunks.length) {
         throw new Error("没有检索到相关简历片段，请检查简历解析结果或 JD 内容。");
@@ -346,11 +389,13 @@ export function useJobAnalysis() {
         subState: "checking_constraints",
         subProgress: 15
       });
-      const hardConstraintsResult = await checkHardConstraints(
-        parsedJD,
-        input.parsedResume,
-        chatConfigWithHighTimeout
-      );
+      if (!hardConstraintsResult) {
+        hardConstraintsResult = await checkHardConstraints(
+          parsedJD,
+          input.parsedResume,
+          chatConfigWithHighTimeout
+        );
+      }
       
       // Stage B: Structured evidence-constrained Gemini analysis
       progress.updateStepMetadata("gemini_analysis", {
@@ -474,7 +519,13 @@ export function useJobAnalysis() {
       return {
         ok: false,
         failedStep: currentStepId,
-        errorMessage: friendlyError
+        errorMessage: friendlyError,
+        partialResult: {
+          parsedJD,
+          retrievedChunks,
+          requirementMatches: requirementMatchesResult,
+          hardConstraintsResult
+        }
       };
     } finally {
       progress.setIsRunning(false);

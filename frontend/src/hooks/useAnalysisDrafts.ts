@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AnalysisDraft, AnalysisDraftStatus } from "../types/analysisDraft";
 import type { AnalysisStep, AnalysisStepId } from "../types/analysis";
-import type { UploadedResumeFile, ParsedResume } from "../types/resume";
+import type { UploadedResumeFile, ParsedResume, ResumeChunk } from "../types/resume";
 import type { WorkMode, JobLevel } from "../types/job";
 import {
   fetchDrafts,
@@ -120,6 +120,12 @@ export function useAnalysisDrafts(enabled = true) {
         chatProvider?: string;
         chatModelId?: string;
       };
+      vectorResultCache?: {
+        parsedJD?: any;
+        retrievedChunks?: ResumeChunk[];
+        requirementMatches?: any;
+        hardConstraintsResult?: any;
+      };
     }): AnalysisDraft => {
       const now = new Date().toISOString();
 
@@ -151,6 +157,7 @@ export function useAnalysisDrafts(enabled = true) {
           progressSteps: input.progressSteps,
         },
         modelUsageSnapshot: input.modelUsageSnapshot,
+        vectorResultCache: input.vectorResultCache,
         metadata: {
           jdLength: input.jdText?.length || 0,
           chunksCount: input.parsedResume?.chunks?.length || 0,

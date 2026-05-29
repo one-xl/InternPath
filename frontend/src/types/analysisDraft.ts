@@ -58,4 +58,11 @@ export interface AnalysisDraft {
     chunksCount?: number;
     source?: "manual_save" | "auto_save" | "failed_analysis";
   };
+
+  vectorResultCache?: {
+    parsedJD?: any;
+    retrievedChunks?: any[];
+    requirementMatches?: any;
+    hardConstraintsResult?: any;
+  };
 }

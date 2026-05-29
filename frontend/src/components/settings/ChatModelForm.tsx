@@ -62,17 +62,20 @@ export function ChatModelForm({
   onCancel,
 }: {
   editingConfig?: ChatModelConfig;
-  onSave: (config: ChatModelConfig) => void;
+  onSave: (config: ChatModelConfig) => Promise<void> | void;
   onCancel: () => void;
 }) {
   const [draft, setDraft] = useState<ChatModelConfig>(() => {
     const base = editingConfig ?? createDefault();
     return { ...base, apiKey: "" };
   });
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const base = editingConfig ?? createDefault();
     setDraft({ ...base, apiKey: "" });
+    setError(null);
   }, [editingConfig]);
 
   function changeProvider(provider: ChatProvider) {
@@ -91,20 +94,28 @@ export function ChatModelForm({
     });
   }
 
-  function submit() {
+  async function submit() {
     const modelId = draft.modelId.trim();
     if (!modelId) return;
 
-    onSave({
-      ...draft,
-      provider: draft.provider,
-      modelId,
-      baseUrl: draft.baseUrl?.trim(),
-      fallbackModelId: draft.fallbackModelId?.trim(),
-      testModelId: draft.testModelId?.trim(),
-      name: nameFromProviderModel(draft.provider, modelId),
-      updatedAt: new Date().toISOString(),
-    });
+    setIsSaving(true);
+    setError(null);
+    try {
+      await onSave({
+        ...draft,
+        provider: draft.provider,
+        modelId,
+        baseUrl: draft.baseUrl?.trim(),
+        fallbackModelId: draft.fallbackModelId?.trim(),
+        testModelId: draft.testModelId?.trim(),
+        name: nameFromProviderModel(draft.provider, modelId),
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err: any) {
+      console.error("[ChatModelForm] Save failed:", err);
+      setError(err.message || "保存配置失败，请检查配置参数及网络状态");
+      setIsSaving(false);
+    }
   }
 
   const isGemini = draft.provider === "gemini";
@@ -117,7 +128,7 @@ export function ChatModelForm({
       <div className="settings-form">
         <label className="field">
           <span>Provider</span>
-          <select value={draft.provider} onChange={(event) => changeProvider(event.target.value as ChatProvider)}>
+          <select value={draft.provider} onChange={(event) => changeProvider(event.target.value as ChatProvider)} disabled={isSaving}>
             <option value="gemini">Gemini</option>
             <option value="openai-compatible">OpenAI Compatible</option>
             <option value="custom">Custom</option>
@@ -139,6 +150,7 @@ export function ChatModelForm({
             value={draft.modelId}
             onChange={(event) => setDraft({ ...draft, modelId: event.target.value })}
             placeholder={isGemini ? GEMINI_DEFAULT_MODEL : "输入模型 ID"}
+            disabled={isSaving}
           />
         </label>
 
@@ -148,6 +160,7 @@ export function ChatModelForm({
             value={draft.fallbackModelId ?? ""}
             onChange={(event) => setDraft({ ...draft, fallbackModelId: event.target.value })}
             placeholder={isGemini ? "例如 gemini-2.5-flash" : "可选"}
+            disabled={isSaving}
           />
         </label>
 
@@ -157,6 +170,7 @@ export function ChatModelForm({
             value={draft.testModelId ?? ""}
             onChange={(event) => setDraft({ ...draft, testModelId: event.target.value })}
             placeholder={isGemini ? "例如 gemini-2.5-flash" : "可选"}
+            disabled={isSaving}
           />
         </label>
 
@@ -170,6 +184,7 @@ export function ChatModelForm({
               step="0.1"
               value={draft.temperature ?? 0.2}
               onChange={(event) => setDraft({ ...draft, temperature: Number(event.target.value) })}
+              disabled={isSaving}
             />
           </label>
           <label className="field">
@@ -179,6 +194,7 @@ export function ChatModelForm({
               min="1"
               value={draft.maxOutputTokens ?? 4096}
               onChange={(event) => setDraft({ ...draft, maxOutputTokens: Number(event.target.value) })}
+              disabled={isSaving}
             />
           </label>
         </div>
@@ -189,6 +205,7 @@ export function ChatModelForm({
             <select
               value={draft.responseMimeType ?? "application/json"}
               onChange={(event) => setDraft({ ...draft, responseMimeType: event.target.value as ChatModelConfig["responseMimeType"] })}
+              disabled={isSaving}
             >
               <option value="application/json">application/json</option>
               <option value="text/plain">text/plain</option>
@@ -200,6 +217,7 @@ export function ChatModelForm({
               type="number"
               value={draft.timeoutMs ?? 60000}
               onChange={(event) => setDraft({ ...draft, timeoutMs: Number(event.target.value) })}
+              disabled={isSaving}
             />
           </label>
         </div>
@@ -213,17 +231,33 @@ export function ChatModelForm({
                 value={draft.baseUrl ?? ""}
                 onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })}
                 placeholder={isGemini ? GEMINI_BASE_URL : "https://api.example.com/v1"}
+                disabled={isSaving}
               />
             </label>
           </div>
         </details>
       </div>
 
+      {error && (
+        <div style={{
+          marginTop: "16px",
+          padding: "10px 14px",
+          background: "#fef2f2",
+          border: "1px solid #fca5a5",
+          borderRadius: "6px",
+          color: "#b91c1c",
+          fontSize: "13px",
+          fontWeight: "600"
+        }}>
+          ❌ {error}
+        </div>
+      )}
+
       <div className="settings-actions">
-        <Button type="button" variant="primary" onClick={submit} disabled={!draft.modelId.trim()}>
-          保存配置
+        <Button type="button" variant="primary" onClick={submit} disabled={!draft.modelId.trim() || isSaving}>
+          {isSaving ? "正在保存..." : "保存配置"}
         </Button>
-        <Button type="button" variant="ghost" onClick={onCancel}>
+        <Button type="button" variant="ghost" onClick={onCancel} disabled={isSaving}>
           取消
         </Button>
       </div>

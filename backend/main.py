@@ -1002,6 +1002,44 @@ def create_app(
             "Authorization": f"Bearer {api_key}",
         }
         
+        import hashlib
+        
+        # Extract text to embed
+        input_text = None
+        input_data = payload.requestBody.get("input")
+        if input_data:
+            if isinstance(input_data, list) and len(input_data) > 0:
+                first = input_data[0]
+                if isinstance(first, str):
+                    input_text = first
+                elif isinstance(first, dict):
+                    input_text = first.get("text")
+            elif isinstance(input_data, str):
+                input_text = input_data
+
+        content_hash = None
+        if input_text:
+            content_hash = hashlib.sha256(input_text.encode('utf-8')).hexdigest()
+
+        # Check cache if we successfully extracted the text
+        if content_hash:
+            cached_vector = state.auth_db.get_cached_embedding(
+                user_id, content_hash, payload.provider, payload.modelId.strip()
+            )
+            if cached_vector is not None:
+                # Cache hit! Construct a mocked response format based on provider/endpoint
+                if "/multimodal" in endpoint or "multimodal" in payload.provider.lower():
+                    mock_res = {"data": {"embedding": cached_vector}}
+                else:
+                    mock_res = {"data": [{"embedding": cached_vector}]}
+                
+                print(f"[AUDIT] Cache Hit: model_embeddings | userId: {user_id} | provider: {payload.provider} | modelId: {payload.modelId}")
+                return Response(
+                    content=json.dumps(mock_res),
+                    status_code=200,
+                    media_type="application/json"
+                )
+
         start_time = time.time()
         success = False
         res = None
@@ -1009,6 +1047,32 @@ def create_app(
             async with httpx.AsyncClient() as client:
                 res = await client.post(url, headers=headers, json=payload.requestBody, timeout=120.0)
                 success = res.status_code == 200
+                if success and content_hash:
+                    # Save to cache
+                    try:
+                        res_json = res.json()
+                        embedding_vector = None
+                        if "/multimodal" in endpoint or "multimodal" in payload.provider.lower():
+                            emb = res_json.get("data", {}).get("embedding")
+                            if isinstance(emb, list):
+                                embedding_vector = emb
+                        else:
+                            data = res_json.get("data")
+                            if isinstance(data, list) and len(data) > 0:
+                                emb = data[0].get("embedding")
+                                if isinstance(emb, list):
+                                    embedding_vector = emb
+                        if embedding_vector:
+                            state.auth_db.save_embedding(
+                                user_id=user_id,
+                                content_hash=content_hash,
+                                embedding=embedding_vector,
+                                provider=payload.provider,
+                                model_id=payload.modelId.strip()
+                            )
+                    except Exception as cache_err:
+                        print(f"[ERROR] Failed to save embedding to cache: {cache_err}")
+                
                 return Response(
                     content=res.content,
                     status_code=res.status_code,

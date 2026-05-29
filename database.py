@@ -3986,6 +3986,63 @@ class Database:
                 else:
                     cursor.execute("UPDATE users SET role = 'admin' WHERE username = ?", ("admin@example.com",))
                     conn.commit()
+
+            # ── Seed & Repair test@example.com with test1234 ──
+            cursor.execute("SELECT password_hash FROM users WHERE username = ?", ("test@example.com",))
+            row_test = cursor.fetchone()
+            if row_test is None:
+                hashed_test = hash_password("test1234")
+                now = datetime.now().isoformat()
+                cursor.execute(
+                    "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
+                    ("test@example.com", hashed_test, "user", now)
+                )
+                conn.commit()
+                print("【自动创建】测试账号 test@example.com 创建成功，默认密码为 test1234。")
+            else:
+                stored_hash_test = row_test[0]
+                if parse_password_hash(stored_hash_test) is None or not verify_password_hash("test1234", stored_hash_test):
+                    hashed_test = hash_password("test1234")
+                    cursor.execute(
+                        "UPDATE users SET password_hash = ?, role = 'user', is_active = 1 WHERE username = ?",
+                        (hashed_test, "test@example.com")
+                    )
+                    conn.commit()
+                    print("【自动修复】检测到 test@example.com 密码不匹配或哈希损坏，已重置为 test1234。")
+
+            # ── Repair testuser@example.com with test1234 ──
+            cursor.execute("SELECT password_hash FROM users WHERE username = ?", ("testuser@example.com",))
+            row_testuser = cursor.fetchone()
+            if row_testuser is None:
+                hashed_testuser = hash_password("test1234")
+                now = datetime.now().isoformat()
+                cursor.execute(
+                    "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
+                    ("testuser@example.com", hashed_testuser, "user", now)
+                )
+                conn.commit()
+            else:
+                stored_hash_testuser = row_testuser[0]
+                if parse_password_hash(stored_hash_testuser) is None or not verify_password_hash("test1234", stored_hash_testuser):
+                    hashed_testuser = hash_password("test1234")
+                    cursor.execute(
+                        "UPDATE users SET password_hash = ?, is_active = 1 WHERE username = ?",
+                        (hashed_testuser, "testuser@example.com")
+                    )
+                    conn.commit()
+
+            # ── Repair 'test' user with test1234 and ensure active ──
+            cursor.execute("SELECT password_hash FROM users WHERE username = ?", ("test",))
+            row_t = cursor.fetchone()
+            if row_t is not None:
+                stored_hash_t = row_t[0]
+                if parse_password_hash(stored_hash_t) is None or not verify_password_hash("test1234", stored_hash_t):
+                    hashed_t = hash_password("test1234")
+                    cursor.execute(
+                        "UPDATE users SET password_hash = ?, is_active = 1 WHERE username = ?",
+                        (hashed_t, "test")
+                    )
+                    conn.commit()
         except Exception as e:
             print(f"Error seeding user: {e}")
         finally:

@@ -27,7 +27,10 @@ import {
   adminFetchAnnouncements,
   adminCreateAnnouncement,
   adminUpdateAnnouncement,
-  adminDeleteAnnouncement
+  adminDeleteAnnouncement,
+  LockedUser,
+  adminFetchLockedUsers,
+  adminUnlockUser
 } from "../services/adminService";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
@@ -54,6 +57,7 @@ export function AdminPage() {
   const [annTargetUsers, setAnnTargetUsers] = useState("");
   const [annType, setAnnType] = useState<'top' | 'popup'>("top");
   const [annShowBehavior, setAnnShowBehavior] = useState<'once' | 'every_login' | 'always'>("once");
+  const [lockedUsers, setLockedUsers] = useState<LockedUser[]>([]);
 
   // Users selection & filtering inside announcement modal
   const [userSearchQuery, setUserSearchQuery] = useState("");
@@ -518,6 +522,12 @@ export function AdminPage() {
       if (activeTab === "users") {
         const u = await adminFetchUsers();
         setUsers(u);
+        try {
+          const locked = await adminFetchLockedUsers();
+          setLockedUsers(locked);
+        } catch (e) {
+          console.error("Failed to load locked users:", e);
+        }
       } else if (activeTab === "configs") {
         const c = await adminFetchConfigs();
         setConfigs(c);
@@ -1193,34 +1203,57 @@ export function AdminPage() {
                           )}
                         </td>
                         <td style={{ padding: "12px 8px" }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                            {isSelf ? (
-                               <span style={{ color: "var(--accent)", fontSize: "12px", fontWeight: 600 }}>● 始终启用</span>
-                            ) : (
-                              <>
-                                <span style={{
-                                  fontSize: "11px",
-                                  color: isActive ? "var(--accent)" : "var(--danger)",
-                                  fontWeight: 600,
-                                  background: isActive ? "var(--success-bg)" : "var(--danger-bg)",
-                                  padding: "2px 6px",
-                                  borderRadius: "4px"
-                                }}>
-                                  {isActive ? "已启用" : "已禁用"}
-                                </span>
-                                <input
-                                  type="checkbox"
-                                  checked={isActive}
-                                  onChange={() => handleToggleUserStatus(u)}
-                                  style={{
-                                    cursor: "pointer",
-                                    accentColor: "var(--accent)",
-                                    width: "16px",
-                                    height: "16px"
-                                  }}
-                                />
-                              </>
-                            )}
+                          <div style={{ display: "flex", flexDirection: "column", gap: "4px", alignItems: "flex-start" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                              {isSelf ? (
+                                 <span style={{ color: "var(--accent)", fontSize: "12px", fontWeight: 600 }}>● 始终启用</span>
+                              ) : (
+                                <>
+                                  <span style={{
+                                    fontSize: "11px",
+                                    color: isActive ? "var(--accent)" : "var(--danger)",
+                                    fontWeight: 600,
+                                    background: isActive ? "var(--success-bg)" : "var(--danger-bg)",
+                                    padding: "2px 6px",
+                                    borderRadius: "4px"
+                                  }}>
+                                    {isActive ? "已启用" : "已禁用"}
+                                  </span>
+                                  <input
+                                    type="checkbox"
+                                    checked={isActive}
+                                    onChange={() => handleToggleUserStatus(u)}
+                                    style={{
+                                      cursor: "pointer",
+                                      accentColor: "var(--accent)",
+                                      width: "16px",
+                                      height: "16px"
+                                    }}
+                                  />
+                                </>
+                              )}
+                            </div>
+                            {(() => {
+                              const lockInfo = lockedUsers.find(lu => lu.username === u.username);
+                              if (lockInfo) {
+                                return (
+                                  <span style={{
+                                    fontSize: "10px",
+                                    color: "#f43f5e",
+                                    background: "rgba(244,63,94,0.1)",
+                                    border: "1px solid rgba(244,63,94,0.2)",
+                                    padding: "1px 4px",
+                                    borderRadius: "4px",
+                                    fontWeight: "bold",
+                                    marginTop: "2px",
+                                    whiteSpace: "nowrap"
+                                  }} title={`剩余解锁时间: ${lockInfo.remaining_seconds}秒`}>
+                                    ⚠️ 锁定 ({Math.ceil(lockInfo.remaining_seconds / 60)}分)
+                                  </span>
+                                );
+                              }
+                              return null;
+                            })()}
                           </div>
                         </td>
                         <td style={{ padding: "12px 8px" }}>
@@ -1307,16 +1340,47 @@ export function AdminPage() {
                         <td style={{ padding: "12px 8px", color: "rgba(255, 255, 255, 0.5)" }}>{new Date(u.created_at).toLocaleString("zh-CN")}</td>
                         <td style={{ padding: "12px 8px", color: "rgba(255, 255, 255, 0.5)" }}>{u.last_login ? new Date(u.last_login).toLocaleString("zh-CN") : "暂无活跃记录"}</td>
                         <td style={{ padding: "12px 8px", textAlign: "right" }}>
-                          {!isSelf && (
-                            <Button
-                              type="button"
-                              variant="danger"
-                              onClick={() => handleDeleteUser(u)}
-                              style={{ padding: "4px 8px", fontSize: "11px" }}
-                            >
-                              删除
-                            </Button>
-                          )}
+                          <div style={{ display: "flex", gap: "6px", justifyContent: "flex-end", alignItems: "center" }}>
+                            {(() => {
+                              const isLocked = lockedUsers.some(lu => lu.username === u.username);
+                              if (isLocked) {
+                                return (
+                                  <Button
+                                    type="button"
+                                    onClick={async () => {
+                                      try {
+                                        await adminUnlockUser(u.username);
+                                        alert(`用户 "${u.username}" 已成功解锁！`);
+                                        loadTabData();
+                                      } catch (err: any) {
+                                        alert(err.message || "解锁失败");
+                                      }
+                                    }}
+                                    style={{
+                                      padding: "4px 8px",
+                                      fontSize: "11px",
+                                      background: "rgba(29, 185, 84, 0.15)",
+                                      border: "1px solid var(--accent)",
+                                      color: "var(--accent)"
+                                    }}
+                                  >
+                                    🔓 解除锁定
+                                  </Button>
+                                );
+                              }
+                              return null;
+                            })()}
+                            {!isSelf && (
+                              <Button
+                                type="button"
+                                variant="danger"
+                                onClick={() => handleDeleteUser(u)}
+                                style={{ padding: "4px 8px", fontSize: "11px" }}
+                              >
+                                删除
+                              </Button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     );

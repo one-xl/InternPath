@@ -287,3 +287,21 @@ export async function fetchActiveAnnouncements(): Promise<AdminAnnouncement[]> {
   return data.announcements || [];
 }
 
+export interface LockedUser {
+  username: string;
+  failed_count: number;
+  remaining_seconds: number;
+}
+
+export async function adminFetchLockedUsers(): Promise<LockedUser[]> {
+  const data = await apiFetch<{ locked_users: LockedUser[] }>("/api/admin/locked-users");
+  return data.locked_users || [];
+}
+
+export async function adminUnlockUser(username: string): Promise<{ ok: boolean }> {
+  return apiFetch<{ ok: boolean }>("/api/admin/locked-users/unlock", {
+    method: "POST",
+    body: JSON.stringify({ username }),
+  });
+}
+

@@ -1771,6 +1771,38 @@ def create_app(
         users = state.auth_db.admin_list_users()
         return {"users": users}
 
+    @app.get("/api/admin/locked-users")
+    def admin_get_locked_users(
+        admin_id: Any = Depends(current_admin_user)
+    ) -> dict[str, Any]:
+        locked_users = []
+        now = time.time()
+        for key, ts_list in list(limiter.requests.items()):
+            if key.startswith("login_fail_user:"):
+                username = key.split(":", 1)[1]
+                active_ts = [t for t in ts_list if t > now - 900]
+                if len(active_ts) >= 5:
+                    oldest_active = min(active_ts)
+                    remaining = int(900 - (now - oldest_active))
+                    locked_users.append({
+                        "username": username,
+                        "failed_count": len(active_ts),
+                        "remaining_seconds": max(0, remaining)
+                    })
+        return {"locked_users": locked_users}
+
+    @app.post("/api/admin/locked-users/unlock")
+    def admin_unlock_user(
+        payload: dict[str, str],
+        admin_id: Any = Depends(current_admin_user)
+    ) -> dict[str, Any]:
+        username = payload.get("username", "")
+        if not username:
+            raise HTTPException(status_code=400, detail="未提供要解锁的用户名/邮箱。")
+        key = f"login_fail_user:{username}"
+        limiter.requests.pop(key, None)
+        return {"ok": True}
+
     @app.post("/api/admin/users/generate-temp")
     async def admin_generate_temp_users(
         payload: GenerateTempUsersRequest,

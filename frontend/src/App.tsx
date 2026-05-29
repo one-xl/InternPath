@@ -117,6 +117,7 @@ export default function App() {
         localStorage.removeItem("job-desk:drafts");
         localStorage.removeItem("job-desk:analysis-drafts");
         localStorage.removeItem("job-desk:active-configs");
+        sessionStorage.removeItem("closed_session_announcements");
         
         setCurrentUser(null);
         setActivePage("dashboard");
@@ -542,7 +543,10 @@ export default function App() {
   }
 
   if (!currentUser) {
-    return <LoginPage onLoginSuccess={(user) => setCurrentUser(user)} />;
+    return <LoginPage onLoginSuccess={(user) => {
+      sessionStorage.removeItem("closed_session_announcements");
+      setCurrentUser(user);
+    }} />;
   }
 
   return (

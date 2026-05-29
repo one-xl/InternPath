@@ -243,3 +243,47 @@ export async function adminUpdateUserRemark(userId: string | number, remark: str
   });
 }
 
+export interface AdminAnnouncement {
+  id?: string;
+  title: string;
+  content: string;
+  start_time: string;
+  end_time: string;
+  target_type: 'all' | 'specific';
+  target_users?: string;
+  announcement_type?: 'top' | 'popup';
+  show_behavior?: 'once' | 'every_login' | 'always';
+  created_at?: string;
+  updated_at?: string;
+}
+
+export async function adminFetchAnnouncements(): Promise<AdminAnnouncement[]> {
+  const data = await apiFetch<{ announcements: AdminAnnouncement[] }>("/api/admin/announcements");
+  return data.announcements || [];
+}
+
+export async function adminCreateAnnouncement(announcement: Omit<AdminAnnouncement, "id">): Promise<{ id: string; ok: boolean }> {
+  return apiFetch<{ id: string; ok: boolean }>("/api/admin/announcements", {
+    method: "POST",
+    body: JSON.stringify(announcement),
+  });
+}
+
+export async function adminUpdateAnnouncement(id: string, announcement: Omit<AdminAnnouncement, "id">): Promise<{ ok: boolean }> {
+  return apiFetch<{ ok: boolean }>(`/api/admin/announcements/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body: JSON.stringify(announcement),
+  });
+}
+
+export async function adminDeleteAnnouncement(id: string): Promise<{ ok: boolean }> {
+  return apiFetch<{ ok: boolean }>(`/api/admin/announcements/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function fetchActiveAnnouncements(): Promise<AdminAnnouncement[]> {
+  const data = await apiFetch<{ announcements: AdminAnnouncement[] }>("/api/announcements/active");
+  return data.announcements || [];
+}
+

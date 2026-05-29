@@ -179,6 +179,17 @@ class AdminAssignRequest(BaseModel):
     userIds: list[Any]
 
 
+class AdminAnnouncementRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=255)
+    content: str = Field(..., min_length=1)
+    start_time: str
+    end_time: str
+    target_type: str = "all"
+    target_users: Optional[str] = None
+    announcement_type: str = "top"
+    show_behavior: str = "once"
+
+
 class SlidingWindowLimiter:
     def __init__(self):
         self.requests = defaultdict(list)
@@ -2158,6 +2169,79 @@ def create_app(
             page_size=pageSize
         )
         return result
+
+    @app.get("/api/admin/announcements")
+    def admin_list_announcements(
+        admin_id: Any = Depends(current_admin_user)
+    ) -> dict[str, Any]:
+        announcements = state.auth_db.get_announcements()
+        return {"announcements": announcements}
+
+    @app.post("/api/admin/announcements")
+    def admin_create_announcement(
+        payload: AdminAnnouncementRequest,
+        admin_id: Any = Depends(current_admin_user)
+    ) -> dict[str, Any]:
+        try:
+            datetime.fromisoformat(payload.start_time.replace("Z", "+00:00"))
+            datetime.fromisoformat(payload.end_time.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="起止时间格式无效，必须为 ISO 8601 格式。")
+            
+        ann_id = state.auth_db.create_announcement(
+            title=payload.title,
+            content=payload.content,
+            start_time=payload.start_time,
+            end_time=payload.end_time,
+            target_type=payload.target_type,
+            target_users=payload.target_users,
+            announcement_type=payload.announcement_type,
+            show_behavior=payload.show_behavior
+        )
+        return {"id": ann_id, "ok": True}
+
+    @app.put("/api/admin/announcements/{ann_id}")
+    def admin_update_announcement(
+        ann_id: str,
+        payload: AdminAnnouncementRequest,
+        admin_id: Any = Depends(current_admin_user)
+    ) -> dict[str, Any]:
+        try:
+            datetime.fromisoformat(payload.start_time.replace("Z", "+00:00"))
+            datetime.fromisoformat(payload.end_time.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="起止时间格式无效，必须为 ISO 8601 格式。")
+            
+        success = state.auth_db.update_announcement(
+            id=ann_id,
+            title=payload.title,
+            content=payload.content,
+            start_time=payload.start_time,
+            end_time=payload.end_time,
+            target_type=payload.target_type,
+            target_users=payload.target_users,
+            announcement_type=payload.announcement_type,
+            show_behavior=payload.show_behavior
+        )
+        return {"ok": success}
+
+    @app.delete("/api/admin/announcements/{ann_id}")
+    def admin_delete_announcement(
+        ann_id: str,
+        admin_id: Any = Depends(current_admin_user)
+    ) -> dict[str, Any]:
+        success = state.auth_db.delete_announcement(ann_id)
+        return {"ok": success}
+
+    @app.get("/api/announcements/active")
+    def get_active_announcements(
+        user_id: Any = Depends(current_user_id)
+    ) -> dict[str, Any]:
+        user = state.auth_db.get_user_by_id(user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="用户不存在。")
+        active = state.auth_db.get_active_announcements_for_user(user.username)
+        return {"announcements": active}
 
     return app
 

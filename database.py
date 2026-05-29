@@ -28,10 +28,10 @@ def safe_datetime(val) -> Optional[datetime]:
     if val is None:
         return None
     if isinstance(val, datetime):
-        return val
+        return val.replace(tzinfo=None)
     if isinstance(val, str):
         try:
-            return datetime.fromisoformat(val)
+            return datetime.fromisoformat(val).replace(tzinfo=None)
         except ValueError:
             return datetime.strptime(val.split(".")[0], "%Y-%m-%d %H:%M:%S")
     return None
@@ -161,7 +161,11 @@ class Database:
             conn = psycopg2.connect(db_url)
             return DatabaseConnectionWrapper(conn, True)
         else:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=10.0)
+            try:
+                conn.execute("PRAGMA journal_mode=WAL;")
+            except Exception:
+                pass
             return DatabaseConnectionWrapper(conn, False)
 
     @classmethod
@@ -721,6 +725,26 @@ class Database:
             )
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_star_stories_user ON star_stories(user_id);")
 
+            # 13. announcements table
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS announcements (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    title VARCHAR(255) NOT NULL,
+                    content TEXT NOT NULL,
+                    start_time TIMESTAMP NOT NULL,
+                    end_time TIMESTAMP NOT NULL,
+                    target_type VARCHAR(50) NOT NULL DEFAULT 'all',
+                    target_users TEXT,
+                    announcement_type VARCHAR(50) NOT NULL DEFAULT 'top',
+                    show_behavior VARCHAR(50) NOT NULL DEFAULT 'once',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_announcements_time ON announcements(start_time, end_time);")
+
         else:
             # SQLite setup (keep existing)
             cursor.execute(
@@ -1237,6 +1261,26 @@ class Database:
             )
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_star_stories_user ON star_stories(user_id);")
 
+            # announcements table
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS announcements (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    start_time TIMESTAMP NOT NULL,
+                    end_time TIMESTAMP NOT NULL,
+                    target_type TEXT NOT NULL DEFAULT 'all',
+                    target_users TEXT,
+                    announcement_type TEXT NOT NULL DEFAULT 'top',
+                    show_behavior TEXT NOT NULL DEFAULT 'once',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_announcements_time ON announcements(start_time, end_time);")
+
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_analysis_records_user ON analysis_records(user_id, created_at DESC);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);")
@@ -1247,6 +1291,44 @@ class Database:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_model_usage_logs_config ON model_usage_logs(config_id, created_at DESC);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_model_usage_logs_provider_model ON model_usage_logs(provider, model_id, created_at DESC);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_model_usage_logs_success ON model_usage_logs(success, created_at DESC);")
+
+        # Check and alter announcements table to ensure compatibility with announcement_type column
+        try:
+            if self.is_postgres:
+                cursor.execute(
+                    """
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name='announcements' AND column_name='announcement_type'
+                    """
+                )
+                if not cursor.fetchone():
+                    cursor.execute("ALTER TABLE announcements ADD COLUMN announcement_type VARCHAR(50) DEFAULT 'top';")
+            else:
+                columns = [row[1] for row in cursor.execute("PRAGMA table_info(announcements)").fetchall()]
+                if 'announcement_type' not in columns:
+                    cursor.execute("ALTER TABLE announcements ADD COLUMN announcement_type TEXT DEFAULT 'top';")
+        except Exception as e:
+            print(f"[DATABASE] Migration warning for announcements type column: {e}")
+
+        # Check and alter announcements table to ensure compatibility with show_behavior column
+        try:
+            if self.is_postgres:
+                cursor.execute(
+                    """
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name='announcements' AND column_name='show_behavior'
+                    """
+                )
+                if not cursor.fetchone():
+                    cursor.execute("ALTER TABLE announcements ADD COLUMN show_behavior VARCHAR(50) DEFAULT 'once';")
+            else:
+                columns = [row[1] for row in cursor.execute("PRAGMA table_info(announcements)").fetchall()]
+                if 'show_behavior' not in columns:
+                    cursor.execute("ALTER TABLE announcements ADD COLUMN show_behavior TEXT DEFAULT 'once';")
+        except Exception as e:
+            print(f"[DATABASE] Migration warning for announcements show_behavior column: {e}")
 
         conn.commit()
         conn.close()
@@ -4876,5 +4958,139 @@ class Database:
             conn.commit()
         except Exception as e:
             print(f"[DATABASE] Error saving embedding: {e}")
+        finally:
+            conn.close()
+
+    def create_announcement(self, title: str, content: str, start_time: str, end_time: str, target_type: str = 'all', target_users: Optional[str] = None, announcement_type: str = 'top', show_behavior: str = 'once') -> str:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        from uuid import uuid4
+        new_id = str(uuid4())
+        try:
+            cursor.execute(
+                """
+                INSERT INTO announcements (id, title, content, start_time, end_time, target_type, target_users, announcement_type, show_behavior)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (new_id, title, content, start_time, end_time, target_type, target_users, announcement_type, show_behavior)
+            )
+            conn.commit()
+            return new_id
+        except Exception as e:
+            print(f"[DATABASE] Error creating announcement: {e}")
+            raise e
+        finally:
+            conn.close()
+
+    def update_announcement(self, id: str, title: str, content: str, start_time: str, end_time: str, target_type: str = 'all', target_users: Optional[str] = None, announcement_type: str = 'top', show_behavior: str = 'once') -> bool:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                UPDATE announcements
+                SET title = ?, content = ?, start_time = ?, end_time = ?, target_type = ?, target_users = ?, announcement_type = ?, show_behavior = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (title, content, start_time, end_time, target_type, target_users, announcement_type, show_behavior, id)
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            print(f"[DATABASE] Error updating announcement: {e}")
+            raise e
+        finally:
+            conn.close()
+
+    def delete_announcement(self, id: str) -> bool:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "DELETE FROM announcements WHERE id = ?",
+                (id,)
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            print(f"[DATABASE] Error deleting announcement: {e}")
+            raise e
+        finally:
+            conn.close()
+
+    def get_announcements(self) -> List[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT id, title, content, start_time, end_time, target_type, target_users, created_at, updated_at, announcement_type, show_behavior FROM announcements ORDER BY created_at DESC"
+            )
+            rows = cursor.fetchall()
+            announcements = []
+            for r in rows:
+                announcements.append({
+                     "id": str(r[0]),
+                     "title": r[1],
+                     "content": r[2],
+                     "start_time": r[3].isoformat() if isinstance(r[3], datetime) else str(r[3]),
+                     "end_time": r[4].isoformat() if isinstance(r[4], datetime) else str(r[4]),
+                     "target_type": r[5],
+                     "target_users": r[6],
+                     "created_at": r[7].isoformat() if isinstance(r[7], datetime) else str(r[7]),
+                     "updated_at": r[8].isoformat() if isinstance(r[8], datetime) else str(r[8]),
+                     "announcement_type": r[9] if len(r) > 9 else 'top',
+                     "show_behavior": r[10] if len(r) > 10 else 'once'
+                })
+            return announcements
+        except Exception as e:
+            print(f"[DATABASE] Error getting announcements: {e}")
+            return []
+        finally:
+            conn.close()
+
+    def get_active_announcements_for_user(self, username: str) -> List[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT id, title, content, start_time, end_time, target_type, target_users, announcement_type, show_behavior FROM announcements"
+            )
+            rows = cursor.fetchall()
+            active_announcements = []
+            now = datetime.now()
+            
+            for r in rows:
+                start_dt = safe_datetime(r[3])
+                end_dt = safe_datetime(r[4])
+                
+                # Check time
+                if start_dt and end_dt:
+                    if not (start_dt <= now <= end_dt):
+                        continue
+                
+                target_type = r[5]
+                target_users_str = r[6] or ""
+                
+                # Check user targeting
+                if target_type == 'specific':
+                     user_list = [u.strip().lower() for u in target_users_str.split(",") if u.strip()]
+                     if username.lower() not in user_list:
+                         continue
+                         
+                active_announcements.append({
+                     "id": str(r[0]),
+                     "title": r[1],
+                     "content": r[2],
+                     "start_time": start_dt.isoformat() if start_dt else str(r[3]),
+                     "end_time": end_dt.isoformat() if end_dt else str(r[4]),
+                     "target_type": target_type,
+                     "target_users": target_users_str,
+                     "announcement_type": r[7] if len(r) > 7 else 'top',
+                     "show_behavior": r[8] if len(r) > 8 else 'once'
+                })
+            return active_announcements
+        except Exception as e:
+            print(f"[DATABASE] Error getting active announcements: {e}")
+            return []
         finally:
             conn.close()

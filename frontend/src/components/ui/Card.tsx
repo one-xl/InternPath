@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { ReactNode, CSSProperties } from "react";
 
 interface CardProps {
   title?: string;
@@ -6,11 +6,12 @@ interface CardProps {
   className?: string;
   children: ReactNode;
   action?: ReactNode;
+  style?: CSSProperties;
 }
 
-export function Card({ title, description, className = "", children, action }: CardProps) {
+export function Card({ title, description, className = "", children, action, style }: CardProps) {
   return (
-    <section className={`card ${className}`.trim()}>
+    <section className={`card ${className}`.trim()} style={style}>
       {(title || description || action) && (
         <div className="card-header">
           <div>

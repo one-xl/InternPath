@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   adminFetchUsers,
   adminFetchConfigs,
@@ -22,19 +22,236 @@ import {
   UsageSummary,
   UsageLog,
   GeneratedAccount,
+  // Announcements
+  AdminAnnouncement,
+  adminFetchAnnouncements,
+  adminCreateAnnouncement,
+  adminUpdateAnnouncement,
+  adminDeleteAnnouncement
 } from "../services/adminService";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { apiFetch } from "../services/apiClient";
 
 
-type AdminTab = "users" | "configs" | "assignments" | "statistics" | "logs";
+type AdminTab = "users" | "configs" | "assignments" | "statistics" | "logs" | "announcements";
 
 export function AdminPage() {
   const [activeTab, setActiveTab] = useState<AdminTab>("users");
   
   // State
   const [users, setUsers] = useState<AdminUser[]>([]);
+
+  // Announcements States
+  const [announcements, setAnnouncements] = useState<AdminAnnouncement[]>([]);
+  const [showAnnounceModal, setShowAnnounceModal] = useState(false);
+  const [editingAnnouncement, setEditingAnnouncement] = useState<AdminAnnouncement | null>(null);
+  const [annTitle, setAnnTitle] = useState("");
+  const [annContent, setAnnContent] = useState("");
+  const [annStartTime, setAnnStartTime] = useState("");
+  const [annEndTime, setAnnEndTime] = useState("");
+  const [annTargetType, setAnnTargetType] = useState<'all' | 'specific'>("all");
+  const [annTargetUsers, setAnnTargetUsers] = useState("");
+  const [annType, setAnnType] = useState<'top' | 'popup'>("top");
+  const [annShowBehavior, setAnnShowBehavior] = useState<'once' | 'every_login' | 'always'>("once");
+
+  // Users selection & filtering inside announcement modal
+  const [userSearchQuery, setUserSearchQuery] = useState("");
+  const [userTypeFilter, setUserTypeFilter] = useState<'all' | 'temp' | 'permanent'>("all");
+  const [userTimeFilter, setUserTimeFilter] = useState<'all' | 'today' | '3days' | '7days' | '30days'>("all");
+  const [selectedUsernames, setSelectedUsernames] = useState<string[]>([]);
+
+  // Filtered users for announcement specific target checklist
+  const filteredUsersForTarget = useMemo(() => {
+    return users.filter((u) => {
+      // 1. Username filter
+      if (userSearchQuery.trim() && !u.username.toLowerCase().includes(userSearchQuery.toLowerCase())) {
+        return false;
+      }
+      
+      // 2. User Type filter (temp has expires_at, permanent has expires_at == null)
+      if (userTypeFilter === "temp" && !u.expires_at) {
+        return false;
+      }
+      if (userTypeFilter === "permanent" && u.expires_at) {
+        return false;
+      }
+      
+      // 3. User Registration Time filter
+      if (userTimeFilter !== "all") {
+        const regDate = new Date(u.created_at);
+        const now = new Date();
+        const diffMs = now.getTime() - regDate.getTime();
+        const diffDays = diffMs / (1000 * 60 * 60 * 24);
+        
+        if (userTimeFilter === "today" && diffDays > 1) {
+          return false;
+        }
+        if (userTimeFilter === "3days" && diffDays > 3) {
+          return false;
+        }
+        if (userTimeFilter === "7days" && diffDays > 7) {
+          return false;
+        }
+        if (userTimeFilter === "30days" && diffDays > 30) {
+          return false;
+        }
+      }
+      
+      return true;
+    });
+  }, [users, userSearchQuery, userTypeFilter, userTimeFilter]);
+
+  const handleToggleSelectAllFiltered = () => {
+    const allFilteredUsernames = filteredUsersForTarget.map(u => u.username);
+    const areAllSelected = allFilteredUsernames.every(name => selectedUsernames.includes(name));
+    
+    if (areAllSelected) {
+      setSelectedUsernames(prev => prev.filter(name => !allFilteredUsernames.includes(name)));
+    } else {
+      setSelectedUsernames(prev => {
+        const merged = [...prev, ...allFilteredUsernames];
+        return Array.from(new Set(merged));
+      });
+    }
+  };
+
+  const handleClearAllSelections = () => {
+    setSelectedUsernames([]);
+  };
+
+  const loadAnnouncements = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const list = await adminFetchAnnouncements();
+      setAnnouncements(list);
+    } catch (err: any) {
+      setError(err.message || "获取公告列表失败");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === "announcements") {
+      loadAnnouncements();
+    }
+  }, [activeTab, loadAnnouncements]);
+
+  const handleOpenCreateAnnounce = () => {
+    setEditingAnnouncement(null);
+    setAnnTitle("");
+    setAnnContent("");
+    
+    const now = new Date();
+    const future = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+    
+    const formatLocal = (d: Date) => {
+      const pad = (n: number) => n.toString().padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    };
+    
+    setAnnStartTime(formatLocal(now));
+    setAnnEndTime(formatLocal(future));
+    setAnnTargetType("all");
+    setAnnTargetUsers("");
+    setAnnType("top");
+    setAnnShowBehavior("once");
+    setUserSearchQuery("");
+    setUserTypeFilter("all");
+    setUserTimeFilter("all");
+    setSelectedUsernames([]);
+    
+    if (users.length === 0) {
+      adminFetchUsers().then(setUsers).catch(err => console.error("Failed to load users for filter:", err));
+    }
+    setShowAnnounceModal(true);
+  };
+
+  const handleOpenEditAnnounce = (ann: AdminAnnouncement) => {
+    setEditingAnnouncement(ann);
+    setAnnTitle(ann.title);
+    setAnnContent(ann.content);
+    
+    const formatISOToLocal = (isoStr: string) => {
+      if (!isoStr) return "";
+      return isoStr.substring(0, 16);
+    };
+    
+    setAnnStartTime(formatISOToLocal(ann.start_time));
+    setAnnEndTime(formatISOToLocal(ann.end_time));
+    setAnnTargetType(ann.target_type);
+    setAnnTargetUsers(ann.target_users || "");
+    setAnnType(ann.announcement_type || "top");
+    setAnnShowBehavior(ann.show_behavior || "once");
+    setUserSearchQuery("");
+    setUserTypeFilter("all");
+    setUserTimeFilter("all");
+    const usernames = ann.target_users ? ann.target_users.split(",").map(u => u.trim()).filter(Boolean) : [];
+    setSelectedUsernames(usernames);
+
+    if (users.length === 0) {
+      adminFetchUsers().then(setUsers).catch(err => console.error("Failed to load users for filter:", err));
+    }
+    setShowAnnounceModal(true);
+  };
+
+  const handleSaveAnnouncement = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!annTitle.trim() || !annContent.trim() || !annStartTime || !annEndTime) {
+      alert("请填写所有必填字段。");
+      return;
+    }
+    
+    const toISOTime = (localStr: string) => {
+      return new Date(localStr).toISOString();
+    };
+
+    setLoading(true);
+    setError(null);
+    try {
+      const targetUsersString = annTargetType === 'specific' ? selectedUsernames.join(",") : undefined;
+      const payload = {
+        title: annTitle,
+        content: annContent,
+        start_time: toISOTime(annStartTime),
+        end_time: toISOTime(annEndTime),
+        target_type: annTargetType,
+        target_users: targetUsersString,
+        announcement_type: annType,
+        show_behavior: annShowBehavior
+      };
+
+      if (editingAnnouncement && editingAnnouncement.id) {
+        await adminUpdateAnnouncement(editingAnnouncement.id, payload);
+      } else {
+        await adminCreateAnnouncement(payload);
+      }
+      
+      setShowAnnounceModal(false);
+      await loadAnnouncements();
+    } catch (err: any) {
+      setError(err.message || "保存公告失败。");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeleteAnnouncement = async (id: string) => {
+    if (!window.confirm("确定要删除这条公告吗？删除后所有受众用户都将无法在顶部看到此通知。")) {
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      await adminDeleteAnnouncement(id);
+      await loadAnnouncements();
+    } catch (err: any) {
+      setError(err.message || "删除公告失败。");
+      setLoading(false);
+    }
+  };
   const [currentUser, setCurrentUser] = useState<any | null>(null);
   
   // Temporary account generator state
@@ -669,6 +886,7 @@ export function AdminPage() {
           { key: "assignments", label: "配置分配" },
           { key: "statistics", label: "调用统计" },
           { key: "logs", label: "调用日志" },
+          { key: "announcements", label: "公告管理" },
         ].map((tab) => (
           <button
             key={tab.key}
@@ -1570,12 +1788,410 @@ export function AdminPage() {
         </div>
       )}
 
+      {/* 6. Announcements Tab */}
+      {activeTab === "announcements" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontSize: "14px", color: "var(--muted)" }}>
+              发布全局公告，通知所有或指定用户，支持设定展示起止时间与内容自定义。
+            </span>
+            <Button type="button" variant="primary" onClick={handleOpenCreateAnnounce}>
+              + 新增公告
+            </Button>
+          </div>
+
+          <Card style={{ padding: "0", background: "rgba(255,255,255,0.01)" }}>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+                <thead>
+                  <tr style={{ borderBottom: "1px solid var(--line-strong)", color: "rgba(255,255,255,0.5)", height: "40px" }}>
+                    <th style={{ padding: "12px 16px", textAlign: "left" }}>状态</th>
+                    <th style={{ padding: "12px 16px", textAlign: "left" }}>展示类型</th>
+                    <th style={{ padding: "12px 16px", textAlign: "left" }}>频次设定</th>
+                    <th style={{ padding: "12px 16px", textAlign: "left" }}>公告标题</th>
+                    <th style={{ padding: "12px 16px", textAlign: "left" }}>公告内容</th>
+                    <th style={{ padding: "12px 16px", textAlign: "left" }}>推送受众</th>
+                    <th style={{ padding: "12px 16px", textAlign: "left" }}>有效时间段</th>
+                    <th style={{ padding: "12px 16px", textAlign: "right" }}>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {announcements.map((ann) => {
+                    const now = new Date();
+                    const start = new Date(ann.start_time);
+                    const end = new Date(ann.end_time);
+                    let statusNode;
+                    
+                    if (now < start) {
+                      statusNode = <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", color: "#f59e0b", background: "rgba(245,158,11,0.1)", padding: "2px 8px", borderRadius: "10px", fontSize: "11px" }}><span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#f59e0b" }} />未开始</span>;
+                    } else if (now > end) {
+                      statusNode = <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", color: "#ef4444", background: "rgba(239,68,68,0.1)", padding: "2px 8px", borderRadius: "10px", fontSize: "11px" }}><span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#ef4444" }} />已过期</span>;
+                    } else {
+                      statusNode = <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", color: "#10b981", background: "rgba(16,185,129,0.1)", padding: "2px 8px", borderRadius: "10px", fontSize: "11px" }}><span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#10b981" }} />进行中</span>;
+                    }
+
+                    return (
+                      <tr key={ann.id} style={{ borderBottom: "1px solid var(--line)", color: "#fff", height: "55px" }}>
+                        <td style={{ padding: "12px 16px" }}>{statusNode}</td>
+                        <td style={{ padding: "12px 16px" }}>
+                          {ann.announcement_type === "popup" ? (
+                            <span style={{ color: "#f43f5e", background: "rgba(244,63,94,0.1)", border: "1px solid rgba(244,63,94,0.2)", padding: "2px 6px", borderRadius: "4px", fontSize: "11px", fontWeight: "bold" }}>⚡ 中央弹出</span>
+                          ) : (
+                            <span style={{ color: "#10b981", background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.2)", padding: "2px 6px", borderRadius: "4px", fontSize: "11px", fontWeight: "bold" }}>💊 顶部横幅</span>
+                          )}
+                        </td>
+                        <td style={{ padding: "12px 16px" }}>
+                          {ann.show_behavior === "always" ? (
+                            <span style={{ color: "#1db954", background: "rgba(29,185,84,0.1)", border: "1px solid rgba(29,185,84,0.2)", padding: "2px 6px", borderRadius: "4px", fontSize: "11px", fontWeight: "bold" }}>📌 一直显示</span>
+                          ) : ann.show_behavior === "every_login" ? (
+                            <span style={{ color: "#f59e0b", background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.2)", padding: "2px 6px", borderRadius: "4px", fontSize: "11px", fontWeight: "bold" }}>🔄 每次登录</span>
+                          ) : (
+                            <span style={{ color: "#38bdf8", background: "rgba(56,189,248,0.1)", border: "1px solid rgba(56,189,248,0.2)", padding: "2px 6px", borderRadius: "4px", fontSize: "11px", fontWeight: "bold" }}>💊 仅展示一次</span>
+                          )}
+                        </td>
+                        <td style={{ padding: "12px 16px", fontWeight: "bold" }}>{ann.title}</td>
+                        <td style={{ padding: "12px 16px", maxWidth: "250px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "rgba(255,255,255,0.7)" }}>
+                          {ann.content}
+                        </td>
+                        <td style={{ padding: "12px 16px" }}>
+                          {ann.target_type === "all" ? (
+                            <span style={{ color: "#38bdf8", background: "rgba(56,189,248,0.1)", padding: "2px 6px", borderRadius: "4px", fontSize: "11px" }}>全体用户</span>
+                          ) : (
+                            <span style={{ color: "#c084fc", background: "rgba(192,132,252,0.1)", padding: "2px 6px", borderRadius: "4px", fontSize: "11px" }} title={ann.target_users}>
+                              指定用户 ({ann.target_users?.split(",").length || 0})
+                            </span>
+                          )}
+                        </td>
+                        <td style={{ padding: "12px 16px", fontSize: "11px", color: "rgba(255,255,255,0.5)", fontFamily: "monospace" }}>
+                          {new Date(ann.start_time).toLocaleString()} <br />
+                          至 {new Date(ann.end_time).toLocaleString()}
+                        </td>
+                        <td style={{ padding: "12px 16px", textAlign: "right" }}>
+                          <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
+                            <Button type="button" variant="secondary" onClick={() => handleOpenEditAnnounce(ann)} style={{ padding: "4px 8px", fontSize: "12px" }}>
+                              编辑
+                            </Button>
+                            <button
+                              type="button"
+                              onClick={() => ann.id && handleDeleteAnnouncement(ann.id)}
+                              style={{ background: "rgba(239, 68, 68, 0.15)", border: "1px solid rgba(239, 68, 68, 0.3)", color: "#f87171", cursor: "pointer", fontSize: "12px", borderRadius: "4px", padding: "4px 8px" }}
+                            >
+                              删除
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {!announcements.length && (
+                    <tr>
+                      <td colSpan={6} style={{ textAlign: "center", padding: "30px", color: "rgba(255,255,255,0.3)" }}>暂无公告，点击右上角发布新公告。</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        </div>
+      )}
+
       {/* --- MODAL DIALOGS --- */}
+
+      {/* Create / Edit Announcement Modal */}
+      {showAnnounceModal && (
+        <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)", display: "flex", justifyContent: "center", alignItems: "flex-start", overflowY: "auto", padding: "40px 16px", zIndex: 1000 }}>
+          <form onSubmit={handleSaveAnnouncement} style={{ background: "#111", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "var(--radius-lg)", padding: "24px", width: "500px", maxWidth: "100%", display: "flex", flexDirection: "column", gap: "16px", marginBottom: "40px" }}>
+            <h3 style={{ color: "#fff", fontSize: "18px", fontWeight: "800" }}>{editingAnnouncement ? "编辑全局公告" : "发布新全局公告"}</h3>
+            
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+              <label style={{ fontSize: "12px", color: "rgba(255,255,255,0.7)" }}>公告标题 *</label>
+              <input
+                type="text"
+                required
+                value={annTitle}
+                placeholder="如: 系统升级维护通知"
+                onChange={(e) => setAnnTitle(e.target.value)}
+                style={{ background: "#1e1e1e", border: "1px solid rgba(255,255,255,0.15)", borderRadius: "var(--radius-md)", color: "#fff", padding: "8px 12px", fontSize: "13px" }}
+              />
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+              <label style={{ fontSize: "12px", color: "rgba(255,255,255,0.7)" }}>公告内容 *</label>
+              <textarea
+                required
+                value={annContent}
+                placeholder="在此输入公告正文内容，支持换行..."
+                onChange={(e) => setAnnContent(e.target.value)}
+                rows={6}
+                style={{ background: "#1e1e1e", border: "1px solid rgba(255,255,255,0.15)", borderRadius: "var(--radius-md)", color: "#fff", padding: "8px 12px", fontSize: "13px", resize: "vertical" }}
+              />
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                <label style={{ fontSize: "12px", color: "rgba(255,255,255,0.7)" }}>开始展示时间 *</label>
+                <input
+                  type="datetime-local"
+                  required
+                  value={annStartTime}
+                  onChange={(e) => setAnnStartTime(e.target.value)}
+                  style={{ background: "#1e1e1e", border: "1px solid rgba(255,255,255,0.15)", borderRadius: "var(--radius-md)", color: "#fff", padding: "8px 12px", fontSize: "13px" }}
+                />
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                <label style={{ fontSize: "12px", color: "rgba(255,255,255,0.7)" }}>结束展示时间 *</label>
+                <input
+                  type="datetime-local"
+                  required
+                  value={annEndTime}
+                  onChange={(e) => setAnnEndTime(e.target.value)}
+                  style={{ background: "#1e1e1e", border: "1px solid rgba(255,255,255,0.15)", borderRadius: "var(--radius-md)", color: "#fff", padding: "8px 12px", fontSize: "13px" }}
+                />
+              </div>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+              <label style={{ fontSize: "12px", color: "rgba(255,255,255,0.7)" }}>公告展示方式 *</label>
+              <div style={{ display: "flex", gap: "16px" }}>
+                <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", color: "#fff", cursor: "pointer" }}>
+                  <input
+                    type="radio"
+                    name="annType"
+                    checked={annType === "top"}
+                    onChange={() => setAnnType("top")}
+                    style={{ width: "16px", height: "16px", accentColor: "var(--accent)" }}
+                  />
+                  顶部横幅 (Top banner)
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", color: "#fff", cursor: "pointer" }}>
+                  <input
+                    type="radio"
+                    name="annType"
+                    checked={annType === "popup"}
+                    onChange={() => {
+                      setAnnType("popup");
+                      if (annShowBehavior === "always") {
+                        setAnnShowBehavior("once");
+                      }
+                    }}
+                    style={{ width: "16px", height: "16px", accentColor: "var(--accent)" }}
+                  />
+                  中央弹出 (Popup alert)
+                </label>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+              <label style={{ fontSize: "12px", color: "rgba(255,255,255,0.7)" }}>弹出频次设定 *</label>
+              <div style={{ display: "flex", gap: "16px" }}>
+                <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", color: "#fff", cursor: "pointer" }}>
+                  <input
+                    type="radio"
+                    name="showBehavior"
+                    checked={annShowBehavior === "once"}
+                    onChange={() => setAnnShowBehavior("once")}
+                    style={{ width: "16px", height: "16px", accentColor: "var(--accent)" }}
+                  />
+                  仅展示一次 (Once)
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", color: "#fff", cursor: "pointer" }}>
+                  <input
+                    type="radio"
+                    name="showBehavior"
+                    checked={annShowBehavior === "every_login"}
+                    onChange={() => setAnnShowBehavior("every_login")}
+                    style={{ width: "16px", height: "16px", accentColor: "var(--accent)" }}
+                  />
+                  每次登录都展示 (Every login)
+                </label>
+                {annType === "top" && (
+                  <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", color: "#fff", cursor: "pointer" }}>
+                    <input
+                      type="radio"
+                      name="showBehavior"
+                      checked={annShowBehavior === "always"}
+                      onChange={() => setAnnShowBehavior("always")}
+                      style={{ width: "16px", height: "16px", accentColor: "var(--accent)" }}
+                    />
+                    一直显示 (Always)
+                  </label>
+                )}
+              </div>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+              <label style={{ fontSize: "12px", color: "rgba(255,255,255,0.7)" }}>推送范围 *</label>
+              <div style={{ display: "flex", gap: "16px" }}>
+                <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", color: "#fff", cursor: "pointer" }}>
+                  <input
+                    type="radio"
+                    name="targetType"
+                    checked={annTargetType === "all"}
+                    onChange={() => setAnnTargetType("all")}
+                    style={{ width: "16px", height: "16px", accentColor: "var(--accent)" }}
+                  />
+                  全部用户
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", color: "#fff", cursor: "pointer" }}>
+                  <input
+                    type="radio"
+                    name="targetType"
+                    checked={annTargetType === "specific"}
+                    onChange={() => setAnnTargetType("specific")}
+                    style={{ width: "16px", height: "16px", accentColor: "var(--accent)" }}
+                  />
+                  指定用户
+                </label>
+              </div>
+            </div>
+
+            {annTargetType === "specific" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: "12px", background: "rgba(255, 255, 255, 0.02)", border: "1px solid rgba(255, 255, 255, 0.08)", borderRadius: "var(--radius-md)", padding: "16px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <label style={{ fontSize: "13px", fontWeight: "bold", color: "#fff" }}>指定受众勾选管理 *</label>
+                  <span style={{ fontSize: "11px", color: "var(--accent)", fontWeight: "bold", background: "rgba(56,189,248,0.1)", padding: "2px 8px", borderRadius: "10px" }}>
+                    已勾选: {selectedUsernames.length} 人
+                  </span>
+                </div>
+                
+                {selectedUsernames.length > 0 && (
+                  <div style={{ fontSize: "11px", color: "rgba(255,255,255,0.4)", maxHeight: "40px", overflowY: "auto", background: "rgba(0,0,0,0.2)", padding: "6px 10px", borderRadius: "4px", border: "1px dashed rgba(255,255,255,0.1)", wordBreak: "break-all" }}>
+                    <strong>受众名单:</strong> {selectedUsernames.join(", ")}
+                  </div>
+                )}
+
+                {/* Filters Row */}
+                <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr", gap: "8px" }}>
+                  <input
+                    type="text"
+                    placeholder="🔍 搜索用户名..."
+                    value={userSearchQuery}
+                    onChange={(e) => setUserSearchQuery(e.target.value)}
+                    style={{ background: "#1e1e1e", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "4px", color: "#fff", padding: "6px 10px", fontSize: "12px", width: "100%", boxSizing: "border-box" }}
+                  />
+                  <select
+                    value={userTypeFilter}
+                    onChange={(e) => setUserTypeFilter(e.target.value as any)}
+                    style={{ background: "#1e1e1e", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "4px", color: "#fff", padding: "6px 10px", fontSize: "12px" }}
+                  >
+                    <option value="all">所有账号</option>
+                    <option value="temp">临时用户</option>
+                    <option value="permanent">永久用户</option>
+                  </select>
+                  <select
+                    value={userTimeFilter}
+                    onChange={(e) => setUserTimeFilter(e.target.value as any)}
+                    style={{ background: "#1e1e1e", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "4px", color: "#fff", padding: "6px 10px", fontSize: "12px" }}
+                  >
+                    <option value="all">所有注册时间</option>
+                    <option value="today">今天注册</option>
+                    <option value="3days">最近3天</option>
+                    <option value="7days">最近7天</option>
+                    <option value="30days">最近30天</option>
+                  </select>
+                </div>
+
+                {/* Selection helper buttons */}
+                <div style={{ display: "flex", gap: "8px", fontSize: "11px" }}>
+                  <button
+                    type="button"
+                    onClick={handleToggleSelectAllFiltered}
+                    style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "4px", color: "#fff", padding: "4px 8px", cursor: "pointer" }}
+                  >
+                    {filteredUsersForTarget.every(name => selectedUsernames.includes(name.username)) ? "取消全选当前" : "全选当前过滤"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleClearAllSelections}
+                    style={{ background: "rgba(239, 68, 68, 0.1)", border: "1px solid rgba(239, 68, 68, 0.2)", borderRadius: "4px", color: "#f87171", padding: "4px 8px", cursor: "pointer" }}
+                  >
+                    清空选择
+                  </button>
+                  <span style={{ marginLeft: "auto", color: "rgba(255,255,255,0.4)", display: "flex", alignItems: "center" }}>
+                    过滤出: {filteredUsersForTarget.length} 人
+                  </span>
+                </div>
+
+                {/* Scrollable Checklist */}
+                <div style={{ maxHeight: "160px", overflowY: "auto", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "4px", background: "rgba(0,0,0,0.15)", padding: "4px" }}>
+                  {filteredUsersForTarget.map((u) => {
+                    const isSelected = selectedUsernames.includes(u.username);
+                    const regDate = new Date(u.created_at).toLocaleDateString("zh-CN");
+                    return (
+                      <div 
+                        key={u.id} 
+                        style={{ 
+                          display: "flex", 
+                          alignItems: "center", 
+                          gap: "8px", 
+                          padding: "6px 8px", 
+                          borderRadius: "3px", 
+                          background: isSelected ? "rgba(56, 189, 248, 0.05)" : "transparent",
+                          borderBottom: "1px solid rgba(255,255,255,0.02)" 
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          id={`select-user-${u.id}`}
+                          checked={isSelected}
+                          onChange={() => {
+                            if (isSelected) {
+                              setSelectedUsernames(prev => prev.filter(name => name !== u.username));
+                            } else {
+                              setSelectedUsernames(prev => [...prev, u.username]);
+                            }
+                          }}
+                          style={{ width: "14px", height: "14px", cursor: "pointer", accentColor: "var(--accent)" }}
+                        />
+                        <label 
+                          htmlFor={`select-user-${u.id}`} 
+                          style={{ 
+                            fontSize: "12px", 
+                            color: isSelected ? "#fff" : "rgba(255,255,255,0.85)", 
+                            fontWeight: isSelected ? "bold" : "normal",
+                            cursor: "pointer",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "8px",
+                            flex: 1
+                          }}
+                        >
+                          <span>{u.username}</span>
+                          {u.expires_at ? (
+                            <span style={{ color: "#f87171", background: "rgba(248,113,113,0.1)", border: "1px solid rgba(248,113,113,0.15)", borderRadius: "3px", padding: "1px 4px", fontSize: "9px" }}>临时</span>
+                          ) : (
+                            <span style={{ color: "#34d399", background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.15)", borderRadius: "3px", padding: "1px 4px", fontSize: "9px" }}>永久</span>
+                          )}
+                          <span style={{ marginLeft: "auto", fontSize: "10px", color: "rgba(255,255,255,0.3)" }}>注册: {regDate}</span>
+                        </label>
+                      </div>
+                    );
+                  })}
+                  {!filteredUsersForTarget.length && (
+                    <div style={{ padding: "20px", textAlign: "center", color: "rgba(255,255,255,0.3)", fontSize: "12px" }}>
+                      没有符合当前过滤条件的用户。
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "10px" }}>
+              <Button type="button" variant="secondary" onClick={() => setShowAnnounceModal(false)}>
+                取消
+              </Button>
+              <Button type="submit" variant="primary" disabled={loading}>
+                {loading ? "正在保存..." : "确认发布"}
+              </Button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {/* Create / Edit Config Modal */}
       {showConfigModal && (
-        <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 1000 }}>
-          <form onSubmit={handleSaveConfig} style={{ background: "#111", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "var(--radius-lg)", padding: "24px", width: "450px", maxWidth: "90%", maxHeight: "90vh", overflowY: "auto", display: "flex", flexDirection: "column", gap: "16px" }}>
+        <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)", display: "flex", justifyContent: "center", alignItems: "flex-start", overflowY: "auto", padding: "40px 16px", zIndex: 1000 }}>
+          <form onSubmit={handleSaveConfig} style={{ background: "#111", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "var(--radius-lg)", padding: "24px", width: "450px", maxWidth: "100%", display: "flex", flexDirection: "column", gap: "16px", marginBottom: "40px" }}>
             <h3 style={{ color: "#fff", fontSize: "18px", fontWeight: "800" }}>{isEditMode ? "编辑管理员托管配置" : "新建管理员托管配置"}</h3>
             <p style={{ fontSize: "12px", color: "rgba(255,255,255,0.5)" }}>
               该配置的所有权属于管理员/系统本身，普通用户无法查看真实的 API 密钥。
@@ -1721,8 +2337,8 @@ export function AdminPage() {
 
       {/* Assignment Control Modal */}
       {showAssignModal && selectedConfigForAssign && (
-        <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 1000 }}>
-          <div style={{ background: "#111", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "var(--radius-lg)", padding: "24px", width: "500px", maxWidth: "90%", display: "flex", flexDirection: "column", gap: "16px" }}>
+        <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)", display: "flex", justifyContent: "center", alignItems: "flex-start", overflowY: "auto", padding: "40px 16px", zIndex: 1000 }}>
+          <div style={{ background: "#111", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "var(--radius-lg)", padding: "24px", width: "500px", maxWidth: "100%", display: "flex", flexDirection: "column", gap: "16px", marginBottom: "40px" }}>
             <h3 style={{ color: "#fff", fontSize: "18px", fontWeight: "800" }}>模型配置分发设置</h3>
             <div style={{ fontSize: "13px", background: "rgba(255,255,255,0.03)", padding: "12px", borderRadius: "var(--radius-md)" }}>
               <div style={{ color: "rgba(255,255,255,0.5)" }}>当前配置名称：</div>

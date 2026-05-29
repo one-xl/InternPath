@@ -4,11 +4,9 @@ from uuid import uuid4
 
 from ai_service_client import AiServiceClient
 from ai_analyzer import AIAnalyzer
-from crawler_api import BilibiliAPICrawlerSync
 from database import Database
 from document_parser import extract_text_from_uploaded_file
 from models import (
-    BilibiliCourse,
     ExamOptionsForPractice,
     FitExamAttempt,
     FitExamPaper,
@@ -21,8 +19,6 @@ from models import (
     StarStory,
 )
 from practice_app import PracticeAppInvoker
-from ranker import CourseRanker
-from salary_scraper import linear_next_forecast_k, scrape_salary_from_url
 
 
 KNOWLEDGE_CHUNK_SIZE = 700
@@ -90,11 +86,33 @@ def build_knowledge_chunks(
     return mapped_chunks
 
 
+def linear_next_forecast_k(
+    history: List[Tuple[datetime, float]],
+) -> Optional[float]:
+    """以时间为 x（天）、薪资为 y 做一元线性外推，预测「最后一次观测之后约 30 天」。"""
+    if len(history) < 2:
+        return None
+    base = history[0][0].timestamp()
+    xs = [(h[0].timestamp() - base) / 86400.0 for h in history]
+    ys = [h[1] for h in history]
+    n = len(xs)
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    num = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    den = sum((x - mx) ** 2 for x in xs)
+    if den == 0:
+        return ys[-1]
+    slope = num / den
+    intercept = my - slope * mx
+    last_x = xs[-1]
+    next_x = last_x + 30.0
+    y_hat = slope * next_x + intercept
+    return max(0.0, float(y_hat))
+
+
 class CareerPathAIService:
     def __init__(self):
         self.ai_analyzer = AIAnalyzer()
-        self.crawler = BilibiliAPICrawlerSync()
-        self.ranker = CourseRanker()
         self.db = Database()
         self.practice_invoker = PracticeAppInvoker()
         self.ai_service_client = AiServiceClient()
@@ -428,21 +446,6 @@ class CareerPathAIService:
     def delete_knowledge_document(self, user_id: int, document_id: int) -> bool:
         return self.user_db(user_id).delete_knowledge_document(user_id, document_id)
 
-    def search_courses(self, skills: List[str]) -> List[BilibiliCourse]:
-        all_courses = []
-        for skill in skills:
-            courses = self.crawler.search_skill(skill)
-            all_courses.extend(courses)
-        return self.ranker.rank_by_skill(all_courses)
-
-    def analyze_jd(self, user_id: int, jd_text: str) -> Tuple[JobAnalysis, List[BilibiliCourse]]:
-        analysis = self.extract_skills(jd_text, user_id=user_id)
-        courses = self.search_courses(analysis.skills)
-        db = self.user_db(user_id)
-        jd_record_id = db.save_jd_record(user_id, jd_text, analysis)
-        db.save_courses(jd_record_id, courses)
-        return analysis, courses
-
     def sync_to_practice_app(
         self,
         skills: List[str],
@@ -546,20 +549,6 @@ class CareerPathAIService:
             note="初始录入",
         )
         return job_id
-
-    def refresh_job_salary_from_web(self, user_id: int, job_posting_id: int) -> Optional[float]:
-        db = self.user_db(user_id)
-        rows = db.list_job_postings(user_id, 500)
-        target = next((j for j in rows if j.id == job_posting_id), None)
-        if target is None or not (target.source_url or "").strip():
-            return None
-        url = target.source_url.strip()
-        parsed, _plain = scrape_salary_from_url(url)
-        if parsed is None:
-            return None
-        db.add_salary_snapshot(user_id, job_posting_id, parsed, note=f"页面抓取: {url}")
-        db.update_job_posting_salary(user_id, job_posting_id, parsed)
-        return parsed
 
     def get_salary_snapshots(self, user_id: int, job_posting_id: int) -> List[SalarySnapshot]:
         db = self.user_db(user_id)

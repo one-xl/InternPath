@@ -29,7 +29,7 @@ from backend.doubao_job_rag import DoubaoAnalysisError, analyze_job_with_doubao,
 from backend.resume_rag import parse_resume, retrieve_chunks
 from service import CareerPathAIService
 from config import Config
-from auth import hash_password
+from auth import hash_password, normalize_username
 import httpx
 
 
@@ -818,7 +818,8 @@ def create_app(
 
     @app.post("/api/auth/login")
     def login(payload: AuthRequest, request: Request, response: Response) -> dict[str, Any]:
-        key_user = f"login_fail_user:{payload.username}"
+        norm_username = normalize_username(payload.username)
+        key_user = f"login_fail_user:{norm_username}"
         
         # Clean up old timestamps to keep memory clean
         cutoff = time.time() - 900
@@ -1858,7 +1859,8 @@ def create_app(
         username = payload.get("username", "")
         if not username:
             raise HTTPException(status_code=400, detail="未提供要解锁的用户名/邮箱。")
-        key = f"login_fail_user:{username}"
+        norm_username = normalize_username(username)
+        key = f"login_fail_user:{norm_username}"
         limiter.requests.pop(key, None)
         return {"ok": True}
 

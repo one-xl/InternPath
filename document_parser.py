@@ -68,6 +68,10 @@ def extract_text_from_docx_bytes(data: bytes) -> str:
         import io
 
         with ZipFile(io.BytesIO(data)) as archive:
+            # Prevent Zip Bomb / Decompression resource exhaustion
+            info = archive.getinfo("word/document.xml")
+            if info.file_size > 20 * 1024 * 1024:  # limit uncompressed size to 20MB
+                raise DocumentParseError("文档正文大小超出限制，解析终止以确保安全")
             document_xml = archive.read("word/document.xml")
     except (KeyError, BadZipFile) as exc:
         raise DocumentParseError("DOCX 解析失败，请检查文件是否损坏") from exc

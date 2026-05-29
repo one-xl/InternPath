@@ -91,6 +91,34 @@ export function useResumeUpload() {
     }
   }
 
+  async function selectSavedResume(parsed: ParsedResume) {
+    try {
+      setStatus("indexing");
+      setSourceFile(null);
+      setParsedResume(parsed);
+      setResumeFile({ ...parsed.file, status: "indexing" });
+      
+      const indexedChunks = await buildResumeIndex(parsed);
+      setChunks(indexedChunks);
+      setResumeFile({ ...parsed.file, status: "indexed" });
+      setStatus("indexed");
+      setError("");
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : "文件索引生成失败";
+      setError(message);
+      setStatus("failed");
+      setResumeFile((current) =>
+        current
+          ? {
+              ...current,
+              status: "failed",
+              errorMessage: message,
+            }
+          : current,
+      );
+    }
+  }
+
   function restoreResumeData(file: UploadedResumeFile | null, parsed: ParsedResume | null, chunksData: ResumeChunk[]) {
     setSourceFile(null);
     setResumeFile(file);
@@ -109,6 +137,7 @@ export function useResumeUpload() {
     error,
     isReady: status === "indexed" && Boolean(parsedResume) && chunks.length > 0,
     selectFile,
+    selectSavedResume,
     removeFile,
     retry,
     reset: removeFile,

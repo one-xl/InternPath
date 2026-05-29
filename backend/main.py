@@ -631,6 +631,20 @@ def create_app(
             parsed_resume = parse_resume(file.filename or "resume", file.content_type or "", content)
         except DocumentParseError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        
+        # Save to persistent database
+        try:
+            state.auth_db.save_user_resume(
+                user_id=user_id,
+                resume_id=parsed_resume["file"]["id"],
+                file_name=parsed_resume["file"]["name"],
+                file_size=parsed_resume["file"]["size"],
+                file_type=parsed_resume["file"]["type"],
+                parsed_resume=parsed_resume
+            )
+        except Exception as e:
+            print(f"[ERROR] Failed to save resume to DB: {e}")
+
         state.resume_store[parsed_resume["file"]["id"]] = {
             "parsed_resume": parsed_resume,
             "user_id": user_id,
@@ -640,12 +654,48 @@ def create_app(
             "parsedResume": parsed_resume,
         }
 
+    @app.get("/api/resumes")
+    def list_resumes(user_id: Any = Depends(current_user_id)) -> dict[str, Any]:
+        resumes = state.auth_db.list_user_resumes(user_id)
+        return {"resumes": resumes}
+
+    @app.get("/api/resumes/{resume_id}")
+    def get_resume(resume_id: str, user_id: Any = Depends(current_user_id)) -> dict[str, Any]:
+        entry = state.resume_store.get(resume_id)
+        if entry is None:
+            db_resume = state.auth_db.get_user_resume(user_id, resume_id)
+            if db_resume:
+                entry = {
+                    "parsed_resume": db_resume,
+                    "user_id": user_id,
+                }
+                state.resume_store[resume_id] = entry
+        
+        if entry is None or entry.get("user_id") != user_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="记录不存在或无权访问。")
+        return {"parsedResume": entry.get("parsed_resume")}
+
+    @app.delete("/api/resumes/{resume_id}")
+    def delete_resume(resume_id: str, user_id: Any = Depends(current_user_id)) -> dict[str, Any]:
+        success = state.auth_db.delete_user_resume(user_id, resume_id)
+        state.resume_store.pop(resume_id, None)
+        return {"ok": success}
+
     @app.post("/api/resumes/retrieve")
     def retrieve_resume(
         payload: ResumeRetrieveRequest,
         user_id: Any = Depends(current_user_id)
     ) -> dict[str, Any]:
         entry = state.resume_store.get(payload.resumeFileId)
+        if entry is None:
+            db_resume = state.auth_db.get_user_resume(user_id, payload.resumeFileId)
+            if db_resume:
+                entry = {
+                    "parsed_resume": db_resume,
+                    "user_id": user_id,
+                }
+                state.resume_store[payload.resumeFileId] = entry
+
         if entry is None or entry.get("user_id") != user_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="记录不存在或无权访问。")
         parsed_resume = entry.get("parsed_resume")
@@ -663,6 +713,15 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="输入内容过长，请减少无关内容后再分析。")
             
         entry = state.resume_store.get(payload.resumeFileId) if payload.resumeFileId else None
+        if entry is None and payload.resumeFileId:
+            db_resume = state.auth_db.get_user_resume(user_id, payload.resumeFileId)
+            if db_resume:
+                entry = {
+                    "parsed_resume": db_resume,
+                    "user_id": user_id,
+                }
+                state.resume_store[payload.resumeFileId] = entry
+
         if entry is not None:
             if entry.get("user_id") != user_id:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="记录不存在或无权访问。")

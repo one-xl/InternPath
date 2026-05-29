@@ -28,6 +28,7 @@ interface JobInputFormProps {
   error: string;
   onChange: (patch: Partial<JobDraft>) => void;
   onSelectResume: (file: File) => void;
+  onSelectSavedResume: (parsed: ParsedResume) => void;
   onRetryResume: () => void;
   onRemoveResume: () => void;
   onGoSettings: () => void;
@@ -90,6 +91,7 @@ export function JobInputForm({
   error,
   onChange,
   onSelectResume,
+  onSelectSavedResume,
   onRetryResume,
   onRemoveResume,
   onGoSettings,
@@ -193,6 +195,7 @@ export function JobInputForm({
             error={resumeError}
             disabled={isAnalyzing || isRetrieving}
             onSelectFile={onSelectResume}
+            onSelectSavedResume={onSelectSavedResume}
             onRetry={onRetryResume}
             onRemove={onRemoveResume}
           />

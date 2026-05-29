@@ -580,6 +580,7 @@ export default function App() {
             error={formError}
             onChangeDraft={updateDraft}
             onSelectResume={resumeUpload.selectFile}
+            onSelectSavedResume={resumeUpload.selectSavedResume}
             onRetryResume={resumeUpload.retry}
             onRemoveResume={resumeUpload.removeFile}
             onGoSettings={() => setActivePage("settings")}

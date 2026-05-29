@@ -280,6 +280,22 @@ class Database:
                 """
             )
 
+            # 5b. Create resumes table
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS resumes (
+                    id VARCHAR(255) PRIMARY KEY,
+                    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    file_name VARCHAR(255) NOT NULL,
+                    file_size INTEGER NOT NULL,
+                    file_type VARCHAR(100),
+                    parsed_json JSONB NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+
             # 6. Create user_settings table
             cursor.execute(
                 """
@@ -1280,6 +1296,24 @@ class Database:
                 """
             )
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_announcements_time ON announcements(start_time, end_time);")
+
+            # resumes table
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS resumes (
+                    id TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    file_name TEXT NOT NULL,
+                    file_size INTEGER NOT NULL,
+                    file_type TEXT,
+                    parsed_json TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                )
+                """
+            )
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_resumes_user ON resumes(user_id);")
 
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_analysis_records_user ON analysis_records(user_id, created_at DESC);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);")
@@ -5149,5 +5183,89 @@ class Database:
         except Exception as e:
             print(f"[DATABASE] Error getting active announcements: {e}")
             return []
+        finally:
+            conn.close()
+
+    def save_user_resume(self, user_id: Any, resume_id: str, file_name: str, file_size: int, file_type: str, parsed_resume: dict) -> None:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            parsed_json_str = json.dumps(parsed_resume)
+            cursor.execute("SELECT 1 FROM resumes WHERE id = ? AND user_id = ?", (resume_id, user_id))
+            row = cursor.fetchone()
+            if row is not None:
+                cursor.execute(
+                    "UPDATE resumes SET file_name = ?, file_size = ?, file_type = ?, parsed_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?",
+                    (file_name, file_size, file_type, parsed_json_str, resume_id, user_id)
+                )
+            else:
+                cursor.execute(
+                    "INSERT INTO resumes (id, user_id, file_name, file_size, file_type, parsed_json) VALUES (?, ?, ?, ?, ?, ?)",
+                    (resume_id, user_id, file_name, file_size, file_type, parsed_json_str)
+                )
+            conn.commit()
+        except Exception as e:
+            print(f"[DATABASE] Error saving resume: {e}")
+            raise e
+        finally:
+            conn.close()
+
+    def list_user_resumes(self, user_id: Any) -> List[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT id, file_name, file_size, file_type, created_at, updated_at FROM resumes WHERE user_id = ? ORDER BY created_at DESC",
+                (user_id,)
+            )
+            rows = cursor.fetchall()
+            resumes = []
+            for r in rows:
+                resumes.append({
+                    "id": str(r[0]),
+                    "name": r[1],
+                    "size": r[2],
+                    "type": r[3],
+                    "createdAt": safe_datetime(r[4]).isoformat() if r[4] else None,
+                    "updatedAt": safe_datetime(r[5]).isoformat() if r[5] else None,
+                })
+            return resumes
+        except Exception as e:
+            print(f"[DATABASE] Error listing resumes: {e}")
+            return []
+        finally:
+            conn.close()
+
+    def get_user_resume(self, user_id: Any, resume_id: str) -> Optional[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT parsed_json FROM resumes WHERE id = ? AND user_id = ?",
+                (resume_id, user_id)
+            )
+            row = cursor.fetchone()
+            if row:
+                return safe_json_load(row[0])
+            return None
+        except Exception as e:
+            print(f"[DATABASE] Error getting resume: {e}")
+            return None
+        finally:
+            conn.close()
+
+    def delete_user_resume(self, user_id: Any, resume_id: str) -> bool:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "DELETE FROM resumes WHERE id = ? AND user_id = ?",
+                (resume_id, user_id)
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            print(f"[DATABASE] Error deleting resume: {e}")
+            return False
         finally:
             conn.close()

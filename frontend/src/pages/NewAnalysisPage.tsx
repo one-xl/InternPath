@@ -25,6 +25,7 @@ interface NewAnalysisPageProps {
   error: string;
   onChangeDraft: (patch: Partial<JobDraft>) => void;
   onSelectResume: (file: File) => void;
+  onSelectSavedResume: (parsed: ParsedResume) => void;
   onRetryResume: () => void;
   onRemoveResume: () => void;
   onGoSettings: () => void;
@@ -57,6 +58,7 @@ export function NewAnalysisPage({
   error,
   onChangeDraft,
   onSelectResume,
+  onSelectSavedResume,
   onRetryResume,
   onRemoveResume,
   onGoSettings,
@@ -145,6 +147,7 @@ export function NewAnalysisPage({
         error={error}
         onChange={onChangeDraft}
         onSelectResume={onSelectResume}
+        onSelectSavedResume={onSelectSavedResume}
         onRetryResume={onRetryResume}
         onRemoveResume={onRemoveResume}
         onGoSettings={onGoSettings}

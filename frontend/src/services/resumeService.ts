@@ -94,3 +94,37 @@ export async function retrieveRelevantResumeChunks(
   }
   return mockRetrieveRelevantResumeChunks(jdText, chunks, options);
 }
+
+export interface SavedResume {
+  id: string;
+  name: string;
+  size: number;
+  type: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function fetchSavedResumes(): Promise<SavedResume[]> {
+  const response = await fetch("/api/resumes");
+  if (!response.ok) {
+    throw new Error("获取保存的简历列表失败");
+  }
+  const payload = (await response.json()) as { resumes: SavedResume[] };
+  return payload.resumes || [];
+}
+
+export async function fetchSavedResume(id: string): Promise<ParsedResume> {
+  const response = await fetch(`/api/resumes/${encodeURIComponent(id)}`);
+  if (!response.ok) {
+    throw new Error("获取指定简历失败");
+  }
+  const payload = (await response.json()) as { parsedResume: ParsedResume };
+  return payload.parsedResume;
+}
+
+export async function deleteSavedResume(id: string): Promise<boolean> {
+  const response = await fetch(`/api/resumes/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  return response.ok;
+}

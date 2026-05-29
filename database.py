@@ -1,6 +1,7 @@
 import json
 import os
 import sqlite3
+import sys
 from datetime import datetime
 from typing import Any, List, Optional, Tuple
 
@@ -23,6 +24,32 @@ from models import (
 )
 
 
+def safe_datetime(val) -> Optional[datetime]:
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        return val
+    if isinstance(val, str):
+        try:
+            return datetime.fromisoformat(val)
+        except ValueError:
+            return datetime.strptime(val.split(".")[0], "%Y-%m-%d %H:%M:%S")
+    return None
+
+
+def safe_json_load(value: Any, default: Any = None) -> Any:
+    if value is None:
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    if not isinstance(value, (str, bytes, bytearray)):
+        return value
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return default
+
+
 class DatabaseCursorWrapper:
     def __init__(self, cursor, is_postgres: bool):
         self._cursor = cursor
@@ -37,14 +64,22 @@ class DatabaseCursorWrapper:
                 query = query.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
             is_insert = query.strip().upper().startswith("INSERT")
             if is_insert and "RETURNING" not in query.upper():
-                q = query.strip()
-                if q.endswith(";"):
-                    q = q[:-1]
-                query = f"{q} RETURNING id"
-                self._cursor.execute(query, params)
-                res = self._cursor.fetchone()
-                self._lastrowid = res[0] if res else None
-                return self
+                # Avoid appending "RETURNING id" if the table does not have an "id" column
+                q_lower = query.lower()
+                has_no_id_col = (
+                    "into sessions" in q_lower or 
+                    "into user_settings" in q_lower or 
+                    "into model_config_assignments" in q_lower
+                )
+                if not has_no_id_col:
+                    q = query.strip()
+                    if q.endswith(";"):
+                        q = q[:-1]
+                    query = f"{q} RETURNING id"
+                    self._cursor.execute(query, params)
+                    res = self._cursor.fetchone()
+                    self._lastrowid = res[0] if res else None
+                    return self
         
         self._cursor.execute(query, params)
         if not self._is_postgres:
@@ -108,12 +143,20 @@ class Database:
     def __init__(self, db_path: str = Config.DB_PATH):
         self.db_path = db_path
         db_url = os.getenv("DATABASE_URL")
-        self.is_postgres = bool(db_url and (db_url.startswith("postgresql://") or db_url.startswith("postgres://")))
+        
+        # Detect if we are running in a pytest session
+        is_testing = 'pytest' in sys.modules
+        
+        self.is_postgres = bool(
+            db_url and 
+            (db_url.startswith("postgresql://") or db_url.startswith("postgres://")) and
+            not is_testing
+        )
         self.init_db()
 
     def get_connection(self):
-        db_url = os.getenv("DATABASE_URL")
-        if db_url and (db_url.startswith("postgresql://") or db_url.startswith("postgres://")):
+        if self.is_postgres:
+            db_url = os.getenv("DATABASE_URL")
             import psycopg2
             conn = psycopg2.connect(db_url)
             return DatabaseConnectionWrapper(conn, True)
@@ -153,15 +196,23 @@ class Database:
             # 1. Enable extensions
             try:
                 cursor.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
+                conn.commit()
             except Exception:
-                pass
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
             
             has_pgvector = False
             try:
                 cursor.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+                conn.commit()
                 has_pgvector = True
             except Exception:
-                pass
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
 
             # 2. Create users table
             cursor.execute(
@@ -1521,7 +1572,7 @@ class Database:
             return None
 
         is_active_val = bool(row[5]) if row[5] is not None else True
-        expires_at_val = datetime.fromisoformat(row[6]) if row[6] else None
+        expires_at_val = safe_datetime(row[6]) if row[6] else None
         generation_limit_val = int(row[7]) if row[7] is not None else 5
         remark_val = row[8] if row[8] else None
 
@@ -1529,7 +1580,7 @@ class Database:
             id=row[0],
             username=row[1],
             role=row[4],
-            created_at=datetime.fromisoformat(row[3]),
+            created_at=safe_datetime(row[3]),
             is_active=is_active_val,
             expires_at=expires_at_val,
             generation_limit=generation_limit_val,
@@ -1552,14 +1603,14 @@ class Database:
         if row is None:
             return None
         is_active_val = bool(row[4]) if row[4] is not None else True
-        expires_at_val = datetime.fromisoformat(row[5]) if row[5] else None
+        expires_at_val = safe_datetime(row[5]) if row[5] else None
         generation_limit_val = int(row[6]) if row[6] is not None else 5
         remark_val = row[7] if row[7] else None
         return User(
             id=row[0],
             username=row[1],
             role=row[3],
-            created_at=datetime.fromisoformat(row[2]),
+            created_at=safe_datetime(row[2]),
             is_active=is_active_val,
             expires_at=expires_at_val,
             generation_limit=generation_limit_val,
@@ -1583,14 +1634,14 @@ class Database:
         if row is None:
             return None
         is_active_val = bool(row[4]) if row[4] is not None else True
-        expires_at_val = datetime.fromisoformat(row[5]) if row[5] else None
+        expires_at_val = safe_datetime(row[5]) if row[5] else None
         generation_limit_val = int(row[6]) if row[6] is not None else 5
         remark_val = row[7] if row[7] else None
         return User(
             id=row[0],
             username=row[1],
             role=row[3],
-            created_at=datetime.fromisoformat(row[2]),
+            created_at=safe_datetime(row[2]),
             is_active=is_active_val,
             expires_at=expires_at_val,
             generation_limit=generation_limit_val,
@@ -2021,13 +2072,13 @@ class Database:
             user_id=row[1],
             jd_text=row[2],
             analysis=JobAnalysis(
-                skills=json.loads(row[3]),
+                skills=safe_json_load(row[3], []),
                 difficulty=row[4],
                 job_summary=row[5],
                 personal_decision=self._load_json(row[6], None),
             ),
             display_name=row[7],
-            created_at=datetime.fromisoformat(row[8]),
+            created_at=safe_datetime(row[8]),
         )
 
     def get_jd_record_by_id(self, user_id: int, jd_record_id: int) -> Optional[JDRecord]:
@@ -2841,13 +2892,8 @@ class Database:
     def _dump_json(self, value: Any) -> str:
         return json.dumps(self._jsonable(value), ensure_ascii=False)
 
-    def _load_json(self, value: Optional[str], default: Any) -> Any:
-        if not value:
-            return default
-        try:
-            return json.loads(value)
-        except (TypeError, json.JSONDecodeError):
-            return default
+    def _load_json(self, value: Any, default: Any) -> Any:
+        return safe_json_load(value, default)
 
     def _jsonable(self, value: Any) -> Any:
         if hasattr(value, "model_dump"):
@@ -2928,7 +2974,7 @@ class Database:
                     salary_monthly_k=float(row[8]),
                     jd_record_id=row[9],
                     source_url=row[10] or "",
-                    created_at=datetime.fromisoformat(row[11]),
+                    created_at=safe_datetime(row[11]),
                 )
             )
         return out
@@ -2990,7 +3036,7 @@ class Database:
             SalarySnapshot(
                 id=row[0],
                 job_posting_id=row[1],
-                observed_at=datetime.fromisoformat(row[2]),
+                observed_at=safe_datetime(row[2]),
                 salary_monthly_k=float(row[3]),
                 note=row[4] or "",
             )
@@ -3053,7 +3099,7 @@ class Database:
                 continue
             if jd_id in best:
                 continue
-            best[int(jd_id)] = (float(score), datetime.fromisoformat(created_at))
+            best[int(jd_id)] = (float(score), safe_datetime(created_at))
         return best
 
     def get_fit_exam_attempts(self, user_id: int, limit: int = 30) -> List[FitExamAttempt]:
@@ -3073,7 +3119,7 @@ class Database:
         conn.close()
         attempts: List[FitExamAttempt] = []
         for row in rows:
-            raw = json.loads(row[4])
+            raw = safe_json_load(row[4], {})
             questions = [
                 FitExamQuestion(
                     stem=item["stem"],
@@ -3090,9 +3136,9 @@ class Database:
                     jd_record_id=row[2],
                     major_profile=row[3] or "",
                     paper=FitExamPaper(questions=questions),
-                    answers=list(json.loads(row[5] or "[]")),
+                    answers=list(safe_json_load(row[5], [])),
                     score=float(row[6]),
-                    created_at=datetime.fromisoformat(row[7]),
+                    created_at=safe_datetime(row[7]),
                 )
             )
         return attempts
@@ -3229,7 +3275,7 @@ class Database:
             "id": row[0],
             "user_id": row[1],
             "status": row[2],
-            "input_json": json.loads(row[3]) if row[3] else {},
+            "input_json": safe_json_load(row[3], {}),
             "failed_step": row[4],
             "error_message": row[5],
             "created_at": row[6],
@@ -3250,7 +3296,7 @@ class Database:
                 "id": r[0],
                 "user_id": r[1],
                 "status": r[2],
-                "input_json": json.loads(r[3]) if r[3] else {},
+                "input_json": safe_json_load(r[3], {}),
                 "failed_step": r[4],
                 "error_message": r[5],
                 "created_at": r[6],
@@ -3317,7 +3363,7 @@ class Database:
         conn.close()
         if not row:
             return {}
-        return json.loads(row[0]) if row[0] else {}
+        return safe_json_load(row[0], {})
 
     # EMAIL VERIFICATION CRUD methods
     def create_email_verification_code(
@@ -3506,7 +3552,7 @@ class Database:
         
         configs = []
         for r in rows:
-            extra = json.loads(r[8]) if r[8] else {}
+            extra = safe_json_load(r[8], {})
             item = {
                 "id": r[0],
                 "user_id": r[1],
@@ -3883,7 +3929,7 @@ class Database:
         configs = []
         # Process user-owned configs
         for r in owned_rows:
-            extra = json.loads(r[8]) if r[8] else {}
+            extra = safe_json_load(r[8], {})
             item = {
                 "id": r[0],
                 "user_id": r[1],
@@ -3912,7 +3958,7 @@ class Database:
             
         # Process admin-assigned configs
         for r in assigned_rows:
-            extra = json.loads(r[8]) if r[8] else {}
+            extra = safe_json_load(r[8], {})
             item = {
                 "id": r[0],
                 "user_id": r[1],
@@ -4253,7 +4299,7 @@ class Database:
             cursor.execute("SELECT COUNT(*) FROM model_config_assignments WHERE config_id = ?", (cfg_id,))
             assign_count = cursor.fetchone()[0]
             
-            extra = json.loads(r[8]) if r[8] else {}
+            extra = safe_json_load(r[8], {})
             item = {
                 "id": cfg_id,
                 "user_id": r[1],

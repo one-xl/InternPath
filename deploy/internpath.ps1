@@ -22,6 +22,24 @@ $AiPort = if ($env:INTERNPATH_AI_PORT) { [int]$env:INTERNPATH_AI_PORT } else { 8
 $BackendPort = if ($env:INTERNPATH_BACKEND_PORT) { [int]$env:INTERNPATH_BACKEND_PORT } else { 8787 }
 $WebPort = if ($env:INTERNPATH_WEB_PORT) { [int]$env:INTERNPATH_WEB_PORT } elseif ($env:LOCAL_PORT) { [int]$env:LOCAL_PORT } else { 5173 }
 
+# PostgreSQL configuration and fallback to conversation ID scratch path
+$PgBin = if ($env:INTERNPATH_PG_BIN) {
+    $env:INTERNPATH_PG_BIN
+} else {
+    "C:\Users\a1028\.gemini\antigravity\brain\30878f50-3872-40e7-85fe-b6196b1f31a2\scratch\pgsql\bin"
+}
+$PgData = if ($env:INTERNPATH_PG_DATA) {
+    $env:INTERNPATH_PG_DATA
+} else {
+    "C:\Users\a1028\.gemini\antigravity\brain\30878f50-3872-40e7-85fe-b6196b1f31a2\scratch\pgdata"
+}
+$PgLog = if ($env:INTERNPATH_PG_LOG) {
+    $env:INTERNPATH_PG_LOG
+} else {
+    "C:\Users\a1028\.gemini\antigravity\brain\30878f50-3872-40e7-85fe-b6196b1f31a2\scratch\pg_log.txt"
+}
+$PgPort = if ($env:INTERNPATH_PG_PORT) { [int]$env:INTERNPATH_PG_PORT } else { 54321 }
+
 function Get-PythonInvocation {
     if ($PythonCommand -match "[\\/]") {
         return '"' + $PythonCommand.Replace('"', '""') + '"'
@@ -94,6 +112,56 @@ function Start-InternPath {
     $webLog = Join-Path $LogRoot "frontend.log"
     $pythonInvocation = Get-PythonInvocation
 
+    # 1. Handle PostgreSQL Startup
+    $pgCtlExe = Join-Path $PgBin "pg_ctl.exe"
+    $isPgConfigured = $false
+    if (Test-Path $pgCtlExe) {
+        $isPgConfigured = $true
+        if (Test-PortBusy -Port $PgPort) {
+            Write-Host "PostgreSQL already appears to be running on port $PgPort."
+        } else {
+            Write-Host "Starting local PostgreSQL on port $PgPort..."
+            try {
+                # Start PostgreSQL
+                & $pgCtlExe -D $PgData -l $PgLog -o "-p $PgPort" start
+                Start-Sleep -Seconds 3
+                Write-Host "PostgreSQL started successfully."
+            } catch {
+                Write-Warning "Failed to start PostgreSQL: $_"
+            }
+        }
+
+        # 2. Check and Create Database
+        $psqlExe = Join-Path $PgBin "psql.exe"
+        $createdbExe = Join-Path $PgBin "createdb.exe"
+        $dbExists = $false
+        try {
+            $dbList = & $psqlExe -U postgres -p $PgPort -lqt
+            if ($dbList -match "job_dashboard") {
+                $dbExists = $true
+            }
+        } catch {
+            # Ignore list failure
+        }
+
+        if (-not $dbExists) {
+            Write-Host "Creating PostgreSQL database 'job_dashboard'..."
+            try {
+                & $createdbExe -U postgres -p $PgPort job_dashboard
+                Write-Host "Database 'job_dashboard' created successfully."
+            } catch {
+                Write-Warning "Failed to create database 'job_dashboard': $_"
+            }
+        }
+
+        # 3. Export DATABASE_URL env variable for child processes to inherit
+        $env:DATABASE_URL = "postgresql://postgres@localhost:$PgPort/job_dashboard"
+        Write-Host "DATABASE_URL set to postgresql://postgres@localhost:$PgPort/job_dashboard"
+    } else {
+        Write-Warning "PostgreSQL binaries not found at: $pgCtlExe"
+        Write-Warning "Skipping local PostgreSQL startup. The application will fall back to SQLite."
+    }
+
     if (Test-PortBusy -Port $AiPort) {
         Write-Host "AI service already appears to be running on http://127.0.0.1:$AiPort."
     } else {
@@ -130,9 +198,36 @@ function Stop-InternPath {
     Stop-PortProcess -Port $WebPort -Name "Web app"
     Stop-PortProcess -Port $BackendPort -Name "Backend API"
     Stop-PortProcess -Port $AiPort -Name "AI service"
+
+    # Stop PostgreSQL
+    $pgCtlExe = Join-Path $PgBin "pg_ctl.exe"
+    if (Test-Path $pgCtlExe) {
+        if (Test-PortBusy -Port $PgPort) {
+            Write-Host "Stopping local PostgreSQL on port $PgPort..."
+            try {
+                & $pgCtlExe -D $PgData stop
+                Write-Host "PostgreSQL stopped successfully."
+            } catch {
+                Write-Warning "Failed to stop PostgreSQL: $_"
+            }
+        } else {
+            Write-Host "PostgreSQL is not running on port $PgPort."
+        }
+    }
 }
 
 function Show-InternPathStatus {
+    $pgCtlExe = Join-Path $PgBin "pg_ctl.exe"
+    if (Test-Path $pgCtlExe) {
+        if (Test-PortBusy -Port $PgPort) {
+            Write-Host "PostgreSQL: running on port $PgPort"
+        } else {
+            Write-Host "PostgreSQL: stopped on port $PgPort"
+        }
+    } else {
+        Write-Host "PostgreSQL: binaries not found (using SQLite fallback)"
+    }
+
     if (Test-PortBusy -Port $AiPort) {
         Write-Host "AI service: running on http://127.0.0.1:$AiPort"
     } else {

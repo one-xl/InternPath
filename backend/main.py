@@ -759,16 +759,17 @@ def create_app(
 
     @app.post("/api/auth/login")
     def login(payload: AuthRequest, request: Request, response: Response) -> dict[str, Any]:
-        key_ip = f"login_fail_ip:{request.client.host}"
         key_user = f"login_fail_user:{payload.username}"
         
-        if len([t for t in limiter.requests[key_ip] if t > time.time() - 900]) >= 5 or \
-           len([t for t in limiter.requests[key_user] if t > time.time() - 900]) >= 5:
+        # Clean up old timestamps to keep memory clean
+        cutoff = time.time() - 900
+        limiter.requests[key_user] = [t for t in limiter.requests[key_user] if t > cutoff]
+        
+        if len(limiter.requests[key_user]) >= 5:
             raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="请求过于频繁，请稍后再试。")
             
         user = state.auth_db.authenticate_user(payload.username, payload.password)
         if user is None or user.id is None:
-            limiter.requests[key_ip].append(time.time())
             limiter.requests[key_user].append(time.time())
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="邮箱或密码错误，请重新输入。")
             

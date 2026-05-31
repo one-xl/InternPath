@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body {
+      width: 320px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f172a;
+      color: #f8fafc;
+      margin: 0;
+      padding: 16px;
+    }
+    h2 {
+      font-size: 16px;
+      margin-top: 0;
+      margin-bottom: 12px;
+      color: #38bdf8;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .form-group {
+      margin-bottom: 12px;
+    }
+    label {
+      display: block;
+      font-size: 12px;
+      color: #94a3b8;
+      margin-bottom: 4px;
+    }
+    input {
+      width: 100%;
+      box-sizing: border-box;
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      color: #f8fafc;
+      padding: 8px 10px;
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    input:focus {
+      border-color: #38bdf8;
+    }
+    button {
+      width: 100%;
+      background: linear-gradient(135deg, #0ea5e9, #2563eb);
+      color: #ffffff;
+      border: none;
+      border-radius: 6px;
+      padding: 10px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+    button:hover {
+      opacity: 0.9;
+    }
+    .status {
+      margin-top: 10px;
+      font-size: 12px;
+      text-align: center;
+      min-height: 18px;
+    }
+    .success {
+      color: #10b981;
+    }
+    .error {
+      color: #f43f5e;
+    }
+    .info {
+      font-size: 11px;
+      color: #64748b;
+      margin-top: 12px;
+      line-height: 1.4;
+      border-top: 1px solid #1e293b;
+      padding-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <h2><span>🧭</span> InternPath Importer</h2>
+  <div class="form-group">
+    <label for="host">Workbench API URL</label>
+    <input type="text" id="host" placeholder="http://localhost:8787" value="http://localhost:8787">
+  </div>
+  <div class="form-group">
+    <label for="token">Bearer Auth Token</label>
+    <input type="password" id="token" placeholder="Optional - Leave empty if using local Cookie auth">
+  </div>
+  <button id="save-btn">Save Configuration</button>
+  <div id="status" class="status"></div>
+  <div class="info">
+    Open any BOSS Zhipin or Nowcoder job details page. A floating button <strong>"Import to InternPath"</strong> will automatically appear on the right side of the screen.
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

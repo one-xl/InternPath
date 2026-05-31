@@ -768,3 +768,86 @@ class AIAnalyzer:
                     )
                 except Exception as ex:
                     print(f"[STAR_AI] Failed to log usage: {ex}")
+
+    def stage2_llm_check(self, user_id: Any, resume_text: str, jd_text: str) -> Tuple[bool, str]:
+        """Checks if the resume meets the hard constraints of the JD using a cheap LLM call."""
+        client, resolved_config_id, provider, model_id = self._client(user_id)
+        
+        system_prompt = """
+        你是求职门槛甄别助手。你的任务是根据求职者简历与招聘 JD，判断求职者是否满足该职位的硬性指标/基本门槛。
+        硬性指标主要包括：学历要求、工作年限、特定的极重要证书或必须具备的特定技能。
+        如果求职者基本满足或没有明确冲突，返回 passed 为 true。如果存在明显冲突或缺失（例如：JD要求必须是统招硕士，求职者为大专；或者JD要求有3年相关工作经验，求职者完全是应届生且无相关项目），返回 passed 为 false 并给出理由。
+        
+        只返回如下 JSON 格式，不要有任何其他文字或 markdown 标记：
+        {
+          "passed": true,
+          "reason": "如果通过则可以为空，如果不通过说明不符合哪些条件"
+        }
+        """
+        
+        user_prompt = f"### 候选人简历 ###\n{resume_text}\n\n### 岗位职位描述(JD) ###\n{jd_text}"
+        
+        start_time = time.time()
+        success = True
+        error_type = None
+        prompt_tokens = 0
+        completion_tokens = 0
+        total_tokens = 0
+        output_text = ""
+        
+        try:
+            # We set a low max_tokens to keep the call fast and cheap.
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.0,
+                max_tokens=150,
+            )
+            output_text = (response.choices[0].message.content or "").strip()
+            cleaned = _strip_json_fence(output_text)
+            
+            data = json.loads(cleaned)
+            passed = bool(data.get("passed", True))
+            reason = data.get("reason", "")
+            
+            if hasattr(response, "usage") and response.usage:
+                prompt_tokens = getattr(response.usage, "prompt_tokens", 0)
+                completion_tokens = getattr(response.usage, "completion_tokens", 0)
+                total_tokens = getattr(response.usage, "total_tokens", 0)
+                
+            return passed, reason
+        except Exception as e:
+            success = False
+            error_type = type(e).__name__
+            # Fallback on API failure: assume passed to avoid blockages
+            return True, f"API 校验异常跳过: {e}"
+        finally:
+            duration = int((time.time() - start_time) * 1000)
+            if user_id:
+                try:
+                    from database import Database
+                    db = Database()
+                    db.log_model_usage(
+                        user_id=user_id,
+                        config_id=resolved_config_id,
+                        assignment_id=None,
+                        analysis_id=None,
+                        provider=provider,
+                        model_id=model_id,
+                        usage_type="chat",
+                        endpoint="/api/jobs/import/stage2-check",
+                        success=success,
+                        error_type=error_type,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens,
+                        input_chars=len(system_prompt) + len(user_prompt),
+                        output_chars=len(output_text),
+                        latency_ms=duration
+                    )
+                except Exception as ex:
+                    print(f"[STAR_AI] Failed to log usage: {ex}")
+

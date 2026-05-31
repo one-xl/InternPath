@@ -844,3 +844,123 @@ class CareerPathAIService:
 
     def delete_star_story(self, user_id: Any, story_id: Any) -> bool:
         return self.user_db(user_id).delete_star_story(user_id, story_id)
+
+    def calculate_tfidf_overlap(self, resume_text: str, jd_text: str, resume_chunks: List[str] = None) -> float:
+        import math
+        try:
+            import sys
+            from pathlib import Path
+            ai_service_path = str(Path(__file__).resolve().parent / "ai-service")
+            if ai_service_path not in sys.path:
+                sys.path.insert(0, ai_service_path)
+            from app.rag.tokenization import tokenize
+        except Exception:
+            import re
+            TOKEN_PATTERN = re.compile(r"[a-z0-9]+|[\u4e00-\u9fff]+", re.IGNORECASE)
+            def tokenize(text: str) -> List[str]:
+                if not text:
+                    return []
+                out = []
+                for match in TOKEN_PATTERN.finditer(text):
+                    t = match.group(0)
+                    if t.isascii():
+                        out.append(t.lower())
+                    elif len(t) >= 2:
+                        out.extend(t[i : i + 2] for i in range(len(t) - 1))
+                return out
+
+        if not resume_chunks:
+            resume_chunks = [p.strip() for p in resume_text.split("\n") if p.strip()]
+
+        if not resume_chunks or not jd_text:
+            return 0.0
+
+        jd_tokens = set(tokenize(jd_text))
+        if not jd_tokens:
+            return 0.0
+
+        doc_tokens = [set(tokenize(chunk)) for chunk in resume_chunks]
+        
+        n_docs = len(resume_chunks)
+        if n_docs < 5:
+            # Fallback to simple overlap coefficient
+            resume_tokens = set()
+            for tokens in doc_tokens:
+                resume_tokens.update(tokens)
+            matched_tokens = jd_tokens.intersection(resume_tokens)
+            return len(matched_tokens) / len(jd_tokens) if jd_tokens else 0.0
+
+        df = {}
+        for tokens in doc_tokens:
+            for token in tokens:
+                df[token] = df.get(token, 0) + 1
+
+        total_weight = 0.0
+        matched_weight = 0.0
+
+        resume_tokens = set()
+        for tokens in doc_tokens:
+            resume_tokens.update(tokens)
+
+        for token in jd_tokens:
+            df_val = df.get(token, 0)
+            idf = math.log((n_docs + 1.5) / (df_val + 0.5))
+            total_weight += idf
+            if token in resume_tokens:
+                matched_weight += idf
+
+        if total_weight <= 0:
+            return 0.0
+        return matched_weight / total_weight
+
+    def stage2_llm_check(self, user_id: Any, resume_text: str, jd_text: str) -> Tuple[bool, str]:
+        return self.ai_analyzer.stage2_llm_check(user_id, resume_text, jd_text)
+
+    def auto_match_job_posting(self, user_id: int, jd_text: str) -> dict:
+        """Runs the two-stage auto-matching pipeline.
+        Returns:
+            {"passed": bool, "stage1_score": float, "stage2_passed": bool, "reason": str}
+        """
+        db = self.user_db(user_id)
+        resumes = db.list_user_resumes(user_id)
+        if not resumes:
+            return {"passed": True, "stage1_score": 1.0, "stage2_passed": True, "reason": "未上传简历，默认通过"}
+
+        resume_id = resumes[0]["id"]
+        resume_data = db.get_user_resume(user_id, resume_id)
+        if not resume_data:
+            return {"passed": True, "stage1_score": 1.0, "stage2_passed": True, "reason": "无法读取简历内容，默认通过"}
+
+        resume_text = resume_data.get("cleanedText") or resume_data.get("rawText") or ""
+        if not resume_text.strip():
+            return {"passed": True, "stage1_score": 1.0, "stage2_passed": True, "reason": "简历内容为空，默认通过"}
+
+        # Stage 1: TF-IDF overlap (threshold 30%)
+        resume_chunks = [c.get("text") for c in resume_data.get("chunks", []) if c.get("text")]
+        stage1_score = self.calculate_tfidf_overlap(resume_text, jd_text, resume_chunks)
+
+        if stage1_score < 0.3:
+            return {
+                "passed": False,
+                "stage1_score": stage1_score,
+                "stage2_passed": False,
+                "reason": f"第一阶段粗筛未通过：技术关键词重合度较低（{stage1_score:.1%} < 30.0%）"
+            }
+
+        # Stage 2: Cheap LLM check
+        stage2_passed, reason = self.stage2_llm_check(user_id, resume_text, jd_text)
+        if not stage2_passed:
+            return {
+                "passed": False,
+                "stage1_score": stage1_score,
+                "stage2_passed": False,
+                "reason": f"第二阶段硬性指标校验未通过：{reason}"
+            }
+
+        return {
+            "passed": True,
+            "stage1_score": stage1_score,
+            "stage2_passed": True,
+            "reason": f"双阶段筛选通过！关键词重合度 {stage1_score:.1%}，硬性门槛校验通过。"
+        }
+

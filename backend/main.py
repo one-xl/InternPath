@@ -26,6 +26,8 @@ from database import Database
 from document_parser import DocumentParseError
 from models import JobAnalysis, StarStory
 from backend.doubao_job_rag import DoubaoAnalysisError, analyze_job_with_doubao, PLACEHOLDER_KEYS
+from backend.job_import import JobImportPayload, parse_salary_range
+from backend.ats_simulator import simulate_ats_compatibility
 from backend.resume_rag import parse_resume, retrieve_chunks
 from service import CareerPathAIService
 from config import Config
@@ -79,6 +81,11 @@ class AnalyzeRequest(BaseModel):
     expert_options: dict[str, bool] = Field(default_factory=dict)
     draft_id: Optional[str] = None
     async_mode: bool = False
+
+
+class ATSSimulateRequest(BaseModel):
+    jd_text: str = ""
+    jd_id: Optional[Any] = None
 
 
 class RenameRecordRequest(BaseModel):
@@ -1638,7 +1645,7 @@ def create_app(
 
     # ── Analysis (with transaction-safe draft conversion) ──
 
-    def run_async_analysis(user_id: Any, payload: AnalyzeRequest, task_id: str):
+    def run_async_analysis(user_id: Any, payload: AnalyzeRequest, task_id: str, job_posting_id: Optional[int] = None):
         db = state.service.user_db(user_id)
         try:
             state.service.update_analysis_task_status(user_id, task_id, "PROCESSING")
@@ -1678,6 +1685,17 @@ def create_app(
                 
             record = state.service.get_jd_record(user_id, record_id)
             
+            # If job_posting_id is provided, link it to the jd_record
+            if job_posting_id:
+                conn = db.get_connection()
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE job_postings SET jd_record_id = ? WHERE id = ? AND user_id = ?",
+                    (record_id, job_posting_id, user_id)
+                )
+                conn.commit()
+                conn.close()
+
             # Update jd_id in analysis_task table
             conn = db.get_connection()
             cursor = conn.cursor()
@@ -1687,6 +1705,7 @@ def create_app(
             )
             conn.commit()
             conn.close()
+
 
             # Also save to analysis_records for unified history
             analysis_result = {
@@ -1811,6 +1830,112 @@ def create_app(
             "personal_decision": decision.model_dump(mode="json"),
             "expert_report": guardrail_report,
         }
+
+    @app.post("/api/jobs/import")
+    def import_job_posting(
+        payload: JobImportPayload,
+        background_tasks: BackgroundTasks,
+        user_id: Any = Depends(current_user_id)
+    ) -> dict[str, Any]:
+        # 1. Parse salary range to monthly float in k
+        salary_k = parse_salary_range(payload.salary_range)
+        
+        # 2. Add job posting (initially with jd_record_id = None)
+        from models import JobPosting as PydanticJobPosting
+        posting = PydanticJobPosting(
+            user_id=user_id,
+            title=payload.title,
+            company=payload.company,
+            region=payload.location,
+            salary_monthly_k=salary_k,
+            source_url=payload.source_url
+        )
+        job_id = state.service.add_job_posting(user_id, posting)
+        
+        # 3. Run two-stage auto-matching pipeline
+        match_result = state.service.auto_match_job_posting(user_id, payload.jd_text)
+        
+        # 4. If matching passed, queue full async RAG analysis
+        task_id = None
+        if match_result.get("passed"):
+            task_id = f"internpath-{uuid4().hex}"
+            db = state.service.user_db(user_id)
+            # Create an analysis task record
+            db.create_analysis_task(
+                user_id=user_id,
+                task_id=task_id,
+                status="PENDING",
+                enable_rag=True,
+                enable_verification=True,
+                enable_hallucination_check=True,
+                enable_rewrite=True,
+            )
+            # Fetch active resume to analyze against
+            resumes = db.list_user_resumes(user_id)
+            resume_text = ""
+            if resumes:
+                resume_data = db.get_user_resume(user_id, resumes[0]["id"])
+                if resume_data:
+                    resume_text = resume_data.get("cleanedText") or resume_data.get("rawText") or ""
+            
+            # Construct standard AnalyzeRequest payload
+            analyze_payload = AnalyzeRequest(
+                jd_text=payload.jd_text,
+                resume_text=resume_text,
+                async_mode=True
+            )
+            
+            # Queue background task to run full RAG analysis and eventually update the job posting's jd_record_id
+            background_tasks.add_task(run_async_analysis, user_id, analyze_payload, task_id, job_id)
+            
+        return {
+            "jobId": job_id,
+            "matchResult": match_result,
+            "taskId": task_id,
+            "salary_monthly_k": salary_k
+        }
+
+    @app.post("/api/resumes/{resume_id}/ats-simulate")
+    def ats_simulate_resume(
+        resume_id: str,
+        payload: ATSSimulateRequest,
+        user_id: Any = Depends(current_user_id)
+    ) -> dict[str, Any]:
+        db = state.service.user_db(user_id)
+        # Fetch resume data
+        resume_data = db.get_user_resume(user_id, resume_id)
+        if not resume_data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到指定简历。")
+            
+        resume_text = resume_data.get("cleanedText") or resume_data.get("rawText") or ""
+        
+        jd_text = payload.jd_text
+        jd_skills = None
+        
+        jd_id = payload.jd_id
+        if jd_id:
+            record = state.service.get_jd_record(user_id, jd_id)
+            if record:
+                jd_text = jd_text or record.jd_text
+                jd_skills = record.analysis.skills
+                
+        # Get resume metadata file name
+        resumes = db.list_user_resumes(user_id)
+        file_name = "resume.pdf"
+        for r in resumes:
+            if r["id"] == resume_id:
+                file_name = r["name"]
+                break
+                
+        # Run ATS simulator
+        result = simulate_ats_compatibility(
+            resume_text=resume_text,
+            file_name=file_name,
+            jd_text=jd_text,
+            jd_skills=jd_skills
+        )
+        
+        return result
 
     @app.get("/api/analysis/tasks/{task_id}")
     def get_analysis_task_status(task_id: str, user_id: Any = Depends(current_user_id)) -> dict[str, Any]:

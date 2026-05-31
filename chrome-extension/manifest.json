@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "InternPath Job Importer",
+  "version": "1.0.0",
+  "description": "One-click job posting importer for InternPath workbench, supporting BOSS Zhipin and Nowcoder.",
+  "permissions": [
+    "activeTab",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://localhost:8787/*",
+    "http://127.0.0.1:8787/*",
+    "https://*.zhipin.com/*",
+    "https://*.nowcoder.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon.png",
+      "48": "icon.png",
+      "128": "icon.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.zhipin.com/job_detail/*.html*",
+        "https://*.nowcoder.com/jobs/detail/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    }
+  ]
+}

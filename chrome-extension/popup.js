@@ -28,7 +28,7 @@ document.addEventListener("DOMContentLoaded", () => {
       },
       () => {
         statusDiv.className = "status success";
-        statusDiv.textContent = "Configuration saved successfully!";
+        statusDiv.textContent = "配置保存成功！";
         setTimeout(() => {
           statusDiv.textContent = "";
         }, 2000);

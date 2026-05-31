@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "InternPath Job Importer",
+  "name": "实习通职位导入助手",
   "version": "1.0.0",
-  "description": "One-click job posting importer for InternPath workbench, supporting BOSS Zhipin and Nowcoder.",
+  "description": "实习通（InternPath）工作台的一键职位抓取与导入助手，支持 BOSS直聘 和 牛客网。",
   "permissions": [
     "activeTab",
     "storage",

@@ -82,19 +82,19 @@
   </style>
 </head>
 <body>
-  <h2><span>🧭</span> InternPath Importer</h2>
+  <h2><span>🧭</span> 实习通职位导入助手</h2>
   <div class="form-group">
-    <label for="host">Workbench API URL</label>
+    <label for="host">工作台 API 地址</label>
     <input type="text" id="host" placeholder="http://localhost:8787" value="http://localhost:8787">
   </div>
   <div class="form-group">
-    <label for="token">Bearer Auth Token</label>
-    <input type="password" id="token" placeholder="Optional - Leave empty if using local Cookie auth">
+    <label for="token">身份验证 Token (Bearer)</label>
+    <input type="password" id="token" placeholder="可选 - 使用本地 Cookie 认证时请留空">
   </div>
-  <button id="save-btn">Save Configuration</button>
+  <button id="save-btn">保存配置</button>
   <div id="status" class="status"></div>
   <div class="info">
-    Open any BOSS Zhipin or Nowcoder job details page. A floating button <strong>"Import to InternPath"</strong> will automatically appear on the right side of the screen.
+    打开任意 BOSS直聘 或 牛客网的职位详情页。屏幕右侧会自动显示悬浮按钮<strong>“自动回填网页”</strong>和<strong>“一键后台分析”</strong>。
   </div>
   <script src="popup.js"></script>
 </body>

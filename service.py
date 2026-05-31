@@ -139,22 +139,23 @@ class CareerPathAIService:
         try:
             conn = db.get_connection()
             cursor = conn.cursor()
+            placeholder = "%s" if db.is_postgres else "?"
             cursor.execute(
-                """
+                f"""
                 SELECT provider, model_id, encrypted_api_key, config_json
                 FROM model_configs
-                WHERE user_id = ? AND enabled = 1
+                WHERE user_id = {placeholder} AND enabled
                 """,
                 (user_id,)
             )
             rows = cursor.fetchall()
             if not rows:
                 cursor.execute(
-                    """
+                    f"""
                     SELECT c.provider, c.model_id, c.encrypted_api_key, c.config_json
                     FROM model_configs c
                     JOIN model_config_assignments a ON c.id = a.config_id
-                    WHERE a.user_id = ? AND a.enabled = 1 AND c.enabled = 1
+                    WHERE a.user_id = {placeholder} AND a.enabled AND c.enabled
                     """,
                     (user_id,)
                 )
@@ -383,7 +384,8 @@ class CareerPathAIService:
         # Check if task already exists
         conn = db.get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT 1 FROM analysis_task WHERE task_id = ? AND user_id = ?", (task_id, user_id))
+        placeholder = "%s" if db.is_postgres else "?"
+        cursor.execute(f"SELECT 1 FROM analysis_task WHERE task_id = {placeholder} AND user_id = {placeholder}", (task_id, user_id))
         exists = cursor.fetchone()
         conn.close()
         

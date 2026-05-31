@@ -44,50 +44,51 @@ class AIAnalyzer:
             try:
                 from database import Database
                 db = Database()
+                placeholder = "%s" if db.is_postgres else "?"
                 with db.get_connection() as conn:
                     cursor = conn.cursor()
                     if config_id and config_id.strip():
                         cursor.execute(
-                            """
+                            f"""
                             SELECT id, provider, model_id, encrypted_api_key, config_json
                             FROM model_configs
-                            WHERE id = ? AND user_id = ? AND enabled = ?
+                            WHERE id = {placeholder} AND user_id = {placeholder} AND enabled
                             """,
-                            (config_id, user_id, 1 if not db.is_postgres else True)
+                            (config_id, user_id)
                         )
                         rows = cursor.fetchall()
                         if not rows:
                             cursor.execute(
-                                """
+                                f"""
                                 SELECT c.id, c.provider, c.model_id, c.encrypted_api_key, c.config_json
                                 FROM model_configs c
                                 JOIN model_config_assignments a ON c.id = a.config_id
-                                WHERE c.id = ? AND a.user_id = ? AND a.enabled = ? AND c.enabled = ?
+                                WHERE c.id = {placeholder} AND a.user_id = {placeholder} AND a.enabled AND c.enabled
                                 """,
-                                (config_id, user_id, 1 if not db.is_postgres else True, 1 if not db.is_postgres else True)
+                                (config_id, user_id)
                             )
                             rows = cursor.fetchall()
                     else:
                         cursor.execute(
-                            """
+                            f"""
                             SELECT id, provider, model_id, encrypted_api_key, config_json
                             FROM model_configs
-                            WHERE user_id = ? AND enabled = ?
+                            WHERE user_id = {placeholder} AND enabled
                             ORDER BY updated_at DESC
                             """,
-                            (user_id, 1 if not db.is_postgres else True)
+                            (user_id,)
                         )
                         rows = cursor.fetchall()
                         if not rows:
                             cursor.execute(
-                                """
+                                f"""
                                 SELECT c.id, c.provider, c.model_id, c.encrypted_api_key, c.config_json
                                 FROM model_configs c
                                 JOIN model_config_assignments a ON c.id = a.config_id
-                                WHERE a.user_id = ? AND a.enabled = ? AND c.enabled = ?
+                                WHERE a.user_id = {placeholder} AND a.enabled AND c.enabled
                                 ORDER BY c.updated_at DESC
                                 """,
-                                (user_id, 1 if not db.is_postgres else True, 1 if not db.is_postgres else True)
+                                (user_id,)
                             )
                             rows = cursor.fetchall()
                 

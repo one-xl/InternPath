@@ -287,11 +287,7 @@ export function useJobAnalysis() {
           retrievedChunksCount: retrievedChunks.length,
           cacheReused: true
         });
-        // Step 2: embedding_resume
-        currentStepId = "resume_embedding";
-        progress.setStatus("embedding_resume");
-        progress.setRunningStep("resume_embedding");
-        
+      } else {
         const alreadyVectorized = 
           input.chunks && 
           input.chunks.length > 0 && 
@@ -302,11 +298,12 @@ export function useJobAnalysis() {
         if (alreadyVectorized) {
           console.info("[analysis] Chunks are already vectorized. Skipping resume embedding step.");
           embeddedChunks = input.chunks;
-          progress.completeStep("resume_embedding", {
-            embeddedChunksCount: embeddedChunks.length,
-            skipped: true
-          });
+          progress.skipStep("resume_embedding");
         } else {
+          // Step 2: embedding_resume
+          currentStepId = "resume_embedding";
+          progress.setStatus("embedding_resume");
+          progress.setRunningStep("resume_embedding");
           progress.updateStepMetadata("resume_embedding", {
             embeddedChunksCount: 0,
             chunksCount: input.chunks.length

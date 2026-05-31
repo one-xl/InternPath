@@ -296,9 +296,14 @@ export function useJobAnalysis() {
         let embeddedChunks: ResumeChunk[] = [];
 
         if (alreadyVectorized) {
-          console.info("[analysis] Chunks are already vectorized. Skipping resume embedding step.");
+          console.info("[analysis] Chunks are already vectorized. Complete resume embedding step instantly.");
           embeddedChunks = input.chunks;
-          progress.skipStep("resume_embedding");
+          progress.setRunningStep("resume_embedding");
+          progress.completeStep("resume_embedding", {
+            embeddedChunksCount: embeddedChunks.length,
+            chunksCount: embeddedChunks.length,
+            cacheReused: true
+          });
         } else {
           // Step 2: embedding_resume
           currentStepId = "resume_embedding";

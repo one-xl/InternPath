@@ -665,14 +665,15 @@ export function StarPage({
         }
         .smart-rewrite-panel {
           background: linear-gradient(135deg, var(--surface) 0%, var(--accent-bg) 100%);
-          border: 1.5px solid var(--accent);
+          border: 1px solid var(--line-strong);
           border-radius: var(--radius);
           padding: 0;
           margin-bottom: 20px;
           overflow: hidden;
-          transition: box-shadow 0.3s ease;
+          transition: all 0.2s ease;
         }
         .smart-rewrite-panel:hover {
+          border-color: var(--accent);
           box-shadow: 0 4px 20px rgba(180, 83, 9, 0.1);
         }
         .smart-rewrite-header {
@@ -828,20 +829,6 @@ export function StarPage({
                 <select
                   value={selectedJdId}
                   onChange={handleJdSelect}
-                  style={{
-                    width: "100%",
-                    padding: "10px 14px",
-                    fontSize: "13px",
-                    borderRadius: "var(--radius-sm)",
-                    border: "1px solid var(--line-strong)",
-                    background: "var(--surface)",
-                    color: "var(--text)",
-                    outline: "none",
-                    cursor: "pointer",
-                    transition: "border-color 0.2s ease"
-                  }}
-                  onFocus={(e) => e.target.style.borderColor = "var(--accent)"}
-                  onBlur={(e) => e.target.style.borderColor = "var(--line-strong)"}
                 >
                   <option value="">-- 选择分析记录 (一键加载该岗位的待修改片段) --</option>
                   {historyJds.map((item) => {
@@ -890,9 +877,9 @@ export function StarPage({
                                   padding: "2px 6px", 
                                   borderRadius: "3px",
                                   fontWeight: "700",
-                                  color: item.priority === "high" ? "#ef4444" : "#f59e0b",
-                                  background: item.priority === "high" ? "rgba(239, 68, 68, 0.1)" : "rgba(245, 158, 11, 0.1)",
-                                  border: `1px solid ${item.priority === "high" ? "rgba(239, 68, 68, 0.2)" : "rgba(245, 158, 11, 0.2)"}`
+                                  color: item.priority === "high" ? "var(--danger)" : "var(--accent)",
+                                  background: item.priority === "high" ? "var(--danger-bg)" : "var(--accent-bg)",
+                                  border: `1px solid ${item.priority === "high" ? "var(--danger-border)" : "var(--accent-border)"}`
                                 }}
                               >
                                 {item.priority === "high" ? "必须改" : "建议改"}

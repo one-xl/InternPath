@@ -71,15 +71,12 @@ export function ResumeUpload({
   }
 
   async function handleSelectSavedResume(id: string) {
-    setIsLoadingHistory(true);
+    setShowHistoryModal(false);
     try {
       const parsed = await fetchSavedResume(id);
       onSelectSavedResume(parsed);
-      setShowHistoryModal(false);
     } catch (err: any) {
-      setHistoryError(err.message || "获取简历内容失败");
-    } finally {
-      setIsLoadingHistory(false);
+      alert(err.message || "获取简历内容失败");
     }
   }
 

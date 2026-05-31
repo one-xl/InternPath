@@ -287,32 +287,47 @@ export function useJobAnalysis() {
           retrievedChunksCount: retrievedChunks.length,
           cacheReused: true
         });
-      } else {
         // Step 2: embedding_resume
         currentStepId = "resume_embedding";
         progress.setStatus("embedding_resume");
         progress.setRunningStep("resume_embedding");
         
-        progress.updateStepMetadata("resume_embedding", {
-          embeddedChunksCount: 0,
-          chunksCount: input.chunks.length
-        });
+        const alreadyVectorized = 
+          input.chunks && 
+          input.chunks.length > 0 && 
+          input.chunks.every((c) => Array.isArray(c.embedding) && c.embedding.length > 0);
 
-        const embeddedChunks = await embedChunksWithConfig(
-          input.chunks,
-          input.embeddingConfig,
-          {
-            onProgress: ({ completed, total }) => {
-              progress.updateStepMetadata("resume_embedding", {
-                embeddedChunksCount: completed,
-                chunksCount: total
-              });
+        let embeddedChunks: ResumeChunk[] = [];
+
+        if (alreadyVectorized) {
+          console.info("[analysis] Chunks are already vectorized. Skipping resume embedding step.");
+          embeddedChunks = input.chunks;
+          progress.completeStep("resume_embedding", {
+            embeddedChunksCount: embeddedChunks.length,
+            skipped: true
+          });
+        } else {
+          progress.updateStepMetadata("resume_embedding", {
+            embeddedChunksCount: 0,
+            chunksCount: input.chunks.length
+          });
+
+          embeddedChunks = await embedChunksWithConfig(
+            input.chunks,
+            input.embeddingConfig,
+            {
+              onProgress: ({ completed, total }) => {
+                progress.updateStepMetadata("resume_embedding", {
+                  embeddedChunksCount: completed,
+                  chunksCount: total
+                });
+              }
             }
-          }
-        );
-        progress.completeStep("resume_embedding", {
-          embeddedChunksCount: embeddedChunks.length
-        });
+          );
+          progress.completeStep("resume_embedding", {
+            embeddedChunksCount: embeddedChunks.length
+          });
+        }
 
         // Step 3: embedding_jd
         currentStepId = "jd_embedding";

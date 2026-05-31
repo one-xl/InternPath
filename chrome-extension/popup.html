@@ -83,15 +83,38 @@
 </head>
 <body>
   <h2><span>🧭</span> 实习通职位导入助手</h2>
+  
+  <!-- 共通配置区：API 地址 -->
   <div class="form-group">
     <label for="host">工作台 API 地址</label>
     <input type="text" id="host" placeholder="http://localhost:8787" value="http://localhost:8787">
   </div>
-  <div class="form-group">
-    <label for="token">身份验证 Token (Bearer)</label>
-    <input type="password" id="token" placeholder="可选 - 使用本地 Cookie 认证时请留空">
+
+  <!-- 未登录面板 -->
+  <div id="logged-out-panel">
+    <div class="form-group">
+      <label for="email">登录邮箱</label>
+      <input type="email" id="email" placeholder="请输入注册邮箱">
+    </div>
+    <div class="form-group">
+      <label for="password">登录密码</label>
+      <input type="password" id="password" placeholder="请输入密码">
+    </div>
+    <button id="login-btn">立即登录</button>
   </div>
-  <button id="save-btn">保存配置</button>
+
+  <!-- 已登录面板 -->
+  <div id="logged-in-panel" style="display: none;">
+    <div class="form-group" style="background: #1e293b; padding: 10px; border-radius: 6px; border: 1px solid #334155; margin-bottom: 12px;">
+      <div style="font-size: 11px; color: #94a3b8; margin-bottom: 2px;">当前登录账号</div>
+      <div id="user-email" style="font-size: 13px; font-weight: 600; color: #38bdf8; word-break: break-all;">-</div>
+    </div>
+    <div style="display: flex; gap: 8px;">
+      <button id="save-btn" style="flex: 1;">更新地址</button>
+      <button id="logout-btn" style="flex: 1; background: linear-gradient(135deg, #f43f5e, #be123c);">退出登录</button>
+    </div>
+  </div>
+
   <div id="status" class="status"></div>
   <div class="info">
     打开任意 BOSS直聘 或 牛客网的职位详情页。屏幕右侧会自动显示悬浮按钮<strong>“自动回填网页”</strong>和<strong>“一键后台分析”</strong>。

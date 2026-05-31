@@ -1,43 +1,65 @@
 (function() {
   console.log("[InternPath] Content script loaded.");
 
-  // Inject a beautiful floating button on the page
-  const button = document.createElement("button");
-  button.id = "internpath-import-btn";
-  button.innerHTML = `
-    <span style="font-size: 16px; margin-right: 6px;">🧭</span>
-    导入 InternPath
-  `;
+  // Inject a beautiful floating container on the page
+  const container = document.createElement("div");
+  container.id = "internpath-floating-widget";
   
-  // Style the floating button
-  Object.assign(button.style, {
+  // Style the container
+  Object.assign(container.style, {
     position: "fixed",
     right: "20px",
     bottom: "100px",
     zIndex: "999999",
-    background: "linear-gradient(135deg, #0ea5e9, #2563eb)",
-    color: "#ffffff",
-    border: "none",
-    borderRadius: "24px",
-    padding: "12px 20px",
-    fontSize: "14px",
-    fontWeight: "600",
-    cursor: "pointer",
-    boxShadow: "0 10px 15px -3px rgba(0, 0, 0, 0.3), 0 4px 6px -4px rgba(0, 0, 0, 0.3)",
     display: "flex",
-    alignItems: "center",
-    transition: "transform 0.2s, opacity 0.2s",
+    flexDirection: "column",
+    gap: "8px",
     fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
   });
 
-  button.addEventListener("mouseenter", () => {
-    button.style.transform = "scale(1.05)";
-  });
-  button.addEventListener("mouseleave", () => {
-    button.style.transform = "scale(1.0)";
+  const buttonStyle = {
+    color: "#ffffff",
+    border: "none",
+    borderRadius: "20px",
+    padding: "10px 16px",
+    fontSize: "13px",
+    fontWeight: "600",
+    cursor: "pointer",
+    boxShadow: "0 4px 12px rgba(0, 0, 0, 0.25)",
+    display: "flex",
+    alignItems: "center",
+    transition: "transform 0.15s, opacity 0.15s",
+    minWidth: "120px",
+    justifyContent: "center"
+  };
+
+  // Button 1: Autofill Webpage
+  const autofillBtn = document.createElement("button");
+  autofillBtn.innerHTML = `<span style="font-size: 14px; margin-right: 6px;">📝</span>自动回填网页`;
+  Object.assign(autofillBtn.style, buttonStyle, {
+    background: "linear-gradient(135deg, #0ea5e9, #2563eb)"
   });
 
-  document.body.appendChild(button);
+  // Button 2: Import Backend
+  const importBtn = document.createElement("button");
+  importBtn.innerHTML = `<span style="font-size: 14px; margin-right: 6px;">📥</span>一键后台分析`;
+  Object.assign(importBtn.style, buttonStyle, {
+    background: "linear-gradient(135deg, #10b981, #059669)"
+  });
+
+  // Hover animations
+  [autofillBtn, importBtn].forEach(btn => {
+    btn.addEventListener("mouseenter", () => {
+      btn.style.transform = "scale(1.05)";
+    });
+    btn.addEventListener("mouseleave", () => {
+      btn.style.transform = "scale(1.0)";
+    });
+  });
+
+  container.appendChild(autofillBtn);
+  container.appendChild(importBtn);
+  document.body.appendChild(container);
 
   // Scraper Logic
   function extractJobData() {
@@ -115,13 +137,34 @@
     };
   }
 
+  // Toast Alerts
+  function showToast(message, isError = false) {
+    const toast = document.createElement("div");
+    Object.assign(toast.style, {
+      position: "fixed",
+      right: "20px",
+      bottom: "200px",
+      zIndex: "999999",
+      background: isError ? "#f43f5e" : "#10b981",
+      color: "#ffffff",
+      padding: "12px 20px",
+      borderRadius: "8px",
+      boxShadow: "0 10px 15px -3px rgba(0, 0, 0, 0.3)",
+      fontSize: "13px",
+      fontWeight: "600"
+    });
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 4000);
+  }
+
   // Toast / Overlay UI for Match feedback
   function showFeedback(host, res) {
     const overlay = document.createElement("div");
     Object.assign(overlay.style, {
       position: "fixed",
       right: "20px",
-      bottom: "160px",
+      bottom: "200px",
       zIndex: "999999",
       width: "300px",
       padding: "16px",
@@ -129,9 +172,8 @@
       backdropFilter: "blur(12px)",
       border: "1px solid rgba(56, 189, 248, 0.4)",
       borderRadius: "12px",
-      boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 10px 10px -5px rgba(0, 0, 0, 0.5)",
+      boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.5)",
       color: "#f8fafc",
-      fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
       fontSize: "13px",
       lineHeight: "1.5"
     });
@@ -169,40 +211,38 @@
       overlay.remove();
     });
 
-    // Auto remove after 10s
     setTimeout(() => {
       if (document.body.contains(overlay)) {
         overlay.remove();
       }
-    }, 10000);
+    }, 12000);
   }
 
-  function showToast(message, isError = false) {
-    const toast = document.createElement("div");
-    Object.assign(toast.style, {
-      position: "fixed",
-      right: "20px",
-      bottom: "160px",
-      zIndex: "999999",
-      background: isError ? "#f43f5e" : "#10b981",
-      color: "#ffffff",
-      padding: "10px 18px",
-      borderRadius: "8px",
-      boxShadow: "0 10px 15px -3px rgba(0, 0, 0, 0.3)",
-      fontSize: "13px",
-      fontWeight: "600",
-      fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
+  // 1. Autofill Button click handler
+  autofillBtn.addEventListener("click", () => {
+    autofillBtn.disabled = true;
+    autofillBtn.style.opacity = "0.7";
+    autofillBtn.innerHTML = `回填中...`;
+
+    const jobData = extractJobData();
+    chrome.runtime.sendMessage({ action: "autofill", data: jobData }, (response) => {
+      autofillBtn.disabled = false;
+      autofillBtn.style.opacity = "1.0";
+      autofillBtn.innerHTML = `<span style="font-size: 14px; margin-right: 6px;">📝</span>自动回填网页`;
+
+      if (response && response.success) {
+        showToast("已自动回填并跳转至在线工作台！");
+      } else {
+        showToast("未检测到已打开的决策台网页，请先在浏览器打开并登录决策台主页。", true);
+      }
     });
-    toast.textContent = message;
-    document.body.appendChild(toast);
-    setTimeout(() => toast.remove(), 3000);
-  }
+  });
 
-  // Handle click action
-  button.addEventListener("click", () => {
-    button.disabled = true;
-    button.style.opacity = "0.7";
-    button.textContent = "导入中...";
+  // 2. Direct Import Button click handler
+  importBtn.addEventListener("click", () => {
+    importBtn.disabled = true;
+    importBtn.style.opacity = "0.7";
+    importBtn.innerHTML = `导入中...`;
 
     chrome.storage.local.get(["internpathHost", "internpathToken"], (items) => {
       const host = items.internpathHost || "http://localhost:8787";
@@ -228,16 +268,16 @@
         return response.json();
       })
       .then(res => {
-        button.innerHTML = `<span style="font-size: 16px; margin-right: 6px;">🧭</span> 导入 InternPath`;
-        button.disabled = false;
-        button.style.opacity = "1.0";
+        importBtn.innerHTML = `<span style="font-size: 14px; margin-right: 6px;">📥</span>一键后台分析`;
+        importBtn.disabled = false;
+        importBtn.style.opacity = "1.0";
         showFeedback(host, res);
       })
       .catch(err => {
         console.error("[InternPath] Import failed:", err);
-        button.innerHTML = `<span style="font-size: 16px; margin-right: 6px;">🧭</span> 导入 InternPath`;
-        button.disabled = false;
-        button.style.opacity = "1.0";
+        importBtn.innerHTML = `<span style="font-size: 14px; margin-right: 6px;">📥</span>一键后台分析`;
+        importBtn.disabled = false;
+        importBtn.style.opacity = "1.0";
         showToast("导入失败，请检查配置或确认后端服务已启动！", true);
       });
     });

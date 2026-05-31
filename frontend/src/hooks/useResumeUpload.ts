@@ -54,15 +54,24 @@ export function useResumeUpload() {
       setResumeFile({ ...parsed.file, status: "parsed" });
       setStatus("parsed");
 
-      const shouldVectorize = window.confirm(
-        "是否将该简历转换成向量并存储？\n\n（“确定”：立即进行简历向量化，下次使用可以直接选择；“取消”：暂不计算，仅在点击开始分析时才进行即时向量化）"
-      );
+      const isAlreadyVectorized = 
+        (parsed as any).vectorized || 
+        (parsed.chunks && 
+         parsed.chunks.length > 0 && 
+         parsed.chunks.every((c: any) => Array.isArray(c.embedding) && c.embedding.length > 0));
+
+      let shouldVectorize = false;
+      if (!isAlreadyVectorized) {
+        shouldVectorize = window.confirm(
+          "是否将该简历转换成向量并存储？\n\n（“确定”：立即进行简历向量化，下次使用可以直接选择；“取消”：暂不计算，仅在点击开始分析时才进行即时向量化）"
+        );
+      }
 
       setStatus("indexing");
       setResumeFile((current) => (current ? { ...current, status: "indexing" } : current));
 
       let finalParsed = parsed;
-      if (shouldVectorize) {
+      if (!isAlreadyVectorized && shouldVectorize) {
         try {
           await vectorizeResume(parsed.file.id);
           finalParsed = await fetchSavedResume(parsed.file.id);

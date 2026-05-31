@@ -632,9 +632,31 @@ def create_app(
         file: UploadFile = File(...),
         user_id: Any = Depends(current_user_id)
     ) -> dict[str, Any]:
+        # Check if a resume with the same file name already exists in the database
+        existing_resumes = state.auth_db.list_user_resumes(user_id)
+        existing_resume = None
+        for r in existing_resumes:
+            if r.get("name") == file.filename:
+                # Find this existing resume
+                existing_resume = state.auth_db.get_user_resume(user_id, r.get("id"))
+                if existing_resume:
+                    break
+        
+        if existing_resume:
+            print(f"[UPLOAD] Found existing resume with same filename '{file.filename}', reusing it.")
+            state.resume_store[existing_resume["file"]["id"]] = {
+                "parsed_resume": existing_resume,
+                "user_id": user_id,
+            }
+            return {
+                "resumeFile": existing_resume["file"],
+                "parsedResume": existing_resume,
+            }
+
         content = await file.read()
         if len(content) > 10 * 1024 * 1024:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="上传文件过大，请压缩后重新上传。")
+
         try:
             parsed_resume = parse_resume(file.filename or "resume", file.content_type or "", content)
         except DocumentParseError as exc:

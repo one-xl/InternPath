@@ -145,77 +145,49 @@ export function ResumeUpload({
 
       {/* History modal */}
       {showHistoryModal && (
-        <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.6)", backdropFilter: "blur(6px)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 1100 }}>
-          <div style={{ background: "#111", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "var(--radius-lg)", padding: "24px", width: "550px", maxWidth: "90%", display: "flex", flexDirection: "column", gap: "16px" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid rgba(255,255,255,0.08)", paddingBottom: "12px" }}>
-              <h3 style={{ margin: 0, fontSize: "16px", color: "#fff", fontWeight: 700 }}>📁 已保存的已转换简历列表</h3>
+        <div className="history-modal-overlay">
+          <div className="history-modal-panel">
+            <div className="history-modal-header">
+              <h3 className="history-modal-title">📁 已保存的已转换简历列表</h3>
               <button
                 type="button"
                 onClick={() => setShowHistoryModal(false)}
-                style={{ background: "transparent", border: "none", color: "rgba(255,255,255,0.4)", cursor: "pointer", fontSize: "18px" }}
+                className="history-modal-close"
               >
                 ✕
               </button>
             </div>
 
             {historyError && (
-              <div style={{ background: "rgba(239,68,68,0.15)", border: "1px solid rgba(239,68,68,0.3)", padding: "10px", borderRadius: "var(--radius-sm)", color: "#f87171", fontSize: "12px" }}>
+              <div className="history-modal-error">
                 {historyError}
               </div>
             )}
 
-            <div style={{ maxHeight: "300px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "8px" }}>
+            <div className="history-resume-list">
               {isLoadingHistory ? (
-                <div style={{ textAlign: "center", padding: "30px", color: "rgba(255,255,255,0.5)" }}>加载中...</div>
+                <div className="history-modal-loading">加载中...</div>
               ) : historyResumes.length === 0 ? (
-                <div style={{ textAlign: "center", padding: "30px", color: "rgba(255,255,255,0.4)", fontSize: "13px" }}>暂无已转换的简历记录</div>
+                <div className="history-modal-empty">暂无已转换的简历记录</div>
               ) : (
                 historyResumes.map((res) => (
                   <div
                     key={res.id}
                     onClick={() => handleSelectSavedResume(res.id)}
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      background: "rgba(255,255,255,0.03)",
-                      border: "1px solid rgba(255,255,255,0.06)",
-                      borderRadius: "var(--radius-md)",
-                      padding: "12px 16px",
-                      cursor: "pointer",
-                      transition: "all 0.2s ease"
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background = "rgba(255,255,255,0.06)";
-                      e.currentTarget.style.borderColor = "var(--accent)";
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = "rgba(255,255,255,0.03)";
-                      e.currentTarget.style.borderColor = "rgba(255,255,255,0.06)";
-                    }}
+                    className="history-resume-item"
                   >
-                    <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                      <span style={{ fontSize: "13px", color: "#fff", fontWeight: 600 }}>{res.name}</span>
-                      <span style={{ fontSize: "11px", color: "rgba(255,255,255,0.4)" }}>
+                    <div className="history-resume-info">
+                      <span className="history-resume-name">{res.name}</span>
+                      <span className="history-resume-meta">
                         大小: {formatFileSize(res.size)} | 时间: {res.createdAt ? new Date(res.createdAt).toLocaleString("zh-CN") : "未知"}
                       </span>
                     </div>
-                    <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-                      <span style={{ color: "var(--accent)", fontSize: "12px", fontWeight: "bold" }}>点击选择</span>
+                    <div className="history-resume-actions">
+                      <span className="history-resume-select-label">点击选择</span>
                       <button
                         type="button"
                         onClick={(e) => handleDeleteSavedResume(res.id, e)}
-                        style={{
-                          background: "transparent",
-                          border: "none",
-                          color: "rgba(244,63,94,0.7)",
-                          cursor: "pointer",
-                          fontSize: "12px",
-                          padding: "4px",
-                          borderRadius: "4px"
-                        }}
-                        onMouseEnter={(e) => e.currentTarget.style.color = "#f43f5e"}
-                        onMouseLeave={(e) => e.currentTarget.style.color = "rgba(244,63,94,0.7)"}
+                        className="history-resume-delete-btn"
                       >
                         删除
                       </button>
@@ -225,7 +197,7 @@ export function ResumeUpload({
               )}
             </div>
 
-            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "10px" }}>
+            <div className="history-modal-footer">
               <Button type="button" variant="secondary" onClick={() => setShowHistoryModal(false)}>
                 关闭
               </Button>

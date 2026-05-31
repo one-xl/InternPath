@@ -17,7 +17,7 @@ import time
 from typing import Any, Optional
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile, status, Cookie, Response, Request
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile, status, Cookie, Response, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -78,6 +78,7 @@ class AnalyzeRequest(BaseModel):
     knowledge_document_ids: list[int] = Field(default_factory=list)
     expert_options: dict[str, bool] = Field(default_factory=dict)
     draft_id: Optional[str] = None
+    async_mode: bool = False
 
 
 class RenameRecordRequest(BaseModel):
@@ -1637,8 +1638,89 @@ def create_app(
 
     # ── Analysis (with transaction-safe draft conversion) ──
 
+    def run_async_analysis(user_id: Any, payload: AnalyzeRequest, task_id: str):
+        db = state.service.user_db(user_id)
+        try:
+            state.service.update_analysis_task_status(user_id, task_id, "PROCESSING")
+
+            chunks = state.service.get_knowledge_chunks_for_analysis(user_id, payload.knowledge_document_ids)
+            knowledge_texts = [chunk.get("content", "") for chunk in chunks if chunk.get("content")]
+            analysis = state.service.extract_skills(payload.jd_text, user_id=user_id)
+            decision = state.service.build_personal_decision(
+                jd_text=payload.jd_text,
+                analysis=analysis,
+                resume_text=payload.resume_text,
+                knowledge_texts=knowledge_texts,
+                user_id=user_id,
+            )
+            analysis.personal_decision = decision
+            
+            # This calls ai-service, saves the analysis report and sets task status to SUCCESS
+            state.service.analyze_jd_with_guardrails(
+                user_id=user_id,
+                jd_text=payload.jd_text,
+                resume_text=payload.resume_text,
+                knowledge_texts=knowledge_texts,
+                selected_document_ids=payload.knowledge_document_ids,
+                options=payload.expert_options,
+                original_analysis=analysis,
+                task_id=task_id,
+            )
+            
+            # Save final JD record
+            if payload.draft_id:
+                try:
+                    record_id = db.save_jd_record_and_convert_draft(user_id, payload.jd_text, analysis, draft_id=payload.draft_id)
+                except Exception:
+                    record_id = db.save_jd_record(user_id, payload.jd_text, analysis)
+            else:
+                record_id = db.save_jd_record(user_id, payload.jd_text, analysis)
+                
+            record = state.service.get_jd_record(user_id, record_id)
+            
+            # Update jd_id in analysis_task table
+            conn = db.get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE analysis_task SET jd_id = ? WHERE task_id = ? AND user_id = ?",
+                (record_id, task_id, user_id)
+            )
+            conn.commit()
+            conn.close()
+
+            # Also save to analysis_records for unified history
+            analysis_result = {
+                "jdRecordId": record_id,
+                "createdAt": record.created_at.isoformat() if record and record.created_at else "",
+                "draft": {"jdText": payload.jd_text},
+                "decision": decision.recommendation.lower() if decision else "",
+                "matchScore": decision.match_score if decision else 0,
+                "oneLineReason": decision.decision_reasons[0] if decision and decision.decision_reasons else "",
+                "detectedKeywords": analysis.skills or [],
+                "priority": "P1",
+                "status": "watching",
+            }
+            state.auth_db.save_analysis_record(
+                user_id=user_id,
+                status="watching",
+                result_json=analysis_result,
+            )
+            
+            # Decrement limit for standard users after successful analyze
+            user = state.auth_db.get_user_by_id(user_id)
+            if user and user.role != "admin":
+                state.auth_db.decrement_user_generation_limit(user_id)
+
+        except Exception as exc:
+            print(f"[ASYNC_ANALYSIS] Background task {task_id} failed: {exc}")
+            state.service.update_analysis_task_status(user_id, task_id, "FAILED", str(exc))
+
     @app.post("/api/analyze")
-    def analyze(payload: AnalyzeRequest, user_id: Any = Depends(current_user_id)) -> dict[str, Any]:
+    def analyze(
+        payload: AnalyzeRequest,
+        background_tasks: BackgroundTasks,
+        user_id: Any = Depends(current_user_id)
+    ) -> dict[str, Any]:
         user = state.auth_db.get_user_by_id(user_id)
         if user and user.role != "admin":
             if user.generation_limit is None or user.generation_limit <= 0:
@@ -1650,6 +1732,27 @@ def create_app(
         check_rate_limit(f"analyze:{user_id}", 10, 3600, skip=user is not None and user.role == "admin")
         if len(payload.jd_text) > 5000:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="输入内容过长，请减少无关内容后再分析。")
+
+        if payload.async_mode:
+            task_id = f"internpath-{uuid4().hex}"
+            db = state.service.user_db(user_id)
+            db.create_analysis_task(
+                user_id=user_id,
+                task_id=task_id,
+                status="PENDING",
+                enable_rag=bool(payload.expert_options.get("enableRag", True)),
+                enable_verification=bool(payload.expert_options.get("enableVerification", True)),
+                enable_hallucination_check=bool(payload.expert_options.get("enableHallucinationCheck", True)),
+                enable_rewrite=bool(payload.expert_options.get("enableRewrite", True)),
+            )
+            background_tasks.add_task(run_async_analysis, user_id, payload, task_id)
+            return {
+                "taskId": task_id,
+                "status": "PENDING",
+                "async": True
+            }
+
+        # Synchronous mode (default)
         chunks = state.service.get_knowledge_chunks_for_analysis(user_id, payload.knowledge_document_ids)
         knowledge_texts = [chunk.get("content", "") for chunk in chunks if chunk.get("content")]
         analysis = state.service.extract_skills(payload.jd_text, user_id=user_id)
@@ -1708,6 +1811,47 @@ def create_app(
             "personal_decision": decision.model_dump(mode="json"),
             "expert_report": guardrail_report,
         }
+
+    @app.get("/api/analysis/tasks/{task_id}")
+    def get_analysis_task_status(task_id: str, user_id: Any = Depends(current_user_id)) -> dict[str, Any]:
+        db = state.service.user_db(user_id)
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT task_id, jd_id, status, error_message, created_at, updated_at
+            FROM analysis_task
+            WHERE task_id = ? AND user_id = ?
+            """,
+            (task_id, user_id)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        
+        if not row:
+            raise HTTPException(status_code=404, detail="Task not found")
+            
+        task_data = {
+            "taskId": row[0],
+            "jdId": row[1],
+            "status": row[2],
+            "errorMessage": row[3],
+            "createdAt": row[4],
+            "updatedAt": row[5]
+        }
+        
+        if task_data["status"] == "SUCCESS":
+            report = state.service.get_analysis_report(user_id, task_id=task_id)
+            record = None
+            if task_data["jdId"]:
+                record_obj = state.service.get_jd_record(user_id, task_data["jdId"])
+                if record_obj:
+                    record = record_obj.model_dump(mode="json")
+            
+            task_data["report"] = report
+            task_data["record"] = record
+            
+        return task_data
 
     # ── Drafts CRUD ──
 

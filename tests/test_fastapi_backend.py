@@ -138,3 +138,98 @@ def test_star_api_payload_length_limits(tmp_path, monkeypatch):
     )
     assert good_response.status_code != 422
 
+
+def test_fastapi_async_analyze_task_lifecycle(tmp_path, monkeypatch):
+    monkeypatch.setattr(Config, "EMAIL_VERIFICATION_REQUIRED", False)
+    service = _service_with_tmp_storage(tmp_path, monkeypatch)
+    
+    class _SuccessAiServiceClient:
+        def analyze_jd(self, **kwargs):
+            return {
+                "taskId": kwargs["task_id"],
+                "status": "success",
+                "data": {
+                    "finalReport": {"matchScore": {"overall": 90}},
+                    "evidenceSummary": {"evidenceCoverage": 1.0, "totalClaims": 1},
+                    "hallucinationControl": {"riskLevel": "LOW"},
+                    "citations": [{"claimId": "claim-1", "evidenceText": "Python evidence"}],
+                    "claims": [{"claim": "Candidate has Python experience."}],
+                    "verificationResults": [
+                        {
+                            "claimId": "claim-1",
+                            "claimText": "Candidate has Python experience.",
+                            "claimType": "GENERAL",
+                            "status": "supported",
+                            "confidenceScore": 1.0,
+                            "reason": "matched",
+                            "evidenceChunks": [{"text": "Python evidence"}],
+                        }
+                    ],
+                    "workflowLogs": [
+                        {
+                            "nodeName": "JDParserNode",
+                            "status": "SUCCESS",
+                            "durationMs": 1,
+                            "inputSummary": "JD length: 19 chars",
+                            "outputSummary": "Parsed 1 tech keywords",
+                            "error": None,
+                        }
+                    ],
+                    "qualityEvaluation": {
+                        "finalQualityScore": 91,
+                        "qualityGrade": "A",
+                        "qualityGateStatus": "PASSED",
+                        "scores": {
+                            "evidenceCoverageScore": 100,
+                            "hallucinationRiskScore": 90,
+                            "citationCompletenessScore": 100,
+                            "resumeHonestyScore": 100,
+                            "matchScoreReasonableness": 90,
+                        },
+                        "issues": [],
+                        "summary": "Quality score 91.0, gate PASSED.",
+                    },
+                },
+            }
+    service.ai_service_client = _SuccessAiServiceClient()
+    
+    app = create_app(service=service, auth_db=Database(str(tmp_path / "auth.db")))
+    client = TestClient(app)
+
+    register_response = client.post(
+        "/api/auth/register",
+        json={"username": "async_test@example.com", "password": "password123"},
+    )
+    token = register_response.json()["token"]
+
+    analyze_response = client.post(
+        "/api/analyze",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "jd_text": "Need Python FastAPI backend intern with API development experience.",
+            "resume_text": "I built a Python service with FastAPI.",
+            "knowledge_document_ids": [],
+            "expert_options": {},
+            "async_mode": True,
+        },
+    )
+    assert analyze_response.status_code == 200
+    body = analyze_response.json()
+    assert "taskId" in body
+    assert body["status"] == "PENDING"
+    assert body["async"] is True
+    
+    task_id = body["taskId"]
+    
+    task_response = client.get(
+        f"/api/analysis/tasks/{task_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert task_response.status_code == 200
+    task_body = task_response.json()
+    assert task_body["taskId"] == task_id
+    assert task_body["status"] in {"SUCCESS", "PROCESSING", "PENDING"}
+    if task_body["status"] == "SUCCESS":
+        assert task_body["report"] is not None
+        assert task_body["record"] is not None
+

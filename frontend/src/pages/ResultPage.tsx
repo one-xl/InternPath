@@ -240,6 +240,8 @@ export function ResultPage({
   onAbandon,
   onGoToRewrite
 }: ResultPageProps) {
+  const [activeEvidenceChunk, setActiveEvidenceChunk] = useState<any | null>(null);
+
   if (!result) {
     return (
       <EmptyState
@@ -250,6 +252,14 @@ export function ResultPage({
       />
     );
   }
+
+  const handleShowEvidence = (chunkIds: string[]) => {
+    if (!result || !result.retrievedResumeChunks) return;
+    const chunk = result.retrievedResumeChunks.find((c) => chunkIds.includes(c.id));
+    if (chunk) {
+      setActiveEvidenceChunk(chunk);
+    }
+  };
 
   return (
     <div className="page-stack result-page">
@@ -271,6 +281,7 @@ export function ResultPage({
       <ResumeAdviceList
         advice={result.resumeAdvice ?? []}
         onGoToRewrite={onGoToRewrite ? (adviceId) => onGoToRewrite(result.id, adviceId) : undefined}
+        onShowEvidence={handleShowEvidence}
       />
       <CitationsAndEvidenceCheckPanel result={result} />
       <AdviceEvidenceCard result={result} />
@@ -290,6 +301,125 @@ export function ResultPage({
         onMarkApplied={onMarkApplied}
         onAbandon={onAbandon}
       />
+
+      {activeEvidenceChunk && (
+        <>
+          {/* Overlay background blur */}
+          <div
+            onClick={() => setActiveEvidenceChunk(null)}
+            style={{
+              position: "fixed",
+              top: 0,
+              left: 0,
+              width: "100vw",
+              height: "100vh",
+              background: "rgba(0, 0, 0, 0.4)",
+              backdropFilter: "blur(4px)",
+              zIndex: 999
+            }}
+          />
+          {/* Slide-out Drawer */}
+          <div style={{
+            position: "fixed",
+            top: 0,
+            right: 0,
+            width: "460px",
+            height: "100vh",
+            background: "var(--bg-card, #1c1c1e)",
+            borderLeft: "1px solid var(--line, #2c2c2e)",
+            boxShadow: "-10px 0 35px rgba(0,0,0,0.3)",
+            zIndex: 1000,
+            padding: "28px",
+            display: "flex",
+            flexDirection: "column",
+            gap: "20px",
+            color: "var(--text, #fff)",
+            overflowY: "auto",
+            animation: "slideIn 0.2s ease-out"
+          }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--line, #2c2c2e)", paddingBottom: "12px" }}>
+              <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "var(--text)" }}>📄 证据链原始凭证</h3>
+              <button
+                type="button"
+                onClick={() => setActiveEvidenceChunk(null)}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: "var(--muted, #8e8e93)",
+                  fontSize: "20px",
+                  cursor: "pointer",
+                  padding: "4px"
+                }}
+              >
+                ✕
+              </button>
+            </div>
+            
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+              <div style={{ fontSize: "11px", textTransform: "uppercase", color: "var(--muted, #8e8e93)", fontWeight: "600" }}>位置出处</div>
+              <strong style={{ fontSize: "14px", color: "var(--accent, #007aff)" }}>
+                {activeEvidenceChunk.hierarchy && activeEvidenceChunk.hierarchy.length > 0
+                  ? activeEvidenceChunk.hierarchy.join(" > ")
+                  : (activeEvidenceChunk.sectionTitle || activeEvidenceChunk.section || "简历部分")}
+              </strong>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+              <div style={{ fontSize: "11px", textTransform: "uppercase", color: "var(--muted, #8e8e93)", fontWeight: "600" }}>原始文件名 / 索引</div>
+              <span style={{ fontSize: "13px", color: "var(--text-light, #eaeaea)" }}>
+                {activeEvidenceChunk.metadata?.source || "上传简历"} (段落 #{activeEvidenceChunk.index + 1})
+              </span>
+            </div>
+
+            {activeEvidenceChunk.score !== undefined && (
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                <div style={{ fontSize: "11px", textTransform: "uppercase", color: "var(--muted, #8e8e93)", fontWeight: "600" }}>相关度得分</div>
+                <span style={{ fontSize: "13px", fontWeight: "600", color: "#10b981" }}>
+                  {(activeEvidenceChunk.score > 1 ? activeEvidenceChunk.score / 100 : activeEvidenceChunk.score).toFixed(2)}{" "}
+                  ({Math.round(activeEvidenceChunk.score > 1 ? activeEvidenceChunk.score : activeEvidenceChunk.score * 100)}%)
+                </span>
+              </div>
+            )}
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px", flex: 1 }}>
+              <div style={{ fontSize: "11px", textTransform: "uppercase", color: "var(--muted, #8e8e93)", fontWeight: "600" }}>凭证原文内容</div>
+              <div style={{
+                background: "rgba(0, 0, 0, 0.15)",
+                padding: "16px",
+                borderRadius: "8px",
+                fontSize: "13px",
+                lineHeight: "1.6",
+                color: "var(--text-light, #eaeaea)",
+                border: "1px solid var(--line, #2c2c2e)",
+                whiteSpace: "pre-wrap",
+                overflowY: "auto",
+                flex: 1
+              }}>
+                {activeEvidenceChunk.content || activeEvidenceChunk.text}
+              </div>
+            </div>
+            
+            <div style={{ display: "flex", gap: "10px", marginTop: "auto", paddingTop: "12px", borderTop: "1px solid var(--line, #2c2c2e)" }}>
+              <button
+                type="button"
+                onClick={() => setActiveEvidenceChunk(null)}
+                style={{
+                  flex: 1,
+                  background: "var(--accent, #007aff)",
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: "6px",
+                  padding: "10px",
+                  fontWeight: "600",
+                  cursor: "pointer"
+                }}
+              >
+                关闭
+              </button>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }

@@ -35,7 +35,7 @@ export function formatSuggestion(suggestion: string): string {
   return clean.trim();
 }
 
-function AdviceItem({ item, onGoToRewrite }: { item: ResumeAdvice; onGoToRewrite?: (adviceId: string) => void }) {
+function AdviceItem({ item, onGoToRewrite, onShowEvidence }: { item: ResumeAdvice; onGoToRewrite?: (adviceId: string) => void; onShowEvidence?: (chunkIds: string[]) => void }) {
   const [copied, setCopied] = useState(false);
 
   function handleCopy() {
@@ -50,6 +50,34 @@ function AdviceItem({ item, onGoToRewrite }: { item: ResumeAdvice; onGoToRewrite
         <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
           <Badge tone={priorityTone[item.priority]}>{priorityLabel[item.priority]}</Badge>
           <span className="advice-impact">预计收益：{item.impact}</span>
+          {item.basedOnChunkIds && item.basedOnChunkIds.length > 0 && onShowEvidence && (
+            <button
+              type="button"
+              onClick={() => onShowEvidence(item.basedOnChunkIds || [])}
+              style={{
+                background: "rgba(16, 185, 129, 0.12)",
+                color: "#10b981",
+                border: "1px solid rgba(16, 185, 129, 0.25)",
+                borderRadius: "12px",
+                padding: "2px 10px",
+                fontSize: "11px",
+                fontWeight: "600",
+                cursor: "pointer",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "4px",
+                transition: "all 0.2s ease"
+              }}
+              onMouseOver={(e) => {
+                e.currentTarget.style.background = "rgba(16, 185, 129, 0.2)";
+              }}
+              onMouseOut={(e) => {
+                e.currentTarget.style.background = "rgba(16, 185, 129, 0.12)";
+              }}
+            >
+              📄 证据链
+            </button>
+          )}
         </div>
         {onGoToRewrite && (
           <button
@@ -127,24 +155,24 @@ function AdviceItem({ item, onGoToRewrite }: { item: ResumeAdvice; onGoToRewrite
   );
 }
 
-function AdviceSection({ title, items, onGoToRewrite }: { title: string; items: ResumeAdvice[]; onGoToRewrite?: (adviceId: string) => void }) {
+function AdviceSection({ title, items, onGoToRewrite, onShowEvidence }: { title: string; items: ResumeAdvice[]; onGoToRewrite?: (adviceId: string) => void; onShowEvidence?: (chunkIds: string[]) => void }) {
   if (!items.length) return null;
   return (
     <div className="advice-section">
       <h3>{title}</h3>
       {items.map((item) => (
-        <AdviceItem key={item.id} item={item} onGoToRewrite={onGoToRewrite} />
+        <AdviceItem key={item.id} item={item} onGoToRewrite={onGoToRewrite} onShowEvidence={onShowEvidence} />
       ))}
     </div>
   );
 }
 
-export function ResumeAdviceList({ advice, onGoToRewrite }: { advice: ResumeAdvice[]; onGoToRewrite?: (adviceId: string) => void }) {
+export function ResumeAdviceList({ advice, onGoToRewrite, onShowEvidence }: { advice: ResumeAdvice[]; onGoToRewrite?: (adviceId: string) => void; onShowEvidence?: (chunkIds: string[]) => void }) {
   return (
     <Card title="简历改造建议" description="按优先级分级处理，直接在下面对比修改前后的表述细节，支持一键复制。">
-      <AdviceSection title="必须改 (高优先级)" items={advice.filter((item) => item.priority === "high")} onGoToRewrite={onGoToRewrite} />
-      <AdviceSection title="推荐优化 (中优先级)" items={advice.filter((item) => item.priority === "medium")} onGoToRewrite={onGoToRewrite} />
-      <AdviceSection title="锦上添花 (低优先级)" items={advice.filter((item) => item.priority === "low")} onGoToRewrite={onGoToRewrite} />
+      <AdviceSection title="必须改 (高优先级)" items={advice.filter((item) => item.priority === "high")} onGoToRewrite={onGoToRewrite} onShowEvidence={onShowEvidence} />
+      <AdviceSection title="推荐优化 (中优先级)" items={advice.filter((item) => item.priority === "medium")} onGoToRewrite={onGoToRewrite} onShowEvidence={onShowEvidence} />
+      <AdviceSection title="锦上添花 (低优先级)" items={advice.filter((item) => item.priority === "low")} onGoToRewrite={onGoToRewrite} onShowEvidence={onShowEvidence} />
     </Card>
   );
 }

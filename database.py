@@ -4937,6 +4937,63 @@ class Database:
             "totalPages": (total_count + page_size - 1) // page_size if page_size > 0 else 1
         }
 
+    def get_cached_embedding_simple(self, user_id: Any, content_hash: str) -> Optional[List[float]]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            if self.is_postgres:
+                cursor.execute(
+                    """
+                    SELECT embedding 
+                    FROM embeddings 
+                    WHERE user_id = %s AND content_hash = %s
+                    LIMIT 1
+                    """,
+                    (user_id, content_hash)
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT embedding 
+                    FROM embeddings 
+                    WHERE user_id = ? AND content_hash = ?
+                    LIMIT 1
+                    """,
+                    (user_id, content_hash)
+                )
+            row = cursor.fetchone()
+            if row:
+                emb_val = row[0]
+                if isinstance(emb_val, str):
+                    if emb_val.startswith("[") and emb_val.endswith("]"):
+                        try:
+                            return json.loads(emb_val)
+                        except:
+                            try:
+                                cleaned = emb_val.strip("[]")
+                                return [float(x) for x in cleaned.split(",") if x.strip()]
+                            except:
+                                pass
+                    else:
+                        try:
+                            cleaned = emb_val.strip("[]")
+                            return [float(x) for x in cleaned.split(",") if x.strip()]
+                        except:
+                            pass
+                elif isinstance(emb_val, list):
+                    return emb_val
+                elif emb_val is not None:
+                    try:
+                        return list(emb_val)
+                    except:
+                        pass
+            return None
+        except Exception as e:
+            print(f"[DATABASE] Error in get_cached_embedding_simple: {e}")
+            return None
+        finally:
+            conn.close()
+
     def get_cached_embedding(self, user_id: Any, content_hash: str, provider: str, model_id: str) -> Optional[List[float]]:
         conn = self.get_connection()
         cursor = conn.cursor()

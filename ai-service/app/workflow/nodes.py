@@ -104,14 +104,18 @@ class RAGRetrieverNode(BaseNode):
 
     def input_summary(self, state: WorkflowState) -> str:
         keywords = state.data.get("jdParse", {}).get("techKeywords", [])
-        return f"query keywords: {', '.join(keywords[:6])}; enableRag={state.request.options.enableRag}"
+        return f"query: {', '.join(keywords[:6])}; enableRag={state.request.options.enableRag}"
 
     def run(self, state: WorkflowState) -> WorkflowState:
         ctx = state.data.get("resumeContext", {})
         evidence_chunks = ctx.get("contextDocuments") or ctx.get("allChunks") or []
         if state.request.options.enableRag:
-            query = " ".join(state.data.get("jdParse", {}).get("techKeywords", [])) or state.request.jdText[:500]
-            retrieved = search_chunks_bm25(evidence_chunks, query, 8)
+            existing = state.data.get("retrieval", {}).get("retrievedChunks")
+            if existing:
+                retrieved = existing
+            else:
+                query = " ".join(state.data.get("jdParse", {}).get("techKeywords", [])) or state.request.jdText[:500]
+                retrieved = search_chunks_bm25(evidence_chunks, query, 8)
         else:
             retrieved = []
         state.data["retrieval"] = {
@@ -485,9 +489,16 @@ class HybridRetrievalNode(BaseNode):
         ctx = state.data.get("resumeContext", {})
         evidence_chunks = ctx.get("contextDocuments") or ctx.get("allChunks") or []
         
+        emb_config = {
+            "model_id": getattr(state.request, "embeddingModelId", None),
+            "provider": getattr(state.request, "embeddingProvider", None),
+            "api_key": getattr(state.request, "embeddingApiKey", None),
+            "base_url": getattr(state.request, "embeddingBaseUrl", None),
+        }
+        
         if state.request.options.enableRag:
             query = " ".join(state.data.get("jdParse", {}).get("techKeywords", [])) or state.request.jdText[:500]
-            hybrid_results = retrieve_hybrid(evidence_chunks, query, 15)
+            hybrid_results = retrieve_hybrid(evidence_chunks, query, 15, embedding_config=emb_config)
         else:
             hybrid_results = []
             

@@ -1,6 +1,9 @@
 """Hybrid Retrieval Engine combining BM25, Keyword matching, Section Boosts, and Semantic alignments."""
 
+import math
+import os
 from typing import Any, Dict, List
+import httpx
 from app.rag.bm25_retriever import search_chunks_bm25
 from app.verification.evidence_checker import extract_keywords
 
@@ -18,14 +21,80 @@ def char_bigram_similarity(s1: str, s2: str) -> float:
     return len(b1 & b2) / len(b1 | b2)
 
 
-def retrieve_hybrid(chunks: List[Dict[str, Any]], query: str, top_k: int = 15) -> List[Dict[str, Any]]:
+def cosine_similarity(v1: List[float], v2: List[float]) -> float:
+    """Compute cosine similarity between two float vectors."""
+    if not v1 or not v2 or len(v1) != len(v2):
+        return 0.0
+    dot = sum(a * b for a, b in zip(v1, v2))
+    norm1 = math.sqrt(sum(a * a for a in v1))
+    norm2 = math.sqrt(sum(b * b for b in v2))
+    if norm1 == 0 or norm2 == 0:
+        return 0.0
+    return dot / (norm1 * norm2)
+
+
+def get_embedding(text: str, config: Dict[str, Any] | None = None) -> List[float]:
+    """Retrieve embedding vector for query text using configured/passed credentials."""
+    cfg = config or {}
+    api_key = cfg.get("api_key")
+    base_url = cfg.get("base_url")
+    model_id = cfg.get("model_id")
+    provider = cfg.get("provider")
+    
+    if not api_key:
+        from app.core.config import Settings
+        api_key = Settings.LLM_API_KEY.strip()
+        base_url = Settings.LLM_BASE_URL.strip()
+        model_id = os.getenv("EMBEDDING_MODEL", "doubao-embedding-large") or "doubao-embedding-large"
+        provider = "doubao-multimodal"
+
+    if not api_key or api_key in {"", "your_api_key_here", "your_deepseek_or_openai_api_key_here"}:
+        return []
+
+    base_url = base_url.rstrip("/")
+    if provider == "doubao-multimodal" or "volces.com" in base_url:
+        url = f"{base_url}/embeddings/multimodal"
+        payload = {
+            "model": model_id or "doubao-embedding-vision-250615",
+            "input": [{"type": "text", "text": text}]
+        }
+    else:
+        url = f"{base_url}/embeddings"
+        payload = {
+            "model": model_id or "text-embedding-3-small",
+            "input": [text]
+        }
+        
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            res = client.post(url, headers=headers, json=payload)
+            if res.status_code == 200:
+                data = res.json()
+                if "data" in data:
+                    d = data["data"]
+                    if isinstance(d, dict):
+                        return d.get("embedding") or []
+                    elif isinstance(d, list) and len(d) > 0:
+                        return d[0].get("embedding") or []
+    except Exception as e:
+        print(f"[HYBRID_RETRIEVER] Failed to fetch query embedding: {e}")
+    return []
+
+
+def retrieve_hybrid(
+    chunks: List[Dict[str, Any]], 
+    query: str, 
+    top_k: int = 15,
+    embedding_config: Dict[str, Any] | None = None
+) -> List[Dict[str, Any]]:
     """
-    Perform hybrid retrieval:
-    1. Score all chunks with BM25
-    2. Score with keyword overlap
-    3. Score with section importance (Section Boost)
-    4. Score with semantic similarity (Character bigram Jaccard)
-    5. Combine using custom weights
+    Perform hybrid retrieval combining BM25, Keyword matching, Section Boosts, and Semantic alignments.
+    Uses real cosine similarity if query and chunk embeddings are present, otherwise falls back to character bigram Jaccard.
     """
     if not chunks or not query.strip() or top_k <= 0:
         return []
@@ -37,6 +106,9 @@ def retrieve_hybrid(chunks: List[Dict[str, Any]], query: str, top_k: int = 15) -
     
     # Extract query keywords
     query_keywords = extract_keywords(query)
+    
+    # Try fetching query embedding for real semantic search
+    query_embedding = get_embedding(query, embedding_config)
     
     scored_results = []
     
@@ -67,8 +139,12 @@ def retrieve_hybrid(chunks: List[Dict[str, Any]], query: str, top_k: int = 15) -
         # 3. Section Importance (Section Boost)
         importance = float(chunk.get("importance", chunk.get("section_importance", 0.60)))
         
-        # 4. Semantic Similarity component
-        semantic_score = char_bigram_similarity(query, embedding_text)
+        # 4. Semantic Similarity component (real embedding similarity vs character Jaccard fallback)
+        chunk_embedding = chunk.get("metadata", {}).get("embedding") or chunk.get("embedding")
+        if query_embedding and chunk_embedding:
+            semantic_score = cosine_similarity(query_embedding, chunk_embedding)
+        else:
+            semantic_score = char_bigram_similarity(query, embedding_text)
         
         # Combined Score
         final_score = (

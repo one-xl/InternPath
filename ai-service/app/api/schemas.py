@@ -46,6 +46,10 @@ class AnalyzeJdRequest(_ApiModel):
     knowledgeTexts: list[str] = Field(default_factory=list)
     documents: list[DocumentInput] = Field(default_factory=list)
     options: AnalysisOptions = Field(default_factory=AnalysisOptions)
+    embeddingModelId: str | None = None
+    embeddingProvider: str | None = None
+    embeddingApiKey: str | None = None
+    embeddingBaseUrl: str | None = None
 
     @field_validator("jdText")
     @classmethod

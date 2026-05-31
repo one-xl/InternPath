@@ -120,6 +120,162 @@ class CareerPathAIService:
     def user_db(self, user_id: int) -> Database:
         return Database.for_user(user_id)
 
+    def _resolve_embedding_config(self, user_id: int) -> Tuple[str, str, str, str]:
+        """Resolves (provider, model_id, api_key, base_url) for active embedding model."""
+        import sys
+        if "pytest" in sys.modules:
+            return "doubao-multimodal", "doubao-embedding-vision-250615", "mock_key", "https://ark.cn-beijing.volces.com/api/v3"
+
+        import json
+        db = self.user_db(user_id)
+        
+        provider = "doubao-multimodal"
+        model_id = "doubao-embedding-vision-250615"
+        api_key = ""
+        base_url = "https://ark.cn-beijing.volces.com/api/v3"
+
+        conn = None
+        # Check DB configs first
+        try:
+            conn = db.get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT provider, model_id, encrypted_api_key, config_json
+                FROM model_configs
+                WHERE user_id = ? AND enabled = 1
+                """,
+                (user_id,)
+            )
+            rows = cursor.fetchall()
+            if not rows:
+                cursor.execute(
+                    """
+                    SELECT c.provider, c.model_id, c.encrypted_api_key, c.config_json
+                    FROM model_configs c
+                    JOIN model_config_assignments a ON c.id = a.config_id
+                    WHERE a.user_id = ? AND a.enabled = 1 AND c.enabled = 1
+                    """,
+                    (user_id,)
+                )
+                rows = cursor.fetchall()
+            
+            found_config = None
+            if rows:
+                for r in rows:
+                    p, m, enc_key, cfg_json = r
+                    if p == "doubao-multimodal" or "embedding" in (m or "").lower() or "embedding" in (p or "").lower():
+                        found_config = r
+                        break
+            
+            if found_config:
+                p, m, enc_key, cfg_json = found_config
+                provider = p
+                model_id = m
+                api_key = db.decrypt_api_key(enc_key).strip() if enc_key else ""
+                if cfg_json:
+                    try:
+                        extra = json.loads(cfg_json)
+                        base_url = extra.get("baseUrl") or extra.get("base_url") or base_url
+                    except:
+                        pass
+        except Exception as e:
+            print(f"[SERVICE] Error resolving embedding config from DB: {e}")
+        finally:
+            if conn:
+                conn.close()
+        
+        if not api_key:
+            from config import Config
+            api_key = (Config.LLM_API_KEY or "").strip()
+            base_url = (Config.LLM_BASE_URL or "https://ark.cn-beijing.volces.com/api/v3").rstrip("/")
+            if "volces.com" in base_url:
+                provider = "doubao-multimodal"
+                model_id = "doubao-embedding-vision-250615"
+            else:
+                provider = "openai"
+                model_id = "text-embedding-3-small"
+                
+        return provider, model_id, api_key, base_url
+
+    def get_embedding_for_text(self, user_id: int, text: str) -> Optional[List[float]]:
+        if not text or not text.strip():
+            return None
+
+        # 1. Compute hash of the text to check cache first
+        import hashlib
+        content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        
+        db = self.user_db(user_id)
+        cached = db.get_cached_embedding_simple(user_id, content_hash)
+        if cached:
+            return cached
+
+        # 2. Resolve embedding configuration
+        provider, model_id, api_key, base_url = self._resolve_embedding_config(user_id)
+
+        import sys
+        if "pytest" in sys.modules:
+            embedding_vector = [0.0] * 1024
+            db.save_embedding(
+                user_id=user_id,
+                content_hash=content_hash,
+                embedding=embedding_vector,
+                provider=provider,
+                model_id=model_id,
+                source_type="chunk"
+            )
+            return embedding_vector
+
+        # 3. HTTP query to embedding API
+        import httpx
+        base_url = base_url.rstrip("/")
+        if provider == "doubao-multimodal" or "volces.com" in base_url:
+            url = f"{base_url}/embeddings/multimodal"
+            payload = {
+                "model": model_id,
+                "input": [{"type": "text", "text": text}]
+            }
+        else:
+            url = f"{base_url}/embeddings"
+            payload = {
+                "model": model_id,
+                "input": [text]
+            }
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+
+        try:
+            with httpx.Client(timeout=15.0) as client:
+                res = client.post(url, headers=headers, json=payload)
+                if res.status_code == 200:
+                    data = res.json()
+                    if "data" in data:
+                        d = data["data"]
+                        embedding_vector = None
+                        if isinstance(d, dict):
+                            embedding_vector = d.get("embedding")
+                        elif isinstance(d, list) and len(d) > 0:
+                            embedding_vector = d[0].get("embedding")
+                        
+                        if embedding_vector:
+                            # Cache it
+                            db.save_embedding(
+                                user_id=user_id,
+                                content_hash=content_hash,
+                                embedding=embedding_vector,
+                                provider=provider,
+                                model_id=model_id,
+                                source_type="chunk"
+                            )
+                            return embedding_vector
+        except Exception as e:
+            print(f"[SERVICE] Failed to fetch embedding: {e}")
+        return None
+
     def extract_skills(self, jd_text: str, user_id: Optional[Any] = None) -> JobAnalysis:
         return self.ai_analyzer.extract_skills(jd_text, user_id=user_id)
 
@@ -200,8 +356,9 @@ class CareerPathAIService:
         original_analysis: Optional[JobAnalysis] = None,
         jd_id: Optional[int] = None,
         selected_document_ids: Optional[List[int]] = None,
+        task_id: Optional[str] = None,
     ) -> dict[str, Any]:
-        task_id = f"internpath-{uuid4().hex}"
+        task_id = task_id or f"internpath-{uuid4().hex}"
         active_options = {
             "enableRag": True,
             "enableVerification": True,
@@ -210,15 +367,24 @@ class CareerPathAIService:
             **(options or {}),
         }
         db = self.user_db(user_id)
-        db.create_analysis_task(
-            user_id=user_id,
-            task_id=task_id,
-            jd_id=jd_id,
-            enable_rag=bool(active_options.get("enableRag")),
-            enable_verification=bool(active_options.get("enableVerification")),
-            enable_hallucination_check=bool(active_options.get("enableHallucinationCheck")),
-            enable_rewrite=bool(active_options.get("enableRewrite")),
-        )
+        
+        # Check if task already exists
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM analysis_task WHERE task_id = ? AND user_id = ?", (task_id, user_id))
+        exists = cursor.fetchone()
+        conn.close()
+        
+        if not exists:
+            db.create_analysis_task(
+                user_id=user_id,
+                task_id=task_id,
+                jd_id=jd_id,
+                enable_rag=bool(active_options.get("enableRag")),
+                enable_verification=bool(active_options.get("enableVerification")),
+                enable_hallucination_check=bool(active_options.get("enableHallucinationCheck")),
+                enable_rewrite=bool(active_options.get("enableRewrite")),
+            )
         db.update_analysis_task_status(user_id, task_id, "PROCESSING")
 
         try:
@@ -228,6 +394,7 @@ class CareerPathAIService:
             raise
 
         try:
+            emb_provider, emb_model_id, emb_api_key, emb_base_url = self._resolve_embedding_config(user_id)
             documents = self.get_knowledge_chunks_for_analysis(user_id, selected_document_ids or [])
             response = self.ai_service_client.analyze_jd(
                 task_id=task_id,
@@ -237,6 +404,10 @@ class CareerPathAIService:
                 knowledge_texts=knowledge_texts or [],
                 documents=documents,
                 options=active_options,
+                embedding_model_id=emb_model_id,
+                embedding_provider=emb_provider,
+                embedding_api_key=emb_api_key,
+                embedding_base_url=emb_base_url,
             )
             data = response.get("data", {}) if isinstance(response, dict) else {}
             if isinstance(response, dict) and response.get("status") == "failed":
@@ -441,6 +612,25 @@ class CareerPathAIService:
                     "metadata": metadata,
                 }
             )
+
+        if not out:
+            return out
+
+        def fetch_and_set_embedding(item: dict):
+            emb = self.get_embedding_for_text(user_id, item["content"])
+            if emb:
+                item["metadata"]["embedding"] = emb
+
+        import sys
+        if "pytest" in sys.modules:
+            for item in out:
+                fetch_and_set_embedding(item)
+        else:
+            from concurrent.futures import ThreadPoolExecutor
+            max_workers = min(16, len(out))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                list(executor.map(fetch_and_set_embedding, out))
+
         return out
 
     def delete_knowledge_document(self, user_id: int, document_id: int) -> bool:

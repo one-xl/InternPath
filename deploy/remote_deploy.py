@@ -193,6 +193,7 @@ find {APP_DIR} -type d -name __pycache__ -exec rm -rf {{}} + 2>/dev/null || true
 find {APP_DIR} -name '*.pyc' -delete 2>/dev/null || true
 cd {APP_DIR}
 chmod +x deploy/server_install.sh
+chmod +x start_internpath.sh stop_internpath.sh restart_internpath.sh || true
 systemctl stop internpath || true
 rm -rf .venv
 APP_DIR={APP_DIR} APP_PORT={APP_PORT} SERVICE_NAME=internpath REQUIREMENTS_FILE={APP_DIR}/requirements.server.txt ./deploy/server_install.sh

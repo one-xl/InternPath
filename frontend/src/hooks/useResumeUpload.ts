@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { buildResumeIndex, parseResumeFile } from "../services/resumeService";
+import { buildResumeIndex, parseResumeFile, vectorizeResume, fetchSavedResume } from "../services/resumeService";
 import type { ParsedResume, ResumeChunk, ResumeFileStatus, UploadedResumeFile } from "../types/resume";
 import { validateResumeFile } from "../utils/fileValidation";
 import { safeUUID } from "../utils/uuid";
@@ -54,11 +54,28 @@ export function useResumeUpload() {
       setResumeFile({ ...parsed.file, status: "parsed" });
       setStatus("parsed");
 
+      const shouldVectorize = window.confirm(
+        "是否将该简历转换成向量并存储？\n\n（“确定”：立即进行简历向量化，下次使用可以直接选择；“取消”：暂不计算，仅在点击开始分析时才进行即时向量化）"
+      );
+
       setStatus("indexing");
       setResumeFile((current) => (current ? { ...current, status: "indexing" } : current));
-      const indexedChunks = await buildResumeIndex(parsed);
+
+      let finalParsed = parsed;
+      if (shouldVectorize) {
+        try {
+          await vectorizeResume(parsed.file.id);
+          finalParsed = await fetchSavedResume(parsed.file.id);
+          setParsedResume(finalParsed);
+        } catch (vErr) {
+          console.error("简历向量化持久化失败:", vErr);
+          alert("简历向量化失败，将降级为分析时即时计算。");
+        }
+      }
+
+      const indexedChunks = await buildResumeIndex(finalParsed);
       setChunks(indexedChunks);
-      setResumeFile({ ...parsed.file, status: "indexed" });
+      setResumeFile((current) => (current ? { ...current, status: "indexed" } : null));
       setStatus("indexed");
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : "文件解析失败，请检查文件是否损坏或加密";

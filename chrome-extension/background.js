@@ -4,6 +4,7 @@
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "autofill") {
     const jobData = message.data;
+    const isAuto = !!message.isAuto;
     
     // Find InternPath tabs
     chrome.storage.local.get(["internpathHost"], (items) => {
@@ -31,12 +32,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           // Inject autofill script
           chrome.scripting.executeScript({
             target: { tabId: targetTab.id },
-            func: (data) => {
+            func: (data, isAutoVal) => {
               const companyInput = document.querySelector("input[placeholder*='例如：Vercel']");
               const titleInput = document.querySelector("input[placeholder*='例如：前端实习生']");
               const linkInput = document.querySelector("input[placeholder*='可选，用于回溯来源']");
               const locationInput = document.querySelector("input[placeholder*='例如：北京 / 远程']");
               const jdTextarea = document.querySelector(".analysis-form textarea") || document.querySelector("textarea");
+
+              // 自动检测回填时，如果用户当前表单不为空，则静默跳过，避免覆盖用户的数据
+              if (isAutoVal) {
+                const hasCompany = companyInput && companyInput.value.trim().length > 0;
+                const hasTitle = titleInput && titleInput.value.trim().length > 0;
+                if (hasCompany || hasTitle) {
+                  return;
+                }
+              }
 
               function setReactValue(el, val) {
                 if (!el) return;
@@ -55,6 +65,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               if (linkInput) setReactValue(linkInput, data.source_url);
               if (locationInput) setReactValue(locationInput, data.location);
               if (jdTextarea) setReactValue(jdTextarea, data.jd_text);
+
+              // 自动检测静默回填，工作台无需弹出通知横幅，不打扰用户
+              if (isAutoVal) return;
 
               // Show toast feedback on the website
               const toast = document.createElement("div");
@@ -77,11 +90,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               document.body.appendChild(toast);
               setTimeout(() => toast.remove(), 3500);
             },
-            args: [jobData]
+            args: [jobData, isAuto]
           }, () => {
-            // Focus the tab and window
-            chrome.tabs.update(targetTab.id, { active: true });
-            chrome.windows.update(targetTab.windowId, { focused: true });
+            if (!isAuto) {
+              // Focus the tab and window ONLY for manual triggers
+              chrome.tabs.update(targetTab.id, { active: true });
+              chrome.windows.update(targetTab.windowId, { focused: true });
+            }
             sendResponse({ success: true });
           });
         } else {

@@ -128,3 +128,13 @@ export async function deleteSavedResume(id: string): Promise<boolean> {
   });
   return response.ok;
 }
+
+export async function vectorizeResume(id: string): Promise<boolean> {
+  const response = await fetch(`/api/resumes/${encodeURIComponent(id)}/vectorize`, {
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(await parseApiError(response));
+  }
+  return true;
+}

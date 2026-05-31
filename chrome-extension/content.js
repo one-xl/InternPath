@@ -101,6 +101,10 @@
       "相似职位",
       "更多相似职位",
       "工作地址",
+      "公司介绍",
+      "团队介绍",
+      "企业介绍",
+      "工商信息",
       "查看其他",
       "立即举报",
       "举报取",
@@ -162,6 +166,7 @@
       if (txt.length > 0 && txt.length < 15 && keywords.includes(txt)) {
         let sibling = h.nextElementSibling;
         let collectedCount = 0;
+        let tempParts = [];
         
         while (sibling && collectedCount < 5) {
           const siblingTxt = sibling.textContent.trim();
@@ -171,10 +176,14 @@
           }
           
           if (siblingTxt.length > 15) {
-            foundTextParts.push(siblingTxt);
+            tempParts.push(siblingTxt);
             collectedCount++;
           }
           sibling = sibling.nextElementSibling;
+        }
+        
+        if (tempParts.length > 0) {
+          foundTextParts.push(txt + "\n" + tempParts.join("\n"));
         }
       }
     }
@@ -223,11 +232,13 @@
         location = locEl.textContent.trim().split(" ")[0] || "";
       }
       
-      jd = (document.querySelector(".job-sec-text") || 
-            document.querySelector(".detail-content .job-sec .text") || 
-            document.querySelector(".job-detail .text") || 
-            document.querySelector(".job-detail-section .text") || 
-            {textContent: ""}).textContent.trim();
+      const detailContainer = document.querySelector(".job-detail") || 
+                              document.querySelector(".detail-content") ||
+                              document.querySelector(".job-sec-text") ||
+                              document.querySelector(".job-detail-section");
+      if (detailContainer) {
+        jd = detailContainer.innerText || detailContainer.textContent || "";
+      }
     } else if (url.includes("nowcoder.com")) {
       title = (document.querySelector(".job-name") || 
                document.querySelector(".jobs-name") || 
@@ -250,10 +261,13 @@
                   document.querySelector(".jobs-city") || 
                   {textContent: ""}).textContent.trim();
                   
-      jd = (document.querySelector(".job-detail-content") || 
-            document.querySelector(".detail-content") || 
-            document.querySelector(".job-desc") || 
-            {textContent: ""}).textContent.trim();
+      const detailContainer = document.querySelector(".job-detail-content") || 
+                              document.querySelector(".detail-content") || 
+                              document.querySelector(".job-desc") || 
+                              document.querySelector(".post-item__description");
+      if (detailContainer) {
+        jd = detailContainer.innerText || detailContainer.textContent || "";
+      }
     }
 
     // 如果常规选择器抓取的 jd 为空，启用语义自愈匹配器
@@ -419,4 +433,37 @@
       });
     });
   });
+
+  // 3. 自动检测并触发静默回填（支持 SPA 单页应用频繁切换与延迟渲染自愈）
+  let lastJobUrl = "";
+  let lastJobTitle = "";
+  let lastJobCompany = "";
+
+  function checkAndAutoTrigger() {
+    try {
+      const jobData = extractJobData();
+      // 只有在职位名称不是"未知职位"，且岗位详情不是"无详情"时，才视为加载完成的有效职位
+      if (jobData && jobData.title !== "未知职位" && jobData.jd_text !== "无详情") {
+        // 如果当前职位的 URL、名称或公司有任何变化，则触发回填
+        if (jobData.source_url !== lastJobUrl || jobData.title !== lastJobTitle || jobData.company !== lastJobCompany) {
+          lastJobUrl = jobData.source_url;
+          lastJobTitle = jobData.title;
+          lastJobCompany = jobData.company;
+
+          console.log("[InternPath] 检测到职位发生改变或加载完成，自动发起静默回填:", jobData.title);
+          
+          chrome.runtime.sendMessage({ action: "autofill", data: jobData, isAuto: true }, (response) => {
+            if (response && response.success) {
+              console.log("[InternPath] 职位已成功自动静默回填至工作台:", jobData.title);
+            }
+          });
+        }
+      }
+    } catch (e) {
+      console.error("[InternPath] 自动检测回填执行异常:", e);
+    }
+  }
+
+  // 采用 1.5 秒间隔轮询机制，既保障了 SPA 切换的即时响应与延迟加载的自动修复，又确保极低的 CPU 消耗
+  setInterval(checkAndAutoTrigger, 1500);
 })();

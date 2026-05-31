@@ -947,20 +947,13 @@ class CareerPathAIService:
                 "reason": f"第一阶段粗筛未通过：技术关键词重合度较低（{stage1_score:.1%} < 30.0%）"
             }
 
-        # Stage 2: Cheap LLM check
-        stage2_passed, reason = self.stage2_llm_check(user_id, resume_text, jd_text)
-        if not stage2_passed:
-            return {
-                "passed": False,
-                "stage1_score": stage1_score,
-                "stage2_passed": False,
-                "reason": f"第二阶段硬性指标校验未通过：{reason}"
-            }
+        # Stage 2: Cheap LLM check (Skipped per user request, always returns True)
+        stage2_passed, reason = True, "硬性门槛校验已跳过（将在最终大模型深度分析时进行校验）"
 
         return {
             "passed": True,
             "stage1_score": stage1_score,
             "stage2_passed": True,
-            "reason": f"双阶段筛选通过！关键词重合度 {stage1_score:.1%}，硬性门槛校验通过。"
+            "reason": f"筛选通过！关键词重合度 {stage1_score:.1%}。"
         }
 

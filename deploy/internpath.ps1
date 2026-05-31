@@ -117,6 +117,24 @@ function Start-InternPath {
     $isPgConfigured = $false
     if (Test-Path $pgCtlExe) {
         $isPgConfigured = $true
+        
+        # Check and automatically install pgvector if missing
+        $PgsqlLib = Join-Path $ProjectRoot "scratch\pgsql\lib"
+        $VectorDll = Join-Path $PgsqlLib "vector.dll"
+        if (-not (Test-Path $VectorDll)) {
+            Write-Host "Local pgvector extension is missing. Automatically installing pgvector..." -ForegroundColor Yellow
+            $InstallerScript = Join-Path $ProjectRoot "deploy\install_pgvector_windows.ps1"
+            if (Test-Path $InstallerScript) {
+                try {
+                    & powershell -NoProfile -ExecutionPolicy Bypass -File $InstallerScript
+                } catch {
+                    Write-Warning "Failed to install pgvector automatically: $_"
+                }
+            } else {
+                Write-Warning "pgvector installer script not found at: $InstallerScript"
+            }
+        }
+
         if (Test-PortBusy -Port $PgPort) {
             Write-Host "PostgreSQL already appears to be running on port $PgPort."
         } else {

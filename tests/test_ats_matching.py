@@ -145,7 +145,7 @@ def test_job_import_endpoint_and_auto_matching(tmp_path, monkeypatch):
     assert res_data_fail["matchResult"]["passed"] is False
     assert "较低" in res_data_fail["matchResult"]["reason"]
 
-    # 5. Test import posting that fails Stage 2 (LLM check rejects)
+    # 5. Test import posting that skips Stage 2 (LLM check is bypassed/skipped)
     reject_payload = {
         "title": "Senior Python Developer",
         "company": "FastAPI Corp",
@@ -161,8 +161,7 @@ def test_job_import_endpoint_and_auto_matching(tmp_path, monkeypatch):
     )
     assert response_reject.status_code == 200
     res_data_reject = response_reject.json()
-    assert res_data_reject["matchResult"]["passed"] is False
-    assert "学历" in res_data_reject["matchResult"]["reason"]
+    assert res_data_reject["matchResult"]["passed"] is True
 
     # 6. Test ATS simulate API endpoint
     simulate_response = client.post(
@@ -177,3 +176,19 @@ def test_job_import_endpoint_and_auto_matching(tmp_path, monkeypatch):
     sim_data = simulate_response.json()
     assert "overall_score" in sim_data
     assert "parseability_score" in sim_data
+
+    # 7. Test vectorize resume API endpoint
+    vectorize_response = client.post(
+        "/api/resumes/mock_resume_id/vectorize",
+        headers={"Authorization": f"Bearer {token}"}
+    )
+    assert vectorize_response.status_code == 200
+    vec_data = vectorize_response.json()
+    assert vec_data["ok"] is True
+    assert vec_data["vectorized"] is True
+    
+    # Verify in DB
+    updated_resume = service.user_db(user_id).get_user_resume(user_id, "mock_resume_id")
+    assert updated_resume.get("vectorized") is True
+    assert len(updated_resume.get("chunks", [])) > 0
+    assert "embedding" in updated_resume["chunks"][0]

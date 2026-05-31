@@ -28,7 +28,10 @@
     {
       "matches": [
         "https://*.zhipin.com/job_detail/*.html*",
-        "https://*.nowcoder.com/jobs/detail/*"
+        "https://*.zhipin.com/web/geek/job*",
+        "https://*.nowcoder.com/jobs/detail/*",
+        "https://*.nowcoder.com/job/*",
+        "https://*.nowcoder.com/careers/*"
       ],
       "js": ["content.js"],
       "run_at": "document_end"

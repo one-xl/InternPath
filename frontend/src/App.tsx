@@ -81,7 +81,7 @@ export default function App() {
     window.fetch = async (...args) => {
       const response = await originalFetch(...args);
       const urlStr = typeof args[0] === 'string' ? args[0] : (args[0] as any)?.url || '';
-      const isAuthEndpoint = urlStr.includes("/api/auth/login") || urlStr.includes("/api/auth/register") || urlStr.includes("/api/me");
+      const isAuthEndpoint = urlStr.includes("/api/auth/login") || urlStr.includes("/api/auth/register") || urlStr.includes("/api/me") || urlStr.includes("/api/models/");
       if (response.status === 401 && !isAuthEndpoint) {
         const shouldNotify = currentUserRef.current && !authExpiredAlertShownRef.current;
         authExpiredAlertShownRef.current = true;

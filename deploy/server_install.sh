@@ -18,7 +18,62 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
-apt-get install -y python3 python3-venv python3-pip
+apt-get install -y python3 python3-venv python3-pip wget curl
+
+# PostgreSQL & pgvector automatic installation on cloud server
+if command -v apt-get >/dev/null 2>&1; then
+  echo "=========================================================="
+  echo "  Cloud Server: Installing PostgreSQL & pgvector Extension"
+  echo "=========================================================="
+  
+  # 1. Install PostgreSQL if not present (defaulting to PostgreSQL 16)
+  if ! command -v psql >/dev/null 2>&1; then
+    echo "PostgreSQL is not installed. Importing PostgreSQL APT repository..."
+    # Import repo
+    lsb_dist=$(lsb_release -cs 2>/dev/null || echo "debian")
+    sh -c "echo \"deb http://apt.postgresql.org/pub/repos/apt ${lsb_dist}-pgdg main\" > /etc/apt/sources.list.d/pgdg.list" || true
+    wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - || true
+    apt-get update
+    echo "Installing PostgreSQL 16..."
+    apt-get install -y postgresql-16 postgresql-contrib-16
+  fi
+
+  # 2. Get the installed PostgreSQL major version
+  PG_VERSION=$(psql --version | grep -oE '[0-9]+' | head -n 1)
+  echo "PostgreSQL version detected: $PG_VERSION"
+
+  # 3. Install the matching pgvector package
+  echo "Installing postgresql-${PG_VERSION}-pgvector..."
+  if apt-get install -y "postgresql-${PG_VERSION}-pgvector" 2>/dev/null; then
+    echo "postgresql-${PG_VERSION}-pgvector installed successfully via APT."
+  else
+    echo "Warning: apt package postgresql-${PG_VERSION}-pgvector not found. Building pgvector from source..."
+    # Install compiling dependencies
+    apt-get install -y git build-essential postgresql-server-dev-${PG_VERSION}
+    TEMP_SRC_DIR=$(mktemp -d)
+    git clone --branch v0.8.2 https://github.com/pgvector/pgvector.git "$TEMP_SRC_DIR"
+    (cd "$TEMP_SRC_DIR" && make && make install)
+    rm -rf "$TEMP_SRC_DIR"
+    echo "pgvector compiled and installed from source successfully."
+  fi
+  echo "pgvector extension is deployed and ready on the cloud server!"
+
+  # 4. Ensure PostgreSQL is enabled and running
+  echo "Starting and enabling PostgreSQL service..."
+  systemctl daemon-reload || true
+  systemctl enable postgresql || true
+  systemctl start postgresql || true
+
+  # 5. Check and Create Database 'job_dashboard' on native PostgreSQL
+  echo "Checking PostgreSQL database 'job_dashboard'..."
+  if sudo -u postgres psql -lqt 2>/dev/null | grep -qw "job_dashboard"; then
+    echo "Database 'job_dashboard' already exists."
+  else
+    echo "Creating database 'job_dashboard'..."
+    sudo -u postgres createdb job_dashboard || echo "Warning: Failed to create job_dashboard database automatically."
+  fi
+  echo "=========================================================="
+fi
 
 if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
   echo "Installing Node.js and npm..."
@@ -50,6 +105,12 @@ if [[ ! -f "$PERSISTENT_ENV_FILE" ]]; then
     cp "$APP_DIR/deploy/.env.server.example" "$PERSISTENT_ENV_FILE"
     echo "Created $PERSISTENT_ENV_FILE from example. Edit it before using the AI features."
   fi
+fi
+
+# Automatically add local PostgreSQL DATABASE_URL to persistent env if not present
+if ! grep -q "^DATABASE_URL=" "$PERSISTENT_ENV_FILE" 2>/dev/null; then
+  echo "DATABASE_URL=postgresql://postgres@localhost:5432/job_dashboard" >> "$PERSISTENT_ENV_FILE"
+  echo "Automatically added local PostgreSQL DATABASE_URL to $PERSISTENT_ENV_FILE."
 fi
 
 mkdir -p "$APP_DIR/.cache"

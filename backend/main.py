@@ -685,9 +685,14 @@ def create_app(
 
     @app.delete("/api/resumes/{resume_id}")
     def delete_resume(resume_id: str, user_id: Any = Depends(current_user_id)) -> dict[str, Any]:
-        success = state.auth_db.delete_user_resume(user_id, resume_id)
+        success_auth = state.auth_db.delete_user_resume(user_id, resume_id)
+        success_svc = False
+        try:
+            success_svc = state.service.user_db(user_id).delete_user_resume(user_id, resume_id)
+        except Exception:
+            pass
         state.resume_store.pop(resume_id, None)
-        return {"ok": success}
+        return {"ok": success_auth or success_svc}
 
     @app.post("/api/resumes/retrieve")
     def retrieve_resume(
@@ -711,6 +716,91 @@ def create_app(
             return retrieve_chunks(payload.jdText, parsed_resume.get("chunks", []), payload.topK)
         except DocumentParseError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    @app.post("/api/resumes/{resume_id}/vectorize")
+    async def vectorize_resume(resume_id: str, user_id: Any = Depends(current_user_id)) -> dict[str, Any]:
+        # 三级自适应读取兜底：
+        # 1. 内存缓存 resume_store
+        entry = state.resume_store.get(resume_id)
+        db_resume = None
+        if entry and entry.get("user_id") == user_id:
+            db_resume = entry.get("parsed_resume")
+            
+        # 2. state.auth_db
+        if not db_resume:
+            db_resume = state.auth_db.get_user_resume(user_id, resume_id)
+            
+        # 3. state.service.user_db(user_id)
+        if not db_resume:
+            try:
+                db_resume = state.service.user_db(user_id).get_user_resume(user_id, resume_id)
+            except Exception:
+                pass
+                
+        if not db_resume:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="简历不存在或无权访问。")
+
+        chunks = db_resume.get("chunks", [])
+        if not chunks:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="简历中不包含有效的文本片段。")
+
+        from concurrent.futures import ThreadPoolExecutor
+        
+        def process_chunk(chunk):
+            content = chunk.get("content") or chunk.get("text") or ""
+            emb = state.service.get_embedding_for_text(user_id, content)
+            if emb:
+                if "metadata" not in chunk:
+                    chunk["metadata"] = {}
+                chunk["metadata"]["embedding"] = emb
+                chunk["embedding"] = emb
+
+        max_workers = min(16, len(chunks))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            list(executor.map(process_chunk, chunks))
+
+        db_resume["vectorized"] = True
+        db_resume["chunks"] = chunks
+
+        file_name = db_resume.get("file", {}).get("name", "resume.pdf")
+        file_size = db_resume.get("file", {}).get("size", 1024)
+        file_type = db_resume.get("file", {}).get("type", "application/pdf")
+
+        save_errors = []
+        try:
+            state.auth_db.save_user_resume(
+                user_id=user_id,
+                resume_id=resume_id,
+                file_name=file_name,
+                file_size=file_size,
+                file_type=file_type,
+                parsed_resume=db_resume
+            )
+        except Exception as e:
+            save_errors.append(f"auth_db: {e}")
+
+        try:
+            state.service.user_db(user_id).save_user_resume(
+                user_id=user_id,
+                resume_id=resume_id,
+                file_name=file_name,
+                file_size=file_size,
+                file_type=file_type,
+                parsed_resume=db_resume
+            )
+        except Exception as e:
+            save_errors.append(f"service_db: {e}")
+
+        if len(save_errors) == 2:
+            print(f"[ERROR] Failed to save vectorized resume: {save_errors}")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"保存向量化简历失败: {save_errors}")
+
+        state.resume_store[resume_id] = {
+            "parsed_resume": db_resume,
+            "user_id": user_id
+        }
+
+        return {"ok": True, "vectorized": True}
 
     @app.post("/api/analysis/job-rag")
     def analyze_job_rag(
@@ -961,12 +1051,14 @@ def create_app(
                         err_json = res.json()
                         err_msg = err_json.get("error", {}).get("message", "") if isinstance(err_json.get("error"), dict) else str(err_json.get("error", ""))
                         if err_msg:
-                            raise HTTPException(status_code=res.status_code, detail=f"上游模型服务错误 ({res.status_code}): {err_msg}")
+                            err_status = 502 if res.status_code in (401, 403) else res.status_code
+                            raise HTTPException(status_code=err_status, detail=f"上游模型服务错误 ({res.status_code}): {err_msg}")
                     except (ValueError, TypeError):
                         pass
+                returned_status = 502 if res.status_code in (401, 403) else res.status_code
                 return Response(
                     content=res.content,
-                    status_code=res.status_code,
+                    status_code=returned_status,
                     media_type="application/json"
                 )
         except Exception as exc:
@@ -1153,9 +1245,10 @@ def create_app(
                     except Exception as cache_err:
                         print(f"[ERROR] Failed to save embedding to cache: {cache_err}")
                 
+                returned_status = 502 if res.status_code in (401, 403) else res.status_code
                 return Response(
                     content=res.content,
-                    status_code=res.status_code,
+                    status_code=returned_status,
                     media_type="application/json"
                 )
         except Exception as exc:

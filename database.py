@@ -147,11 +147,43 @@ class Database:
         # Detect if we are running in a pytest session
         is_testing = 'pytest' in sys.modules
         
-        self.is_postgres = bool(
-            db_url and 
-            (db_url.startswith("postgresql://") or db_url.startswith("postgres://")) and
-            not is_testing
-        )
+        self.is_postgres = False
+        
+        # PostgreSQL detection and cleanup of SQLite if PostgreSQL is successfully connected
+        if db_url and (db_url.startswith("postgresql://") or db_url.startswith("postgres://")) and not is_testing:
+            try:
+                import psycopg2
+                conn = psycopg2.connect(db_url)
+                conn.close()
+                self.is_postgres = True
+                print("[DATABASE] PostgreSQL is available. Cleaning up SQLite DB files as PostgreSQL is the primary database.")
+                
+                # Cleanup SQLite file to prevent stale/unused SQLite storage
+                if os.path.exists(self.db_path):
+                    try:
+                        os.remove(self.db_path)
+                        print(f"[DATABASE] Local SQLite file at {self.db_path} has been deleted.")
+                    except Exception as e_del:
+                        # Fallback: drop all tables in SQLite if the file is locked
+                        try:
+                            import sqlite3
+                            sq_conn = sqlite3.connect(self.db_path)
+                            sq_cursor = sq_conn.cursor()
+                            sq_cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+                            tables = [row[0] for row in sq_cursor.fetchall() if not row[0].startswith("sqlite_")]
+                            for t in tables:
+                                sq_cursor.execute(f"DROP TABLE IF EXISTS {t}")
+                            sq_conn.commit()
+                            sq_conn.close()
+                            print(f"[DATABASE] SQLite file is locked. Cleaned up all tables instead: {e_del}")
+                        except Exception as e_drop:
+                            print(f"[DATABASE] Warning: Failed to drop SQLite tables during cleanup: {e_drop}")
+            except Exception as e:
+                print(f"[DATABASE] PostgreSQL configuration exists but is unavailable ({e}). Falling back to SQLite.")
+                self.is_postgres = False
+        else:
+            self.is_postgres = False
+            
         self.init_db()
 
     def get_connection(self):
@@ -3447,26 +3479,36 @@ class Database:
         cursor = conn.cursor()
         now = datetime.now().isoformat()
         
-        cursor.execute("SELECT 1 FROM user_settings WHERE user_id = ?", (user_id,))
+        if self.is_postgres:
+            cursor.execute("SELECT 1 FROM user_settings WHERE user_id = %s", (user_id,))
+        else:
+            cursor.execute("SELECT 1 FROM user_settings WHERE user_id = ?", (user_id,))
         exists = cursor.fetchone() is not None
         
+        settings_str = json.dumps(settings_json, ensure_ascii=False)
         if exists:
-            cursor.execute(
-                "UPDATE user_settings SET settings_json = ?, updated_at = ? WHERE user_id = ?",
-                (json.dumps(settings_json, ensure_ascii=False), now, user_id)
-            )
+            if self.is_postgres:
+                cursor.execute(
+                    "UPDATE user_settings SET settings_json = %s::jsonb, updated_at = %s WHERE user_id = %s",
+                    (settings_str, now, user_id)
+                )
+            else:
+                cursor.execute(
+                    "UPDATE user_settings SET settings_json = ?, updated_at = ? WHERE user_id = ?",
+                    (settings_str, now, user_id)
+                )
         else:
             from uuid import uuid4
             new_id = str(uuid4())
             if self.is_postgres:
                 cursor.execute(
-                    "INSERT INTO user_settings (user_id, settings_json, created_at, updated_at) VALUES (?, ?, ?, ?)",
-                    (user_id, json.dumps(settings_json, ensure_ascii=False), now, now)
+                    "INSERT INTO user_settings (user_id, settings_json, created_at, updated_at) VALUES (%s, %s::jsonb, %s, %s)",
+                    (user_id, settings_str, now, now)
                 )
             else:
                 cursor.execute(
                     "INSERT INTO user_settings (id, user_id, settings_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-                    (new_id, user_id, json.dumps(settings_json, ensure_ascii=False), now, now)
+                    (new_id, user_id, settings_str, now, now)
                 )
         conn.commit()
         conn.close()
@@ -3474,7 +3516,10 @@ class Database:
     def get_settings(self, user_id: Any) -> dict:
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT settings_json FROM user_settings WHERE user_id = ?", (user_id,))
+        if self.is_postgres:
+            cursor.execute("SELECT settings_json FROM user_settings WHERE user_id = %s", (user_id,))
+        else:
+            cursor.execute("SELECT settings_json FROM user_settings WHERE user_id = ?", (user_id,))
         row = cursor.fetchone()
         conn.close()
         if not row:
@@ -5248,18 +5293,32 @@ class Database:
         cursor = conn.cursor()
         try:
             parsed_json_str = json.dumps(parsed_resume)
-            cursor.execute("SELECT 1 FROM resumes WHERE id = ? AND user_id = ?", (resume_id, user_id))
-            row = cursor.fetchone()
-            if row is not None:
-                cursor.execute(
-                    "UPDATE resumes SET file_name = ?, file_size = ?, file_type = ?, parsed_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?",
-                    (file_name, file_size, file_type, parsed_json_str, resume_id, user_id)
-                )
+            if self.is_postgres:
+                cursor.execute("SELECT 1 FROM resumes WHERE id = %s AND user_id = %s", (resume_id, user_id))
+                row = cursor.fetchone()
+                if row is not None:
+                    cursor.execute(
+                        "UPDATE resumes SET file_name = %s, file_size = %s, file_type = %s, parsed_json = %s::jsonb, updated_at = CURRENT_TIMESTAMP WHERE id = %s AND user_id = %s",
+                        (file_name, file_size, file_type, parsed_json_str, resume_id, user_id)
+                    )
+                else:
+                    cursor.execute(
+                        "INSERT INTO resumes (id, user_id, file_name, file_size, file_type, parsed_json) VALUES (%s, %s, %s, %s, %s, %s::jsonb)",
+                        (resume_id, user_id, file_name, file_size, file_type, parsed_json_str)
+                    )
             else:
-                cursor.execute(
-                    "INSERT INTO resumes (id, user_id, file_name, file_size, file_type, parsed_json) VALUES (?, ?, ?, ?, ?, ?)",
-                    (resume_id, user_id, file_name, file_size, file_type, parsed_json_str)
-                )
+                cursor.execute("SELECT 1 FROM resumes WHERE id = ? AND user_id = ?", (resume_id, user_id))
+                row = cursor.fetchone()
+                if row is not None:
+                    cursor.execute(
+                        "UPDATE resumes SET file_name = ?, file_size = ?, file_type = ?, parsed_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?",
+                        (file_name, file_size, file_type, parsed_json_str, resume_id, user_id)
+                    )
+                else:
+                    cursor.execute(
+                        "INSERT INTO resumes (id, user_id, file_name, file_size, file_type, parsed_json) VALUES (?, ?, ?, ?, ?, ?)",
+                        (resume_id, user_id, file_name, file_size, file_type, parsed_json_str)
+                    )
             conn.commit()
         except Exception as e:
             print(f"[DATABASE] Error saving resume: {e}")
@@ -5271,10 +5330,16 @@ class Database:
         conn = self.get_connection()
         cursor = conn.cursor()
         try:
-            cursor.execute(
-                "SELECT id, file_name, file_size, file_type, created_at, updated_at FROM resumes WHERE user_id = ? ORDER BY created_at DESC",
-                (user_id,)
-            )
+            if self.is_postgres:
+                cursor.execute(
+                    "SELECT id, file_name, file_size, file_type, created_at, updated_at FROM resumes WHERE user_id = %s ORDER BY created_at DESC",
+                    (user_id,)
+                )
+            else:
+                cursor.execute(
+                    "SELECT id, file_name, file_size, file_type, created_at, updated_at FROM resumes WHERE user_id = ? ORDER BY created_at DESC",
+                    (user_id,)
+                )
             rows = cursor.fetchall()
             resumes = []
             for r in rows:
@@ -5297,10 +5362,16 @@ class Database:
         conn = self.get_connection()
         cursor = conn.cursor()
         try:
-            cursor.execute(
-                "SELECT parsed_json FROM resumes WHERE id = ? AND user_id = ?",
-                (resume_id, user_id)
-            )
+            if self.is_postgres:
+                cursor.execute(
+                    "SELECT parsed_json FROM resumes WHERE id = %s AND user_id = %s",
+                    (resume_id, user_id)
+                )
+            else:
+                cursor.execute(
+                    "SELECT parsed_json FROM resumes WHERE id = ? AND user_id = ?",
+                    (resume_id, user_id)
+                )
             row = cursor.fetchone()
             if row:
                 return safe_json_load(row[0])
@@ -5315,10 +5386,16 @@ class Database:
         conn = self.get_connection()
         cursor = conn.cursor()
         try:
-            cursor.execute(
-                "DELETE FROM resumes WHERE id = ? AND user_id = ?",
-                (resume_id, user_id)
-            )
+            if self.is_postgres:
+                cursor.execute(
+                    "DELETE FROM resumes WHERE id = %s AND user_id = %s",
+                    (resume_id, user_id)
+                )
+            else:
+                cursor.execute(
+                    "DELETE FROM resumes WHERE id = ? AND user_id = ?",
+                    (resume_id, user_id)
+                )
             conn.commit()
             return True
         except Exception as e:

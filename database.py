@@ -4223,8 +4223,26 @@ class Database:
         conn = self.get_connection()
         cursor = conn.cursor()
         
-        # 1. Try resolving by config_id if provided
+        # Validate UUIDs for PostgreSQL to prevent DataError crashes
+        is_valid_config_uuid = False
         if config_id:
+            try:
+                from uuid import UUID
+                UUID(str(config_id))
+                is_valid_config_uuid = True
+            except ValueError:
+                pass
+
+        is_valid_user_uuid = True
+        if self.is_postgres and user_id:
+            try:
+                from uuid import UUID
+                UUID(str(user_id))
+            except ValueError:
+                is_valid_user_uuid = False
+
+        # 1. Try resolving by config_id if provided and valid
+        if is_valid_config_uuid and is_valid_user_uuid:
             # Check user-owned
             cursor.execute(
                 """
@@ -4257,40 +4275,41 @@ class Database:
                 return key, row[1], row[2]
                 
         # 2. Resolve by provider and model_id
-        # First try user-owned configs
-        cursor.execute(
-            """
-            SELECT encrypted_api_key, id
-            FROM model_configs
-            WHERE user_id = ? AND provider = ? AND model_id = ? AND (owner_type IS NULL OR owner_type = 'user') AND enabled = ?
-            ORDER BY updated_at DESC
-            LIMIT 1
-            """,
-            (user_id, provider, model_id, 1 if not self.is_postgres else True)
-        )
-        row = cursor.fetchone()
-        if row:
-            conn.close()
-            key = self.decrypt_api_key(row[0]).strip() if row[0] else ""
-            return key, row[1], None
-            
-        # Then try admin-assigned configs
-        cursor.execute(
-            """
-            SELECT c.encrypted_api_key, c.id, a.id
-            FROM model_configs c
-            JOIN model_config_assignments a ON c.id = a.config_id
-            WHERE a.user_id = ? AND c.provider = ? AND c.model_id = ? AND a.enabled = ? AND c.enabled = ? AND c.owner_type IN ('admin', 'system')
-            ORDER BY c.updated_at DESC
-            LIMIT 1
-            """,
-            (user_id, provider, model_id, 1 if not self.is_postgres else True, 1 if not self.is_postgres else True)
-        )
-        row = cursor.fetchone()
-        if row:
-            conn.close()
-            key = self.decrypt_api_key(row[0]).strip() if row[0] else ""
-            return key, row[1], row[2]
+        if is_valid_user_uuid:
+            # First try user-owned configs
+            cursor.execute(
+                """
+                SELECT encrypted_api_key, id
+                FROM model_configs
+                WHERE user_id = ? AND provider = ? AND model_id = ? AND (owner_type IS NULL OR owner_type = 'user') AND enabled = ?
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (user_id, provider, model_id, 1 if not self.is_postgres else True)
+            )
+            row = cursor.fetchone()
+            if row:
+                conn.close()
+                key = self.decrypt_api_key(row[0]).strip() if row[0] else ""
+                return key, row[1], None
+                
+            # Then try admin-assigned configs
+            cursor.execute(
+                """
+                SELECT c.encrypted_api_key, c.id, a.id
+                FROM model_configs c
+                JOIN model_config_assignments a ON c.id = a.config_id
+                WHERE a.user_id = ? AND c.provider = ? AND c.model_id = ? AND a.enabled = ? AND c.enabled = ? AND c.owner_type IN ('admin', 'system')
+                ORDER BY c.updated_at DESC
+                LIMIT 1
+                """,
+                (user_id, provider, model_id, 1 if not self.is_postgres else True, 1 if not self.is_postgres else True)
+            )
+            row = cursor.fetchone()
+            if row:
+                conn.close()
+                key = self.decrypt_api_key(row[0]).strip() if row[0] else ""
+                return key, row[1], row[2]
             
         conn.close()
         return None, None, None

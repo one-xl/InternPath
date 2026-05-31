@@ -16,6 +16,7 @@ export async function testEmbeddingModelConfig(config: EmbeddingModelConfig): Pr
         provider: config.provider,
         modelId: config.modelId,
         endpoint: config.endpoint || undefined,
+        configId: config.id,
       }),
     });
     const data = await response.json();
@@ -70,6 +71,7 @@ export async function testChatModelConfig(
         provider: config.provider,
         type: "chat",
         modelId,
+        configId: config.id,
       }),
     });
     const rawResponseText = await response.text();

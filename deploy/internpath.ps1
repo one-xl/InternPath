@@ -22,21 +22,21 @@ $AiPort = if ($env:INTERNPATH_AI_PORT) { [int]$env:INTERNPATH_AI_PORT } else { 8
 $BackendPort = if ($env:INTERNPATH_BACKEND_PORT) { [int]$env:INTERNPATH_BACKEND_PORT } else { 8787 }
 $WebPort = if ($env:INTERNPATH_WEB_PORT) { [int]$env:INTERNPATH_WEB_PORT } elseif ($env:LOCAL_PORT) { [int]$env:LOCAL_PORT } else { 5173 }
 
-# PostgreSQL configuration and fallback to conversation ID scratch path
+# PostgreSQL configuration and fallback to workspace scratch path
 $PgBin = if ($env:INTERNPATH_PG_BIN) {
     $env:INTERNPATH_PG_BIN
 } else {
-    "C:\Users\a1028\.gemini\antigravity\brain\30878f50-3872-40e7-85fe-b6196b1f31a2\scratch\pgsql\bin"
+    Join-Path $ProjectRoot "scratch\pgsql\bin"
 }
 $PgData = if ($env:INTERNPATH_PG_DATA) {
     $env:INTERNPATH_PG_DATA
 } else {
-    "C:\Users\a1028\.gemini\antigravity\brain\30878f50-3872-40e7-85fe-b6196b1f31a2\scratch\pgdata"
+    Join-Path $ProjectRoot "scratch\pgdata"
 }
 $PgLog = if ($env:INTERNPATH_PG_LOG) {
     $env:INTERNPATH_PG_LOG
 } else {
-    "C:\Users\a1028\.gemini\antigravity\brain\30878f50-3872-40e7-85fe-b6196b1f31a2\scratch\pg_log.txt"
+    Join-Path $ProjectRoot "scratch\pg_log.txt"
 }
 $PgPort = if ($env:INTERNPATH_PG_PORT) { [int]$env:INTERNPATH_PG_PORT } else { 54321 }
 

@@ -19,11 +19,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const u = tab.url.toLowerCase();
           const t = (tab.title || "").toLowerCase();
           
-          const matchesHost = hostName && u.includes(hostName.toLowerCase());
-          const matchesLocal = u.includes("localhost") || u.includes("127.0.0.1");
           const matchesTitle = t.includes("internpath") || t.includes("实习通");
+          const matchesHost = hostName && u.includes(hostName.toLowerCase());
           
-          return matchesHost || matchesLocal || matchesTitle;
+          if (matchesTitle) return true;
+          if (matchesHost) return true;
+          return false;
         });
         
         if (targetTab) {
@@ -106,11 +107,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const u = tab.url.toLowerCase();
           const t = (tab.title || "").toLowerCase();
           
-          const matchesHost = hostName && u.includes(hostName.toLowerCase());
-          const matchesLocal = u.includes("localhost") || u.includes("127.0.0.1");
           const matchesTitle = t.includes("internpath") || t.includes("实习通");
+          const matchesHost = hostName && u.includes(hostName.toLowerCase());
           
-          return matchesHost || matchesLocal || matchesTitle;
+          return matchesTitle || matchesHost;
         });
         
         if (targetTabs && targetTabs.length > 0) {

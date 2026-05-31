@@ -27,6 +27,10 @@ class PersonalDecision(BaseModel):
     evidence_needed: List[str] = Field(default_factory=list, description="还需要补充证据的经历或材料")
     action_plan: List[str] = Field(default_factory=list, description="下一步行动清单")
     learning_plan: List[str] = Field(default_factory=list, description="可选学习或刷题建议")
+    score_breakdown: Optional[dict] = Field(
+        default=None,
+        description="评分维度拆解：包括门槛过滤、技能匹配、经历相关性、加分项"
+    )
 
 
 class JobAnalysis(BaseModel):

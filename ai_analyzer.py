@@ -233,7 +233,12 @@ class AIAnalyzer:
         只返回 JSON，字段必须完整：
         {
           "recommendation": "APPLY | CONSIDER | SKIP",
-          "match_score": 0,
+          "score_breakdown": {
+            "hard_constraint_match": 0,
+            "tech_stack_match": 0,
+            "project_relevance": 0,
+            "bonus_points": 0
+          },
           "decision_reasons": ["3条以内，说明为什么这样判断"],
           "critical_gaps": ["关键缺口，最多5条"],
           "resume_rewrites": ["可直接写进简历的中文表达，最多5条"],
@@ -246,7 +251,31 @@ class AIAnalyzer:
         - APPLY: 个人材料能支撑多数核心要求，缺口可短期补齐。
         - CONSIDER: 有明显机会，但需要补材料、改简历或补技能后再投。
         - SKIP: 与核心要求偏离较大，短期投入产出比低。
-        - match_score 必须体现保守判断，不要虚高。
+
+        评分维度与细则（百分制，必须严格遵守以下标尺）：
+        1. "hard_constraint_match" (学历/硬性门槛过滤, 权重 30%):
+           - 完全符合学历、年限、地点等限制：85 - 100 分。
+           - 核心门槛严重不符（如学历不符、毕业年限错配，或明确要求全职但候选人只能兼职）：直接给 0 - 30 分。
+        2. "tech_stack_match" (核心技能匹配度, 权重 30%):
+           - 技术栈与 JD 核心要求完全匹配且有项目佐证：85 - 100 分。
+           - 掌握 50% - 80% 的主要技能或有相似技术栈：60 - 84 分。
+           - 缺失岗位最基础或最核心的技术（如投前端但完全不会 React/Vue/JS）：0 - 59 分。
+        3. "project_relevance" (经历与项目相关度, 权重 30%):
+           - 有 1 个或多个高度相似的业务或职责项目背景：85 - 100 分。
+           - 技术栈重合，但业务场景或项目深度偏离较大：60 - 84 分。
+           - 纯转行、无任何相关实习或项目经验：0 - 59 分。
+        4. "bonus_points" (加分项与加分亮点, 权重 10%):
+           - 完全契合 JD 提及的“优先”条件或有竞赛/大厂实习加分：85 - 100 分。
+           - 无明显加分亮点，但基础履历完整扎实：60 - 84 分。
+           - 简历空洞无亮点：0 - 59 分。
+
+        评分刻度示例参考（Few-shot Anchor）：
+        - 示例 A（综合折合 92分 - APPLY）：候选人是资深前端，技术栈（React, TS）与 JD 100% 重合，有 2 段同类大厂实习，且符合所有硬门槛。
+          JSON 拆分为：{"hard_constraint_match": 95, "tech_stack_match": 95, "project_relevance": 92, "bonus_points": 88}
+        - 示例 B（综合折合 71分 - CONSIDER）：候选人技术栈匹配（Vue），但没有 JD 要求的 React 经验。有 1 段普通项目经验，没有大厂背景，但符合硬门槛。
+          JSON 拆分为：{"hard_constraint_match": 85, "tech_stack_match": 70, "project_relevance": 68, "bonus_points": 60}
+        - 示例 C（综合折合 43分 - SKIP）：候选人是后端开发，想投递前端实习岗位，完全不具备前端项目经验且学历门槛不符。
+          JSON 拆分为：{"hard_constraint_match": 30, "tech_stack_match": 45, "project_relevance": 40, "bonus_points": 45}
         """
         payload = {
             "jd_text": jd_text,
@@ -263,11 +292,30 @@ class AIAnalyzer:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                temperature=0.25,
+                temperature=0.1,
             )
             result_text = _strip_json_fence((response.choices[0].message.content or "").strip())
             raw = json.loads(result_text)
-            raw["match_score"] = max(0, min(100, int(raw.get("match_score", 50))))
+            
+            # Enforce backend-calculated unified scoring (education 30%, skills 30%, projects 30%, keywords/bonus 10%)
+            breakdown = raw.get("score_breakdown") or {}
+            h_match = max(0, min(100, int(breakdown.get("hard_constraint_match", 50))))
+            t_match = max(0, min(100, int(breakdown.get("tech_stack_match", 50))))
+            p_match = max(0, min(100, int(breakdown.get("project_relevance", 50))))
+            b_match = max(0, min(100, int(breakdown.get("bonus_points", 50))))
+            
+            calculated_score = int(round(h_match * 0.3 + t_match * 0.3 + p_match * 0.3 + b_match * 0.1))
+            # Apply hard constraint blocker cap (Scheme 1 rule)
+            if h_match <= 40:
+                calculated_score = min(59, calculated_score)
+                
+            raw["match_score"] = max(0, min(100, calculated_score))
+            raw["score_breakdown"] = {
+                "hard_constraint_match": h_match,
+                "tech_stack_match": t_match,
+                "project_relevance": p_match,
+                "bonus_points": b_match
+            }
             return PersonalDecision(**raw)
         except APIConnectionError as e:
             raise Exception(f"个人决策生成无法连接到大模型服务: {e}") from e

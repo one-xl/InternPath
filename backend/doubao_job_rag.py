@@ -117,7 +117,36 @@ def normalize_learning(item: dict[str, Any], index: int) -> dict[str, Any]:
 
 
 def normalize_llm_result(raw: dict[str, Any]) -> dict[str, Any]:
-    score = clamp_score(raw.get("matchScore", raw.get("match_score", 50)), 50)
+    dimensions = raw.get("dimensions")
+    if not isinstance(dimensions, list):
+        dimensions = []
+
+    # Extract the scores of 4 core dimensions (education, skills, projects, keywords)
+    edu_score = 50
+    skills_score = 50
+    proj_score = 50
+    kw_score = 50
+    for dim in dimensions:
+        if not isinstance(dim, dict):
+            continue
+        dim_id = str(dim.get("id")).strip()
+        dim_score = clamp_score(dim.get("score"), 50)
+        if dim_id == "education":
+            edu_score = dim_score
+        elif dim_id == "skills":
+            skills_score = dim_score
+        elif dim_id == "projects":
+            proj_score = dim_score
+        elif dim_id == "keywords":
+            kw_score = dim_score
+
+    # Calculate overall matchScore on backend (education: 30%, skills: 30%, projects: 30%, keywords: 10%)
+    calculated_score = int(round(edu_score * 0.3 + skills_score * 0.3 + proj_score * 0.3 + kw_score * 0.1))
+    # Apply hard constraint blocker cap (Scheme 1 rule)
+    if edu_score <= 40:
+        calculated_score = min(59, calculated_score)
+
+    score = clamp_score(calculated_score, 50)
     decision = str(raw.get("decision") or decision_from_score(score))
     if decision not in {"strong_yes", "yes", "maybe", "no"}:
         decision = decision_from_score(score)
@@ -128,9 +157,6 @@ def normalize_llm_result(raw: dict[str, Any]) -> dict[str, Any]:
     if priority not in {"P0", "P1", "P2", "P3"}:
         priority = priority_from_score(score)
 
-    dimensions = raw.get("dimensions")
-    if not isinstance(dimensions, list):
-        dimensions = []
     advice = raw.get("resumeAdvice") or raw.get("resume_advice")
     if not isinstance(advice, list):
         advice = []
@@ -164,6 +190,31 @@ def build_system_prompt() -> str:
 4. 对没有证据的能力，要放入 missingKeywords 或 resumeAdvice.issue。
 5. 输出必须是合法 JSON，不要 Markdown，不要解释性前后缀。
 
+评分维度与细则（百分制，必须严格遵守以下标尺）：
+1. "education" (学历背景, 权重 30%):
+   - 完全契合学历、工作年限、毕业年限、地点等核心硬门槛：85 - 100 分。
+   - 核心门槛严重不符（如学历不符、毕业年限错配，或明确要求全职但候选人只能兼职）：直接给 0 - 30 分。
+2. "skills" (技能匹配, 权重 30%):
+   - 技术栈与 JD 核心要求完全匹配且有检索到的简历证据：85 - 100 分。
+   - 掌握主要技能的 50% - 80% 或有相似技术栈：60 - 84 分。
+   - 缺失岗位最基础或最核心的技术（如投前端但完全不会 React/Vue/JS）：0 - 59 分。
+3. "projects" (项目经历, 权重 30%):
+   - 有 1 个或多个高度相似的业务或职责项目背景：85 - 100 分。
+   - 技术栈重合，但业务场景或项目深度偏离较大：60 - 84 分。
+   - 纯转行、无任何相关实习或项目经验：0 - 59 分。
+4. "keywords" (关键词覆盖, 权重 10%):
+   - 完全涵盖核心关键词：85 - 100 分。
+   - 覆盖中等：60 - 84 分。
+   - 覆盖极低：0 - 59 分。
+
+评分刻度示例参考（Few-shot Anchor）：
+- 示例 A（综合折合 92分 - strong_yes）：候选人是资深前端，技术栈（React, TS）与 JD 100% 重合，有 2 段同类大厂实习，且符合所有硬门槛。
+  维度打分：{"education": 95, "skills": 95, "projects": 92, "keywords": 88}
+- 示例 B（综合折合 71分 - maybe）：候选人技术栈匹配（Vue），但没有 JD 要求的 React 经验。有 1 段普通项目经验，没有大厂背景，但符合硬门槛。
+  维度打分：{"education": 85, "skills": 70, "projects": 68, "keywords": 60}
+- 示例 C（综合折合 43分 - no）：候选人是后端开发，想投递前端实习岗位，完全不具备前端项目经验且学历门槛不符。
+  维度打分：{"education": 30, "skills": 45, "projects": 40, "keywords": 45}
+
 字段要求：
 {
   "decision": "strong_yes | yes | maybe | no",
@@ -174,7 +225,10 @@ def build_system_prompt() -> str:
   "detectedKeywords": ["JD 中识别出的关键词"],
   "missingKeywords": ["简历证据不足的关键词"],
   "dimensions": [
-    {"id": "skills", "label": "技能匹配", "score": 0-100, "tags": ["命中词"], "explanation": "简短解释"}
+    {"id": "education", "label": "学历背景", "score": 0-100, "tags": ["符合项"], "explanation": "基于教育背景和岗位门槛判断"},
+    {"id": "skills", "label": "技能匹配", "score": 0-100, "tags": ["命中词"], "explanation": "基于 JD 技术栈和检索片段判断"},
+    {"id": "projects", "label": "项目经历", "score": 0-100, "tags": ["命中项目"], "explanation": "基于项目深度、职责边界和交付判断"},
+    {"id": "keywords", "label": "关键词覆盖", "score": 0-100, "tags": ["覆盖词"], "explanation": "基于 JD 关键词在片段中的覆盖判断"}
   ],
   "resumeAdvice": [
     {"id": "xxx", "priority": "high|medium|low", "issue": "当前问题", "suggestion": "修改建议", "example": "可直接使用的简历表达", "impact": "影响程度"}
@@ -224,7 +278,7 @@ def analyze_job_with_doubao(
                 {"role": "system", "content": build_system_prompt()},
                 {"role": "user", "content": json.dumps(compact_payload, ensure_ascii=False)},
             ],
-            temperature=0.2,
+            temperature=0.1,
         )
         content = strip_json_fence(response.choices[0].message.content or "")
         return normalize_llm_result(json.loads(content))

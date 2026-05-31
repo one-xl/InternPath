@@ -1,3 +1,4 @@
+import React, { useState } from "react";
 import type { AnalysisResult } from "../types/analysis";
 import { DecisionCard } from "../components/result/DecisionCard";
 import { LearningPlanPanel } from "../components/result/LearningPlanPanel";

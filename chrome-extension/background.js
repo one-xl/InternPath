@@ -6,9 +6,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const jobData = message.data;
     
     // Find InternPath tabs
-    chrome.tabs.query({ url: ["*://localhost:5173/*", "*://127.0.0.1:5173/*", "*://localhost:8787/*", "*://127.0.0.1:8787/*"] }, (tabs) => {
-      if (tabs && tabs.length > 0) {
-        const targetTab = tabs[0];
+    chrome.tabs.query({}, (tabs) => {
+      const targetTab = tabs && tabs.find(tab => {
+        if (!tab.url) return false;
+        const u = tab.url.toLowerCase();
+        return u.includes("localhost:5173") || u.includes("127.0.0.1:5173") || u.includes("localhost:8787") || u.includes("127.0.0.1:8787");
+      });
+      if (targetTab) {
         
         // Inject autofill script
         chrome.scripting.executeScript({
@@ -75,8 +79,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   
   if (message.action === "sync_session") {
     // Attempt to read token from the active website tab
-    chrome.tabs.query({ url: ["*://localhost:5173/*", "*://127.0.0.1:5173/*"] }, (tabs) => {
-      if (tabs && tabs.length > 0) {
+    chrome.tabs.query({}, (tabs) => {
+      const targetTabs = tabs && tabs.filter(tab => {
+        if (!tab.url) return false;
+        const u = tab.url.toLowerCase();
+        return u.includes("localhost:5173") || u.includes("127.0.0.1:5173");
+      });
+      if (targetTabs && targetTabs.length > 0) {
         chrome.scripting.executeScript({
           target: { tabId: tabs[0].id },
           func: () => {

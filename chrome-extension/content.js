@@ -62,6 +62,71 @@
   document.body.appendChild(container);
 
   // Scraper Logic
+  // 智能且鲁棒的 JD 详情语义抓取器
+  function getJdSemanticText() {
+    // 1. 尝试使用常规已知的选择器
+    const commonSelectors = [
+      ".job-sec-text", 
+      ".detail-content .job-sec .text", 
+      ".job-detail .text", 
+      ".job-detail-section .text",
+      ".job-detail-content",
+      ".detail-content",
+      ".job-desc",
+      ".job-description",
+      ".job-detail-box",
+      ".job-detail-box .text",
+      ".job-sec .text",
+      ".post-item__description",
+      ".job-detail"
+    ];
+    for (const sel of commonSelectors) {
+      const el = document.querySelector(sel);
+      if (el && el.textContent.trim().length > 30) {
+        return el.textContent.trim();
+      }
+    }
+
+    // 2. 语义锚点查找：利用网页上的文本标题定位
+    const headers = Array.from(document.querySelectorAll("h1, h2, h3, h4, h5, h6, div, span, p, strong, li"));
+    const keywords = ["职位描述", "岗位职责", "职位详情", "岗位要求", "工作职责", "任职条件", "任职要求", "工作内容", "JD"];
+    
+    for (const h of headers) {
+      const txt = h.textContent.trim();
+      if (keywords.includes(txt) || (txt.length < 15 && keywords.some(k => txt.includes(k)))) {
+        // A. 查找下一个兄弟节点
+        let sibling = h.nextElementSibling;
+        while (sibling) {
+          const siblingTxt = sibling.textContent.trim();
+          if (siblingTxt.length > 30) {
+            return siblingTxt;
+          }
+          const textChild = sibling.querySelector(".text") || sibling.querySelector(".job-sec-text") || sibling.querySelector("p");
+          if (textChild && textChild.textContent.trim().length > 30) {
+            return textChild.textContent.trim();
+          }
+          sibling = sibling.nextElementSibling;
+        }
+        
+        // B. 查找父节点下的其它文字区域
+        const parent = h.parentElement;
+        if (parent) {
+          const textEl = parent.querySelector(".text") || parent.querySelector(".job-sec-text") || parent.querySelector(".job-desc") || parent.querySelector(".detail-content");
+          if (textEl && textEl.textContent.trim().length > 30) {
+            return textEl.textContent.trim();
+          }
+          const parentTxt = parent.textContent.trim();
+          if (parentTxt.length > txt.length + 40) {
+            return parentTxt.replace(txt, "").trim();
+          }
+        }
+      }
+    }
+    
+    return "";
+  }
+
+  // Scraper Logic
   function extractJobData() {
     const url = window.location.href;
     let title = "";
@@ -125,6 +190,11 @@
             document.querySelector(".detail-content") || 
             document.querySelector(".job-desc") || 
             {textContent: ""}).textContent.trim();
+    }
+
+    // 如果常规选择器抓取的 jd 为空，启用语义自愈匹配器
+    if (!jd || jd.length < 10) {
+      jd = getJdSemanticText();
     }
 
     return {

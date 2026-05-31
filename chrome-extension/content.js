@@ -61,7 +61,72 @@
   container.appendChild(importBtn);
   document.body.appendChild(container);
 
-  // Scraper Logic
+  // 抗噪双端净化器，去除推荐、举报、公司和按钮垃圾信息
+  function cleanJdText(text) {
+    if (!text) return "";
+    
+    let cleanText = text;
+    
+    // A. 净化头部：如果在最前面 400 字符内，发现了核心职责要求的起点词，我们可以切掉前置的冗余卡片信息
+    const startKeywords = ["岗位职责", "职位描述", "工作职责", "岗位要求", "职责描述", "工作内容", "任务要求", "任职要求", "岗位职责:"];
+    let firstStartIdx = -1;
+    
+    for (const startKw of startKeywords) {
+      const idx = cleanText.indexOf(startKw);
+      if (idx !== -1 && idx < 400) {
+        if (firstStartIdx === -1 || idx < firstStartIdx) {
+          firstStartIdx = idx;
+        }
+      }
+    }
+    
+    if (firstStartIdx !== -1) {
+      const discardedPart = cleanText.substring(0, firstStartIdx);
+      const isNoise = discardedPart.includes("收藏") || 
+                      discardedPart.includes("立即申请") || 
+                      discardedPart.includes("HR") || 
+                      discardedPart.includes("发私信") || 
+                      discardedPart.includes("薪资") || 
+                      discardedPart.includes("面议");
+      if (isNoise) {
+        cleanText = cleanText.substring(firstStartIdx);
+      }
+    }
+
+    // B. 净化尾部：如果出现以下无关词，切除其后所有字符
+    const cutKeywords = [
+      "牛客安全提示",
+      "安全提示",
+      "为你推荐",
+      "相似职位",
+      "更多相似职位",
+      "工作地址",
+      "查看其他",
+      "立即举报",
+      "举报取",
+      "完善信息",
+      "发私信",
+      "笔试题目",
+      "面试经验",
+      "面试短评"
+    ];
+    
+    for (const kw of cutKeywords) {
+      const idx = cleanText.indexOf(kw);
+      if (idx !== -1) {
+        cleanText = cleanText.substring(0, idx);
+      }
+    }
+    
+    // C. 移除一些孤立的残留按钮词
+    cleanText = cleanText.replace(/立即申请/g, "");
+    cleanText = cleanText.replace(/收藏/g, "");
+    cleanText = cleanText.replace(/取消/g, "");
+    cleanText = cleanText.replace(/确定/g, "");
+    
+    return cleanText.trim();
+  }
+
   // 智能且鲁棒的 JD 详情语义抓取器
   function getJdSemanticText() {
     // 1. 尝试使用常规已知的选择器
@@ -87,39 +152,38 @@
       }
     }
 
-    // 2. 语义锚点查找：利用网页上的文本标题定位
+    // 2. 语义锚点查找
     const headers = Array.from(document.querySelectorAll("h1, h2, h3, h4, h5, h6, div, span, p, strong, li"));
     const keywords = ["职位描述", "岗位职责", "职位详情", "岗位要求", "工作职责", "任职条件", "任职要求", "工作内容", "JD"];
+    let foundTextParts = [];
     
     for (const h of headers) {
       const txt = h.textContent.trim();
-      if (keywords.includes(txt) || (txt.length < 15 && keywords.some(k => txt.includes(k)))) {
-        // A. 查找下一个兄弟节点
+      if (txt.length > 0 && txt.length < 15 && keywords.includes(txt)) {
         let sibling = h.nextElementSibling;
-        while (sibling) {
+        let collectedCount = 0;
+        
+        while (sibling && collectedCount < 5) {
           const siblingTxt = sibling.textContent.trim();
-          if (siblingTxt.length > 30) {
-            return siblingTxt;
+          const stopKeywords = ["为你推荐", "相似职位", "安全提示", "公司介绍", "查看其他", "举报"];
+          if (stopKeywords.some(sk => siblingTxt.includes(sk)) && siblingTxt.length < 30) {
+            break;
           }
-          const textChild = sibling.querySelector(".text") || sibling.querySelector(".job-sec-text") || sibling.querySelector("p");
-          if (textChild && textChild.textContent.trim().length > 30) {
-            return textChild.textContent.trim();
+          
+          if (siblingTxt.length > 15) {
+            foundTextParts.push(siblingTxt);
+            collectedCount++;
           }
           sibling = sibling.nextElementSibling;
         }
-        
-        // B. 查找父节点下的其它文字区域
-        const parent = h.parentElement;
-        if (parent) {
-          const textEl = parent.querySelector(".text") || parent.querySelector(".job-sec-text") || parent.querySelector(".job-desc") || parent.querySelector(".detail-content");
-          if (textEl && textEl.textContent.trim().length > 30) {
-            return textEl.textContent.trim();
-          }
-          const parentTxt = parent.textContent.trim();
-          if (parentTxt.length > txt.length + 40) {
-            return parentTxt.replace(txt, "").trim();
-          }
-        }
+      }
+    }
+
+    if (foundTextParts.length > 0) {
+      const uniqueParts = [...new Set(foundTextParts)];
+      const merged = uniqueParts.join("\n\n").trim();
+      if (merged.length > 30) {
+        return merged;
       }
     }
     
@@ -196,6 +260,9 @@
     if (!jd || jd.length < 10) {
       jd = getJdSemanticText();
     }
+
+    // 无论以何种方式抓取，均运行抗噪双端净化
+    jd = cleanJdText(jd);
 
     return {
       title: title || "未知职位",

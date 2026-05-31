@@ -296,11 +296,16 @@ class CareerPathAIService:
                 knowledge_texts=knowledge_texts or [],
                 user_id=user_id,
             )
-        except Exception:
+        except Exception as e:
+            import traceback
+            err_msg = str(e)
+            print(f"[SERVICE] build_personal_decision failed: {err_msg}")
+            traceback.print_exc()
             return self._fallback_personal_decision(
                 analysis=analysis,
                 resume_text=resume_text,
                 knowledge_texts=knowledge_texts or [],
+                error_msg=err_msg,
             )
 
     def _fallback_personal_decision(
@@ -309,6 +314,7 @@ class CareerPathAIService:
         analysis: JobAnalysis,
         resume_text: str,
         knowledge_texts: List[str],
+        error_msg: Optional[str] = None,
     ) -> PersonalDecision:
         material_text = "\n".join([resume_text, *knowledge_texts]).lower()
         skills = analysis.skills or []
@@ -323,14 +329,20 @@ class CareerPathAIService:
         else:
             recommendation = "SKIP"
 
+        decision_reasons = [
+            f"JD 难度为 {analysis.difficulty}，核心要求集中在 {', '.join(skills[:4]) or '岗位能力'}。",
+            f"当前材料能直接覆盖 {len(matched)} 个核心技能。",
+        ]
+        if error_msg:
+            short_err = error_msg[:120] + "..." if len(error_msg) > 120 else error_msg
+            decision_reasons.append(f"⚠️ 大模型决策生成失败（错误: {short_err}），已自动切换为本地启发式兜底匹配计算。")
+        else:
+            decision_reasons.append("该判断来自本地兜底规则，建议补充更完整的简历或项目材料后重新分析。")
+
         return PersonalDecision(
             recommendation=recommendation,
             match_score=max(0, min(100, score)),
-            decision_reasons=[
-                f"JD 难度为 {analysis.difficulty}，核心要求集中在 {', '.join(skills[:4]) or '岗位能力'}。",
-                f"当前材料能直接覆盖 {len(matched)} 个核心技能。",
-                "该判断来自本地兜底规则，建议补充更完整的简历或项目材料后重新分析。",
-            ],
+            decision_reasons=decision_reasons,
             critical_gaps=[f"缺少 {skill} 的明确项目或经历证据" for skill in missing[:5]],
             resume_rewrites=[
                 f"围绕 {skill} 补写一条项目经历：说明场景、动作、技术栈和量化结果。"

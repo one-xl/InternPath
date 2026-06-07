@@ -4066,7 +4066,7 @@ class Database:
                     cursor.execute("UPDATE users SET role = 'admin' WHERE username = ?", ("admin@example.com",))
                     conn.commit()
 
-            # ── Seed & Repair test@example.com with test1234 ──
+            # ── Repair test@example.com with test1234 ──
             cursor.execute("SELECT password_hash FROM users WHERE username = ?", ("test@example.com",))
             row_test = cursor.fetchone()
             if row_test is None:
@@ -4083,7 +4083,7 @@ class Database:
                 if parse_password_hash(stored_hash_test) is None or not verify_password_hash("test1234", stored_hash_test):
                     hashed_test = hash_password("test1234")
                     cursor.execute(
-                        "UPDATE users SET password_hash = ?, role = 'user', is_active = 1 WHERE username = ?",
+                        "UPDATE users SET password_hash = ?, role = 'user', is_active = TRUE WHERE username = ?",
                         (hashed_test, "test@example.com")
                     )
                     conn.commit()
@@ -4105,7 +4105,7 @@ class Database:
                 if parse_password_hash(stored_hash_testuser) is None or not verify_password_hash("test1234", stored_hash_testuser):
                     hashed_testuser = hash_password("test1234")
                     cursor.execute(
-                        "UPDATE users SET password_hash = ?, is_active = 1 WHERE username = ?",
+                        "UPDATE users SET password_hash = ?, is_active = TRUE WHERE username = ?",
                         (hashed_testuser, "testuser@example.com")
                     )
                     conn.commit()
@@ -4118,7 +4118,7 @@ class Database:
                 if parse_password_hash(stored_hash_t) is None or not verify_password_hash("test1234", stored_hash_t):
                     hashed_t = hash_password("test1234")
                     cursor.execute(
-                        "UPDATE users SET password_hash = ?, is_active = 1 WHERE username = ?",
+                        "UPDATE users SET password_hash = ?, is_active = TRUE WHERE username = ?",
                         (hashed_t, "test")
                     )
                     conn.commit()

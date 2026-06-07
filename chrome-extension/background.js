@@ -160,9 +160,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       
       fetch(`${host}/api/resumes`, {
         method: "GET",
-        headers: headers
+        headers: headers,
+        credentials: "include"
       })
-      .then(r => r.json())
+      .then(async r => {
+        if (!r.ok) {
+          let errorMsg = `HTTP error ${r.status}`;
+          try {
+            const errData = await r.json();
+            if (errData && errData.detail) {
+              errorMsg = errData.detail;
+            }
+          } catch (_) {}
+          throw new Error(errorMsg);
+        }
+        return r.json();
+      })
       .then(res => sendResponse({ success: true, resumes: res.resumes || [] }))
       .catch(err => sendResponse({ success: false, error: err.message }));
     });
@@ -181,9 +194,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       fetch(`${host}/api/analysis/tailor-form-fields`, {
         method: "POST",
         headers: headers,
+        credentials: "include",
         body: JSON.stringify(message.data)
       })
-      .then(r => r.json())
+      .then(async r => {
+        const data = await r.json();
+        if (!r.ok) {
+          throw new Error(data.detail || `HTTP error ${r.status}`);
+        }
+        return data;
+      })
       .then(res => {
         if (res.ok) {
           sendResponse({ success: true, tailored_data: res.tailored_data });

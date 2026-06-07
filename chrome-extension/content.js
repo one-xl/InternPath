@@ -615,10 +615,20 @@
       fetch(`${host}/api/jobs/import`, {
         method: "POST",
         headers: headers,
+        credentials: "include",
         body: JSON.stringify(jobData)
       })
-      .then(response => {
-        if (!response.ok) throw new Error(`HTTP error ${response.status}`);
+      .then(async response => {
+        if (!response.ok) {
+          let errMsg = `HTTP error ${response.status}`;
+          try {
+            const errData = await response.json();
+            if (errData && errData.detail) {
+              errMsg = errData.detail;
+            }
+          } catch (_) {}
+          throw new Error(errMsg);
+        }
         return response.json();
       })
       .then(res => {

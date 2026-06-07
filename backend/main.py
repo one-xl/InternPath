@@ -20,6 +20,8 @@ from uuid import uuid4
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile, status, Cookie, Response, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 
 from database import Database
@@ -423,6 +425,44 @@ def create_app(
     auth_db: Optional[Database] = None,
 ) -> FastAPI:
     app = FastAPI(title="InternPath Personal Workbench API")
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={
+                "detail": f"参数校验失败: {str(exc.errors())}",
+                "error_type": "RequestValidationError",
+                "errors": exc.errors()
+            }
+        )
+
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(request: Request, exc: HTTPException):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "detail": exc.detail,
+                "error_type": "HTTPException"
+            }
+        )
+
+    @app.exception_handler(Exception)
+    async def global_exception_handler(request: Request, exc: Exception):
+        import traceback
+        traceback.print_exc()
+        error_type = exc.__class__.__name__
+        error_detail = str(exc) or "No detail provided"
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "detail": f"服务器内部错误: [{error_type}] {error_detail}",
+                "error_type": error_type,
+                "reason": error_detail
+            }
+        )
 
     # CORS: in production only allow configured origin; in development allow localhost
     if Config.IS_PRODUCTION and Config.FRONTEND_ORIGIN:

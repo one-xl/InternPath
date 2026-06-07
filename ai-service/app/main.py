@@ -5,7 +5,9 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 
 from app.api.schemas import AnalyzeJdRequest, RagSearchRequest, VerifyReportRequest
 from app.rag.bm25_retriever import search_chunks_bm25
@@ -16,6 +18,44 @@ from app.workflow.nodes import build_analyze_jd_workflow, workflow_response
 from app.workflow.state import WorkflowState
 
 app = FastAPI(title="InternPath AI Service", version="0.1.0")
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    import traceback
+    traceback.print_exc()
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={
+            "detail": f"参数校验失败: {str(exc.errors())}",
+            "error_type": "RequestValidationError",
+            "errors": exc.errors()
+        }
+    )
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "detail": exc.detail,
+            "error_type": "HTTPException"
+        }
+    )
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    import traceback
+    traceback.print_exc()
+    error_type = exc.__class__.__name__
+    error_detail = str(exc) or "No detail provided"
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={
+            "detail": f"AI 服务内部错误: [{error_type}] {error_detail}",
+            "error_type": error_type,
+            "reason": error_detail
+        }
+    )
 
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 120

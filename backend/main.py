@@ -83,6 +83,21 @@ class AnalyzeRequest(BaseModel):
     async_mode: bool = False
 
 
+class BackgroundAnalysisStartRequest(BaseModel):
+    record_id: str
+    draft: dict
+    resume_file_id: str
+    embedding_config_id: Optional[str] = None
+    chat_config_id: Optional[str] = None
+
+
+class TailorFormFieldsRequest(BaseModel):
+    resume_file_id: str
+    jd_text: str
+    fields: list[str]
+    chat_config_id: Optional[str] = None
+
+
 class ATSSimulateRequest(BaseModel):
     jd_text: str = ""
     jd_id: Optional[Any] = None
@@ -1848,6 +1863,87 @@ def create_app(
         except Exception as exc:
             print(f"[ASYNC_ANALYSIS] Background task {task_id} failed: {exc}")
             state.service.update_analysis_task_status(user_id, task_id, "FAILED", str(exc))
+
+    @app.post("/api/analysis/background-start")
+    def start_background_analysis(
+        payload: BackgroundAnalysisStartRequest,
+        background_tasks: BackgroundTasks,
+        user_id: Any = Depends(current_user_id)
+    ) -> dict[str, Any]:
+        user = state.auth_db.get_user_by_id(user_id)
+        if user and user.role != "admin":
+            if user.generation_limit is None or user.generation_limit <= 0:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="您的账号生成额度已用尽，请联系管理员增加次数。"
+                )
+        
+        # Initialize placeholder in analysis_records with status 'pending'
+        initial_result = {
+            "id": payload.record_id,
+            "createdAt": datetime.now().isoformat(),
+            "draft": payload.draft,
+            "status": "pending",
+            "progressStep": 0,
+            "steps": [
+                { "id": "validate", "title": "检查输入与配置", "description": "正在验证输入内容并加载模型配置...", "status": "running" },
+                { "id": "resume_embedding", "title": "向量化简历片段", "description": "正在生成简历片段的向量索引...", "status": "pending" },
+                { "id": "jd_embedding", "title": "向量化岗位 JD", "description": "正在对岗位描述进行结构化分析与向量化...", "status": "pending" },
+                { "id": "retrieve_chunks", "title": "检索最相关片段", "description": "基于语义相似度检索最匹配的简历经历...", "status": "pending" },
+                { "id": "gemini_analysis", "title": "调用 Gemini 分析", "description": "大语言模型正在进行匹配度深度审计与改写建议...", "status": "pending" },
+                { "id": "save_history", "title": "保存分析记录", "description": "保存分析数据至云端面板...", "status": "pending" }
+            ]
+        }
+        
+        state.auth_db.save_analysis_record(
+            user_id=user_id,
+            status="pending",
+            result_json=initial_result,
+            input_json=payload.draft,
+            record_id=payload.record_id
+        )
+        
+        from background_analyzer import run_background_resume_analysis
+        background_tasks.add_task(
+            run_background_resume_analysis,
+            user_id,
+            payload.record_id,
+            payload.draft,
+            payload.resume_file_id,
+            payload.embedding_config_id,
+            payload.chat_config_id
+        )
+        
+        return {
+            "ok": True,
+            "recordId": payload.record_id,
+            "status": "pending"
+        }
+
+    @app.post("/api/analysis/tailor-form-fields")
+    def tailor_form_fields(
+        payload: TailorFormFieldsRequest,
+        user_id: Any = Depends(current_user_id)
+    ) -> dict[str, Any]:
+        from background_analyzer import tailor_form_fields_py
+        try:
+            res = tailor_form_fields_py(
+                user_id=user_id,
+                resume_file_id=payload.resume_file_id,
+                jd_text=payload.jd_text,
+                fields=payload.fields,
+                chat_config_id=payload.chat_config_id
+            )
+            return {
+                "ok": True,
+                "tailored_data": res["tailored_data"],
+                "profile": res["profile"]
+            }
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=str(exc)
+            )
 
     @app.post("/api/analyze")
     def analyze(

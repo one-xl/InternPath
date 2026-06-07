@@ -28,6 +28,21 @@ export function useHistory(enabled = true) {
     reload();
   }, [reload]);
 
+  // Auto-polling for active background tasks (polls every 5s if active, stops when done)
+  useEffect(() => {
+    if (!enabled) return;
+    const hasActiveTask = records.some(
+      (r) => r.status === "pending" || r.status === "processing"
+    );
+    if (!hasActiveTask) return;
+
+    const interval = setInterval(() => {
+      void reload();
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [records, reload, enabled]);
+
   async function saveRecord(record: HistoryRecord) {
     try {
       await saveHistoryRecord(record);

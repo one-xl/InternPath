@@ -165,25 +165,10 @@ export function useJobAnalysis() {
     progress.setStatus("validating");
     progress.setRunningStep("validate");
 
-    let currentStepId: AnalysisStepId = "validate";
-    let parsedJD: any = undefined;
-    let requirementMatchesResult: any = undefined;
-    let retrievedChunks: ResumeChunk[] = [];
-    let hardConstraintsResult: any = undefined;
+    const recordId = input.sourceDraftId || safeUUID();
 
     try {
-      console.info("[analysis] start clicked");
-      console.info("[analysis] validation", {
-        hasJdText: Boolean(input.draft.jdText?.trim()),
-        hasParsedResume: Boolean(input.parsedResume),
-        chunksCount: input.chunks?.length ?? 0,
-        hasEmbeddingConfig: Boolean(input.embeddingConfig),
-        hasChatConfig: Boolean(input.chatConfig),
-        embeddingProvider: input.embeddingConfig?.provider,
-        embeddingModelId: input.embeddingConfig?.modelId,
-        chatProvider: input.chatConfig?.provider,
-        chatModelId: input.chatConfig?.modelId
-      });
+      console.info("[analysis] starting background analysis via API for record:", recordId);
 
       // 1. JD empty check
       if (!input.draft.jdText || !input.draft.jdText.trim()) {
@@ -228,31 +213,6 @@ export function useJobAnalysis() {
         throw new Error("请先配置大语言模型。");
       }
 
-      const chatConfigWithHighTimeout = {
-        ...input.chatConfig,
-        timeoutMs: Math.max(input.chatConfig.timeoutMs ?? 300000, 300000)
-      };
-
-      // 10. Check if the embedding provider is supported
-      if (
-        input.embeddingConfig.provider !== "doubao" &&
-        input.embeddingConfig.provider !== "doubao-multimodal" &&
-        input.embeddingConfig.provider !== "doubao-text" &&
-        input.embeddingConfig.provider !== "openai-compatible" &&
-        input.embeddingConfig.provider !== "custom"
-      ) {
-        throw new Error("不支持的向量模型 Provider 配置。");
-      }
-
-      // 11. Check if the chat provider is supported
-      if (
-        input.chatConfig.provider !== "gemini" &&
-        input.chatConfig.provider !== "openai-compatible" &&
-        input.chatConfig.provider !== "custom"
-      ) {
-        throw new Error("不支持的大语言模型 Provider 配置。");
-      }
-
       // Successfully validated
       progress.completeStep("validate", {
         chunksCount: input.chunks.length,
@@ -260,289 +220,93 @@ export function useJobAnalysis() {
         chatModelId: input.chatConfig.modelId
       });
 
-      // Determine if we can reuse vector cache
-      const cache = input.vectorResultCache;
-      const canReuseCache = 
-        cache &&
-        cache.parsedJD &&
-        cache.retrievedChunks &&
-        cache.retrievedChunks.length > 0;
-
-      if (canReuseCache) {
-        console.info("[analysis] Reusing cached vector results from previous attempt.");
-        
-        // Populate the variables directly from cache
-        parsedJD = cache.parsedJD;
-        retrievedChunks = cache.retrievedChunks || [];
-        requirementMatchesResult = cache.requirementMatches;
-        hardConstraintsResult = cache.hardConstraintsResult;
-
-        // Instantly complete Step 2, Step 3, Step 4 in progress UI
-        progress.completeStep("resume_embedding", {
-          embeddedChunksCount: retrievedChunks.length,
-          cacheReused: true
-        });
-        progress.completeStep("jd_embedding", { cacheReused: true });
-        progress.completeStep("retrieve_chunks", {
-          retrievedChunksCount: retrievedChunks.length,
-          cacheReused: true
-        });
-      } else {
-        const alreadyVectorized = 
-          input.chunks && 
-          input.chunks.length > 0 && 
-          input.chunks.every((c) => Array.isArray(c.embedding) && c.embedding.length > 0);
-
-        let embeddedChunks: ResumeChunk[] = [];
-
-        if (alreadyVectorized) {
-          console.info("[analysis] Chunks are already vectorized. Complete resume embedding step instantly.");
-          embeddedChunks = input.chunks;
-          progress.setRunningStep("resume_embedding");
-          progress.completeStep("resume_embedding", {
-            embeddedChunksCount: embeddedChunks.length,
-            chunksCount: embeddedChunks.length,
-            cacheReused: true
-          });
-        } else {
-          // Step 2: embedding_resume
-          currentStepId = "resume_embedding";
-          progress.setStatus("embedding_resume");
-          progress.setRunningStep("resume_embedding");
-          progress.updateStepMetadata("resume_embedding", {
-            embeddedChunksCount: 0,
-            chunksCount: input.chunks.length
-          });
-
-          embeddedChunks = await embedChunksWithConfig(
-            input.chunks,
-            input.embeddingConfig,
-            {
-              onProgress: ({ completed, total }) => {
-                progress.updateStepMetadata("resume_embedding", {
-                  embeddedChunksCount: completed,
-                  chunksCount: total
-                });
-              }
-            }
-          );
-          progress.completeStep("resume_embedding", {
-            embeddedChunksCount: embeddedChunks.length
-          });
-        }
-
-        // Step 3: embedding_jd
-        currentStepId = "jd_embedding";
-        progress.setStatus("embedding_jd");
-        progress.setRunningStep("jd_embedding");
-        
-        // Stage A: Decompose JD into structural requirements and constraints
-        parsedJD = await parseJobDescription(input.draft.jdText, chatConfigWithHighTimeout);
-        
-        // Stage B: Vectorize entire JD text for legacy/fallback search compatibility
-        const jdEmbedding = await embedTextWithConfig(input.draft.jdText, input.embeddingConfig);
-        progress.completeStep("jd_embedding");
-
-        // Step 4: retrieving
-        currentStepId = "retrieve_chunks";
-        progress.setStatus("retrieving");
-        progress.setRunningStep("retrieve_chunks");
-        
-        // Stage A: Core multi-requirement vector retrieval
-        requirementMatchesResult = await retrieveEvidenceForRequirements(
-          parsedJD,
-          embeddedChunks,
-          input.embeddingConfig,
-          { topK: 3, threshold: 0.3 }
-        );
-        
-        // Stage B: Deduplicate evidence chunks to build flat array for compatible rendering
-        const seenChunkIds = new Set<string>();
-        
-        requirementMatchesResult.requirement_matches.forEach((rm: any) => {
-          rm.matched_evidence.forEach((ev: any) => {
-            if (!seenChunkIds.has(ev.evidence_id)) {
-              seenChunkIds.add(ev.evidence_id);
-              const originalChunk = embeddedChunks.find((c) => c.id === ev.evidence_id);
-              if (originalChunk) {
-                retrievedChunks.push({
-                  ...originalChunk,
-                  score: ev.similarity // Store highest retrieved similarity
-                });
-              }
-            }
-          });
-        });
-        
-        // Sort flat list by similarity score descending
-        retrievedChunks.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
-        
-        // Fallback: if no requirement matches returned any chunks, use whole-JD similarity
-        if (retrievedChunks.length === 0) {
-          const legacyChunks = retrieveTopChunksByCosineSimilarity({
-            jdEmbedding,
-            chunks: embeddedChunks,
-            topK: 8,
-          });
-          retrievedChunks.push(...legacyChunks);
-        }
-        
-        progress.completeStep("retrieve_chunks", {
-          retrievedChunksCount: retrievedChunks.length
-        });
-      }
-
-      if (!retrievedChunks.length) {
-        throw new Error("没有检索到相关简历片段，请检查简历解析结果或 JD 内容。");
-      }
-
-      // Step 5: analyzing
-      currentStepId = "gemini_analysis";
-      progress.setStatus("analyzing");
-      progress.setRunningStep("gemini_analysis");
-      
-      // Stage A: Hard constraints audit checking
-      progress.updateStepMetadata("gemini_analysis", {
-        subState: "checking_constraints",
-        subProgress: 15
-      });
-      if (!hardConstraintsResult) {
-        hardConstraintsResult = await checkHardConstraints(
-          parsedJD,
-          input.parsedResume,
-          chatConfigWithHighTimeout
-        );
-      }
-      
-      // Stage B: Structured evidence-constrained Gemini analysis
-      progress.updateStepMetadata("gemini_analysis", {
-        subState: "deep_analyzing",
-        subProgress: 35
-      });
-
-      // Smoothly emulated sub-progress bar updates for long reasoning/response time
-      let currentSubProgress = 35;
-      const progressTimer = window.setInterval(() => {
-        if (currentSubProgress < 95) {
-          if (currentSubProgress < 60) {
-            currentSubProgress += 4;
-          } else if (currentSubProgress < 80) {
-            progress.updateStepMetadata("gemini_analysis", {
-              subState: "generating_advice",
-              subProgress: Math.round(currentSubProgress)
-            });
-            currentSubProgress += 2.5;
-          } else {
-            progress.updateStepMetadata("gemini_analysis", {
-              subState: "building_roadmap",
-              subProgress: Math.round(currentSubProgress)
-            });
-            currentSubProgress += 1.2;
-          }
-          progress.updateStepMetadata("gemini_analysis", {
-            subProgress: Math.min(Math.round(currentSubProgress), 95)
-          });
-        }
-      }, 2000);
-      
-      let chatResult;
-      try {
-        chatResult = await analyzeJobWithChatConfig({
-          jdText: input.draft.jdText,
-          targetType: input.draft.targetType || input.draft.level,
-          jobDirection: input.draft.jobDirection || input.draft.title,
-          retrievedChunks,
-          config: chatConfigWithHighTimeout,
-          
-          // Pass structural context
-          parsedJD,
-          requirementMatches: requirementMatchesResult,
-          hardConstraintsResult,
-          userExtraContext: input.draft.candidateMaterial
-        });
-      } finally {
-        window.clearInterval(progressTimer);
-      }
-
-      progress.updateStepMetadata("gemini_analysis", {
-        subState: "completed",
-        subProgress: 100
-      });
-
-      progress.completeStep("gemini_analysis", {
-        retryCount: (chatResult as any)?.retryCount || 0
-      });
-
-      // Step 6: saving
-      currentStepId = "save_history";
-      progress.setStatus("saving");
-      progress.setRunningStep("save_history");
-      await new Promise((resolve) => window.setTimeout(resolve, 500));
-
-      const averageScore = Math.round(
-        retrievedChunks.reduce((sum, chunk) => sum + (chunk.score ?? 0), 0) / retrievedChunks.length,
-      );
-
-      const nextResult: AnalysisResult = {
-        id: input.sourceDraftId || safeUUID(),
-        createdAt: new Date().toISOString(),
-        draft: input.draft,
-        sourceDraftId: input.sourceDraftId,
-        resumeFile: { ...input.resumeFile, status: "indexed" } as any,
-        parsedResume: {
-          ...input.parsedResume,
-          chunks: input.parsedResume.chunks.map((chunk) => ({ ...chunk, embedding: undefined })),
-        } as any,
-        retrievedResumeChunks: retrievedChunks.map((chunk) => ({ ...chunk, embedding: undefined })),
-        retrievalSummary: `使用 ${input.embeddingConfig.provider} / ${input.embeddingConfig.modelId} 召回 ${retrievedChunks.length} 个简历片段。`,
-        retrievalScore: averageScore,
-        modelUsage: {
-          embeddingProvider: input.embeddingConfig.provider,
-          embeddingModelId: input.embeddingConfig.modelId,
-          chatProvider: input.chatConfig.provider,
-          chatModelId: chatResult.chatModelId || input.chatConfig.modelId,
-          retrievalTopK: 8,
-          createdAt: new Date().toISOString(),
+      // Start background task in backend
+      const response = await fetch("/api/analysis/background-start", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
         },
-        ...chatResult,
-      };
+        body: JSON.stringify({
+          record_id: recordId,
+          draft: input.draft,
+          resume_file_id: input.resumeFile.id,
+          embedding_config_id: input.embeddingConfig.id,
+          chat_config_id: input.chatConfig.id,
+        })
+      });
 
-      // Auto-save history if callback is provided
-      if (input.onSaveHistory) {
-        try {
-          await input.onSaveHistory(nextResult);
-        } catch (saveError: any) {
-          throw new Error("保存历史记录失败: " + (saveError.message || String(saveError)));
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`启动后台分析失败: ${errorText || response.statusText}`);
+      }
+
+      const startRes = await response.json();
+      console.info("[analysis] Background task queued:", startRes);
+
+      // Poll task status until success or failed
+      let isCompleted = false;
+      let finalResultObj: AnalysisResult | null = null;
+      let pollCount = 0;
+
+      while (!isCompleted) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        pollCount++;
+
+        const pollResponse = await fetch(`/api/history/${recordId}`);
+        if (!pollResponse.ok) {
+          console.warn("[analysis] Polling status failed, retrying...");
+          continue;
+        }
+
+        const pollData = await pollResponse.json();
+        const record = pollData.record;
+        if (!record) {
+          throw new Error("分析历史记录未创建或被删除。");
+        }
+
+        // Sync steps check-list checklist UI
+        if (Array.isArray(record.steps)) {
+          progress.setSteps(record.steps);
+        }
+
+        if (record.status === "watching") {
+          isCompleted = true;
+          finalResultObj = record;
+        } else if (record.status === "failed") {
+          isCompleted = true;
+          throw new Error(record.errorMessage || "大模型分析执行失败。");
+        } else {
+          progress.setStatus(record.status === "pending" ? "validating" : record.status as any);
+        }
+
+        // Max polling timeout (10 minutes)
+        if (pollCount > 300) {
+          throw new Error("分析任务响应超时，可在退出浏览器后去历史记录中查看分析结果。");
         }
       }
 
-      progress.completeStep("save_history");
+      if (!finalResultObj) {
+        throw new Error("未接收到正确的最终大模型分析报告。");
+      }
 
       // Step 7: render_result
-      currentStepId = "render_result";
+      progress.completeStep("save_history");
       progress.setRunningStep("render_result");
-      setResult(nextResult);
+      setResult(finalResultObj);
       progress.completeStep("render_result");
 
       progress.setStatus("success");
-      return { ok: true, result: nextResult };
+      return { ok: true, result: finalResultObj };
     } catch (caught: any) {
-      console.error("[analysis] failed", caught);
-      const friendlyError = toUserFriendlyAnalysisError(caught, currentStepId, input.embeddingConfig, input.chatConfig);
+      console.error("[analysis] background analysis failed:", caught);
+      const friendlyError = toUserFriendlyAnalysisError(caught, "gemini_analysis", input.embeddingConfig, input.chatConfig);
       
-      progress.failStep(currentStepId, friendlyError);
       progress.setError(friendlyError);
       progress.setStatus("failed");
       return {
         ok: false,
-        failedStep: currentStepId,
-        errorMessage: friendlyError,
-        partialResult: {
-          parsedJD,
-          retrievedChunks,
-          requirementMatches: requirementMatchesResult,
-          hardConstraintsResult
-        }
+        failedStep: "gemini_analysis",
+        errorMessage: friendlyError
       };
     } finally {
       progress.setIsRunning(false);

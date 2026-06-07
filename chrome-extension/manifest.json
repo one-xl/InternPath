@@ -27,11 +27,7 @@
   "content_scripts": [
     {
       "matches": [
-        "https://*.zhipin.com/job_detail/*.html*",
-        "https://*.zhipin.com/web/geek/job*",
-        "https://*.nowcoder.com/jobs/detail/*",
-        "https://*.nowcoder.com/job/*",
-        "https://*.nowcoder.com/careers/*"
+        "<all_urls>"
       ],
       "js": ["content.js"],
       "run_at": "document_end"

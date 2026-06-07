@@ -163,6 +163,7 @@ export function useAnalysisProgress() {
     updateStepMetadata,
     setStatus,
     setError,
-    setIsRunning
+    setIsRunning,
+    setSteps
   };
 }

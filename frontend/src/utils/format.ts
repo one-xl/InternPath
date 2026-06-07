@@ -27,6 +27,9 @@ export const statusLabels: Record<ApplicationStatus, string> = {
   rejected: "已拒绝",
   interviewing: "面试中",
   abandoned: "已放弃",
+  pending: "排队中",
+  processing: "分析中",
+  failed: "分析失败",
 };
 
 export const workModeLabels: Record<WorkMode, string> = {

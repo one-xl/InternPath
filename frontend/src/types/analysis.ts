@@ -5,7 +5,7 @@ import type { ParsedResume, ResumeChunk, UploadedResumeFile } from "./resume";
 export type Decision = "strong_yes" | "yes" | "maybe" | "no";
 export type RiskLevel = "low" | "medium" | "high";
 export type Priority = "P0" | "P1" | "P2" | "P3";
-export type ApplicationStatus = "watching" | "applied" | "rejected" | "interviewing" | "abandoned";
+export type ApplicationStatus = "watching" | "applied" | "rejected" | "interviewing" | "abandoned" | "pending" | "processing" | "failed";
 
 export interface MatchDimension {
   id: string;

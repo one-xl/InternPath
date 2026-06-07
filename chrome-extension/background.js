@@ -148,4 +148,51 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     return true;
   }
+
+  if (message.action === "get_resumes") {
+    chrome.storage.local.get(["internpathHost", "internpathToken"], (items) => {
+      const host = items.internpathHost || "http://localhost:8787";
+      const token = items.internpathToken || "";
+      const headers = { "Content-Type": "application/json" };
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+      
+      fetch(`${host}/api/resumes`, {
+        method: "GET",
+        headers: headers
+      })
+      .then(r => r.json())
+      .then(res => sendResponse({ success: true, resumes: res.resumes || [] }))
+      .catch(err => sendResponse({ success: false, error: err.message }));
+    });
+    return true;
+  }
+
+  if (message.action === "tailor_fields") {
+    chrome.storage.local.get(["internpathHost", "internpathToken"], (items) => {
+      const host = items.internpathHost || "http://localhost:8787";
+      const token = items.internpathToken || "";
+      const headers = { "Content-Type": "application/json" };
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+      
+      fetch(`${host}/api/analysis/tailor-form-fields`, {
+        method: "POST",
+        headers: headers,
+        body: JSON.stringify(message.data)
+      })
+      .then(r => r.json())
+      .then(res => {
+        if (res.ok) {
+          sendResponse({ success: true, tailored_data: res.tailored_data });
+        } else {
+          sendResponse({ success: false, error: res.detail || "AI提炼失败" });
+        }
+      })
+      .catch(err => sendResponse({ success: false, error: err.message }));
+    });
+    return true;
+  }
 });

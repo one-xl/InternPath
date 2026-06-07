@@ -57,3 +57,6 @@ pytest_tmp_backend/
 
 # Local Scratch folder containing deployment scripts with secrets
 scratch/
+
+# User data folder containing local user databases and migration indicators
+user_data/

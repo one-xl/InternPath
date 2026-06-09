@@ -158,6 +158,15 @@
   // Load Resumes Dropdown from Backend
   function loadResumesDropdown() {
     chrome.runtime.sendMessage({ action: "get_resumes" }, (response) => {
+      if (chrome.runtime.lastError) {
+        console.warn("[InternPath] get_resumes runtime error:", chrome.runtime.lastError.message);
+        resumeSelect.innerHTML = "";
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "⚠️ 无法连接到扩展后台服务";
+        resumeSelect.appendChild(opt);
+        return;
+      }
       resumeSelect.innerHTML = "";
       if (response && response.success) {
         const resumes = response.resumes || [];
@@ -322,24 +331,28 @@
   function setElementValue(el, val) {
     if (!el) return;
     
+    // Defensively cast to String to handle non-string values (e.g., numeric years)
+    val = String(val === null || val === undefined ? "" : val);
+    
     if (el.tagName.toLowerCase() === "select") {
       const options = Array.from(el.options);
       let matchedOption = null;
       
+      const valTrimmed = val.trim();
       // 1. Try exact match on value or text
       matchedOption = options.find(opt => 
-        opt.value.trim() === val.trim() || 
-        opt.textContent.trim() === val.trim()
+        (opt.value || "").trim() === valTrimmed || 
+        (opt.textContent || "").trim() === valTrimmed
       );
       
       // 2. Try partial case-insensitive match on text/value
       if (!matchedOption) {
-        const valL = val.toLowerCase().trim();
+        const valL = valTrimmed.toLowerCase();
         matchedOption = options.find(opt => 
-          opt.value.toLowerCase().includes(valL) || 
-          opt.textContent.toLowerCase().includes(valL) ||
-          valL.includes(opt.value.toLowerCase().trim()) ||
-          valL.includes(opt.textContent.toLowerCase().trim())
+          (opt.value || "").toLowerCase().includes(valL) || 
+          (opt.textContent || "").toLowerCase().includes(valL) ||
+          valL.includes((opt.value || "").toLowerCase().trim()) ||
+          valL.includes((opt.textContent || "").toLowerCase().trim())
         );
       }
       
@@ -402,6 +415,11 @@
     }, (response) => {
       smartFillBtn.disabled = false;
       smartFillBtn.innerHTML = `<span>⚡</span> 智能填表网申`;
+
+      if (chrome.runtime.lastError) {
+        showToast(`AI 定制失败: ${chrome.runtime.lastError.message}`, true);
+        return;
+      }
 
       if (response && response.success) {
         const tailored = response.tailored_data || {};
@@ -642,6 +660,11 @@
       autofillBtn.style.opacity = "1.0";
       autofillBtn.innerHTML = `自动回填职位`;
 
+      if (chrome.runtime.lastError) {
+        showToast(`自动回填失败: ${chrome.runtime.lastError.message}`, true);
+        return;
+      }
+
       if (response && response.success) {
         showToast("已自动回填并跳转至在线工作台！");
       } else {
@@ -721,7 +744,11 @@
 
           console.log("[InternPath] 检测到职位发生改变或加载完成，自动发起静默回填:", jobData.title);
           
-          chrome.runtime.sendMessage({ action: "autofill", data: jobData, isAuto: true });
+          chrome.runtime.sendMessage({ action: "autofill", data: jobData, isAuto: true }, () => {
+            if (chrome.runtime.lastError) {
+              // Ignore background runtime disconnect warning on auto-trigger
+            }
+          });
         }
       }
     } catch (e) {

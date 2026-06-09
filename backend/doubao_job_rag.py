@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import hashlib
+import threading
 from typing import Any
 
 import httpx
@@ -13,15 +14,17 @@ from config import Config
 
 PLACEHOLDER_KEYS = {"", "your_api_key_here", "your_deepseek_or_openai_api_key_here", "your_doubao_api_key_here"}
 
+_CACHE_LOCK = threading.RLock()
 _DOUBAO_CACHE = {}
 
 def _limit_cache_size(cache_dict: dict, max_size: int = 1000):
-    if len(cache_dict) > max_size:
-        try:
-            oldest_key = next(iter(cache_dict))
-            cache_dict.pop(oldest_key, None)
-        except StopIteration:
-            pass
+    with _CACHE_LOCK:
+        if len(cache_dict) > max_size:
+            try:
+                oldest_key = next(iter(cache_dict))
+                cache_dict.pop(oldest_key, None)
+            except StopIteration:
+                pass
 
 class DoubaoAnalysisError(RuntimeError):
     """Raised when the LLM analysis cannot be completed."""
@@ -285,9 +288,10 @@ def analyze_job_with_doubao(
     payload_hash = hashlib.md5(payload_str.encode("utf-8")).hexdigest()
     cache_key = f"{payload_hash}:{model_id}"
 
-    if cache_key in _DOUBAO_CACHE:
-        print(f"[DOUBAO_RAG] Cache hit for key: {cache_key}")
-        return _DOUBAO_CACHE[cache_key]
+    with _CACHE_LOCK:
+        if cache_key in _DOUBAO_CACHE:
+            print(f"[DOUBAO_RAG] Cache hit for key: {cache_key}")
+            return _DOUBAO_CACHE[cache_key]
 
     try:
         response = client.chat.completions.create(
@@ -300,8 +304,9 @@ def analyze_job_with_doubao(
         )
         content = strip_json_fence(response.choices[0].message.content or "")
         result = normalize_llm_result(json.loads(content))
-        _DOUBAO_CACHE[cache_key] = result
-        _limit_cache_size(_DOUBAO_CACHE)
+        with _CACHE_LOCK:
+            _DOUBAO_CACHE[cache_key] = result
+            _limit_cache_size(_DOUBAO_CACHE)
         return result
     except APIConnectionError as exc:
         raise DoubaoAnalysisError(f"无法连接大模型服务，请检查网络、代理和配置：{exc}") from exc

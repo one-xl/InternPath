@@ -92,6 +92,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             },
             args: [jobData, isAuto]
           }, () => {
+            if (chrome.runtime.lastError) {
+              console.warn("[InternPath] executeScript error:", chrome.runtime.lastError.message);
+              sendResponse({ success: false, error: chrome.runtime.lastError.message });
+              return;
+            }
             if (!isAuto) {
               // Focus the tab and window ONLY for manual triggers
               chrome.tabs.update(targetTab.id, { active: true });
@@ -135,6 +140,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               return document.cookie;
             }
           }, (results) => {
+            if (chrome.runtime.lastError) {
+              console.warn("[InternPath] executeScript error:", chrome.runtime.lastError.message);
+              sendResponse({ success: false, error: chrome.runtime.lastError.message });
+              return;
+            }
             if (results && results[0]) {
               sendResponse({ success: true, cookies: results[0].result });
             } else {

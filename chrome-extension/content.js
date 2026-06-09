@@ -186,7 +186,7 @@
   // DOM Form Scanning Logic
   function scanFormFields() {
     const fields = [];
-    const inputs = Array.from(document.querySelectorAll("input, textarea"));
+    const inputs = Array.from(document.querySelectorAll("input, textarea, select"));
 
     function searchText(el, kws) {
       const attrSearch = [
@@ -256,6 +256,8 @@
         fieldType = "major";
       } else if (searchText(el, ["学历", "学位", "highest degree", "degree"])) {
         fieldType = "degree";
+      } else if (searchText(el, ["毕业年份", "毕业时间", "毕业年", "grad_year", "graduation year", "graduation date"])) {
+        fieldType = "grad_year";
       }
 
       if (fieldType) {
@@ -283,6 +285,7 @@
         school: "学校",
         major: "专业",
         degree: "学历",
+        grad_year: "毕业年份",
         self_evaluation: "自我评价",
         projects: "项目经历",
         work_experience: "工作经历",
@@ -297,13 +300,43 @@
   // React/Vue State Compatible Input filler
   function setElementValue(el, val) {
     if (!el) return;
-    const lastValue = el.value;
-    el.value = val;
+    
+    if (el.tagName.toLowerCase() === "select") {
+      const options = Array.from(el.options);
+      let matchedOption = null;
+      
+      // 1. Try exact match on value or text
+      matchedOption = options.find(opt => 
+        opt.value.trim() === val.trim() || 
+        opt.textContent.trim() === val.trim()
+      );
+      
+      // 2. Try partial case-insensitive match on text/value
+      if (!matchedOption) {
+        const valL = val.toLowerCase().trim();
+        matchedOption = options.find(opt => 
+          opt.value.toLowerCase().includes(valL) || 
+          opt.textContent.toLowerCase().includes(valL) ||
+          valL.includes(opt.value.toLowerCase().trim()) ||
+          valL.includes(opt.textContent.toLowerCase().trim())
+        );
+      }
+      
+      if (matchedOption) {
+        el.value = matchedOption.value;
+      } else {
+        // Fallback: set directly
+        el.value = val;
+      }
+    } else {
+      const lastValue = el.value;
+      el.value = val;
 
-    // Trigger React binding sync
-    const tracker = el._valueTracker;
-    if (tracker) {
-      tracker.setValue(lastValue);
+      // Trigger React binding sync
+      const tracker = el._valueTracker;
+      if (tracker) {
+        tracker.setValue(lastValue);
+      }
     }
 
     // Dispatch events for React, Vue and standard JS listeners

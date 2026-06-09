@@ -837,16 +837,54 @@ def tailor_form_fields_py(
     edu = profile_summary.get("education") or {}
     if isinstance(edu, list) and len(edu) > 0:
         edu = edu[0]
-    elif not isinstance(edu, dict):
-        edu = {}
+        
+    school_val = ""
+    major_val = ""
+    degree_val = ""
+    grad_year_val = ""
+
+    if isinstance(edu, dict):
+        school_val = edu.get("school") or edu.get("学校") or ""
+        major_val = edu.get("major") or edu.get("专业") or ""
+        degree_val = edu.get("degree") or edu.get("学历") or ""
+        grad_year_val = edu.get("graduation_year") or edu.get("grad_year") or edu.get("毕业年份") or edu.get("毕业时间") or ""
+    elif isinstance(edu, str):
+        school_val = edu
+        school_match = re.search(r"\S*(?:大学|学院|分校)\S*", edu)
+        if school_match:
+            school_val = school_match.group(0)
+            
+        degree_match = re.search(r"本科|学士|硕士|研究生|博士|大专|高中", edu)
+        if degree_match:
+            degree_val = degree_match.group(0)
+            
+        year_match = re.search(r"\b(20\d{2}|19\d{2})\b", edu)
+        if year_match:
+            grad_year_val = year_match.group(1)
+            
+        parts = edu.split()
+        major_parts = []
+        for p in parts:
+            if school_val and p in school_val:
+                continue
+            if degree_val and p in degree_val:
+                continue
+            if grad_year_val and p in grad_year_val:
+                continue
+            if any(char.isdigit() or char in "-—" for char in p):
+                continue
+            major_parts.append(p)
+        if major_parts:
+            major_val = " ".join(major_parts)
 
     profile = {
         "name": profile_summary.get("name") or profile_summary.get("姓名") or "",
         "phone": profile_summary.get("phone") or profile_summary.get("mobile") or profile_summary.get("电话") or profile_summary.get("手机号") or "",
         "email": profile_summary.get("email") or profile_summary.get("邮箱") or "",
-        "school": edu.get("school") or profile_summary.get("school") or profile_summary.get("学校") or "",
-        "major": edu.get("major") or profile_summary.get("major") or profile_summary.get("专业") or "",
-        "degree": edu.get("degree") or profile_summary.get("degree") or profile_summary.get("学历") or ""
+        "school": school_val or profile_summary.get("school") or profile_summary.get("学校") or "",
+        "major": major_val or profile_summary.get("major") or profile_summary.get("专业") or "",
+        "degree": degree_val or profile_summary.get("degree") or profile_summary.get("学历") or "",
+        "grad_year": grad_year_val or profile_summary.get("grad_year") or profile_summary.get("graduation_year") or profile_summary.get("毕业年份") or profile_summary.get("毕业时间") or ""
     }
 
     # Optimization 1: Bypass LLM completely if no AI tailored fields are requested

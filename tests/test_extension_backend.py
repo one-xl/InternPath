@@ -160,3 +160,99 @@ def test_tailor_form_fields_api_success(test_env):
     assert profile["school"] == "北京大学"
     assert profile["major"] == "计算机科学与技术"
     assert profile["degree"] == "硕士"
+
+
+def test_tailor_form_fields_with_presets(test_env):
+    db = test_env["db"]
+    client = test_env["client"]
+
+    # 1. Register a user and retrieve authorization token
+    register_response = client.post(
+        "/api/auth/register",
+        json={"username": "test_ext_presets@example.com", "password": "secure_password123"},
+    )
+    assert register_response.status_code == 200
+    token = register_response.json()["token"]
+    user_id = register_response.json()["user"]["id"]
+
+    # 2. Save a mock profile preset to user_settings
+    presets = {
+        "profile": {
+            "name": "李四",  # Overrides resume
+            "gender": "男",
+            "birthDate": "2000-01-01",
+            "politicalStatus": "中共党员",
+            "hometown": "山东省",
+            "expectedSalary": "15k",
+            "wechat": "lisi_wechat",
+            "gpa": "3.9/4.0",
+            "education": "清华大学 软件工程 本科"  # Overrides resume edu string
+        }
+    }
+    db.save_settings(user_id, presets)
+
+    # 3. Save a mock parsed resume in DB with extracted profile details
+    resume_file_id = "mock-resume-file-id-presets"
+    parsed_resume = {
+        "file": {
+            "name": "resume.pdf",
+            "size": 1024,
+            "type": "application/pdf"
+        },
+        "cleanedText": "Python developer.",
+        "extractedProfile": {
+            "name": "张三",
+            "phone": "13800138000",
+            "email": "zhangsan@example.com",
+            "education": {
+                "school": "北京大学",
+                "major": "计算机科学与技术",
+                "degree": "硕士"
+            }
+        },
+        "chunks": []
+    }
+    db.save_user_resume(
+        user_id=user_id,
+        resume_id=resume_file_id,
+        file_name="resume.pdf",
+        file_size=1024,
+        file_type="application/pdf",
+        parsed_resume=parsed_resume
+    )
+
+    # 4. Trigger form tailoring API request with no AI fields
+    payload = {
+        "resume_file_id": resume_file_id,
+        "jd_text": "Python Backend Engineer.",
+        "fields": []
+    }
+    response = client.post(
+        "/api/analysis/tailor-form-fields",
+        headers={"Authorization": f"Bearer {token}"},
+        json=payload
+    )
+
+    # 5. Assertions
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    
+    profile = body["profile"]
+    # Check overrides
+    assert profile["name"] == "李四"
+    assert profile["school"] == "清华大学"
+    assert profile["major"] == "软件工程"
+    assert profile["degree"] == "本科"
+    # Check presets
+    assert profile["gender"] == "男"
+    assert profile["birth_date"] == "2000-01-01"
+    assert profile["political_status"] == "中共党员"
+    assert profile["hometown"] == "山东省"
+    assert profile["expected_salary"] == "15k"
+    assert profile["wechat"] == "lisi_wechat"
+    assert profile["gpa"] == "3.9/4.0"
+    # Check fallback fields from resume
+    assert profile["phone"] == "13800138000"
+    assert profile["email"] == "zhangsan@example.com"
+

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { CandidateProfile } from "../types/profile";
 import { loadFromStorage, saveToStorage } from "../utils/storage";
+import { apiFetch } from "../services/apiClient";
 
 const PROFILE_KEY = "internpath.profile.v2";
 
@@ -23,6 +24,16 @@ const defaultProfile: CandidateProfile = {
   blockedDirections: ["销售", "纯运营"],
   targetCities: ["远程", "杭州", "上海"],
   remotePreference: "hybrid",
+  name: "",
+  phone: "",
+  email: "",
+  gender: "",
+  birthDate: "",
+  politicalStatus: "",
+  hometown: "",
+  expectedSalary: "",
+  wechat: "",
+  gpa: "",
 };
 
 export function useProfile() {
@@ -30,13 +41,42 @@ export function useProfile() {
   const [savedAt, setSavedAt] = useState<string>("");
 
   useEffect(() => {
-    saveToStorage(PROFILE_KEY, profile);
-  }, [profile]);
+    // Load from backend if logged in
+    apiFetch<{ settings: any }>("/api/settings")
+      .then((data) => {
+        if (data && data.settings && data.settings.profile) {
+          // Merge with default values in case some fields are missing from old saves
+          setProfile((prev) => ({
+            ...defaultProfile,
+            ...prev,
+            ...data.settings.profile,
+          }));
+          setSavedAt(new Date().toISOString());
+        }
+      })
+      .catch((err) => {
+        console.warn("Failed to load profile from backend settings:", err);
+      });
+  }, []);
 
-  function saveProfile(nextProfile: CandidateProfile) {
+  async function saveProfile(nextProfile: CandidateProfile) {
     setProfile(nextProfile);
     setSavedAt(new Date().toISOString());
+    saveToStorage(PROFILE_KEY, nextProfile);
+
+    try {
+      const data = await apiFetch<{ settings: any }>("/api/settings");
+      const currentSettings = (data && data.settings) || {};
+      currentSettings.profile = nextProfile;
+      await apiFetch("/api/settings", {
+        method: "POST",
+        body: JSON.stringify(currentSettings),
+      });
+    } catch (err) {
+      console.warn("Failed to save profile to backend settings:", err);
+    }
   }
 
   return { profile, saveProfile, savedAt };
 }
+

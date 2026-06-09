@@ -17,4 +17,14 @@ export interface CandidateProfile {
   blockedDirections: string[];
   targetCities: string[];
   remotePreference: "remote" | "onsite" | "hybrid" | "any";
+  name?: string;
+  phone?: string;
+  email?: string;
+  gender?: string;
+  birthDate?: string;
+  politicalStatus?: string;
+  hometown?: string;
+  expectedSalary?: string;
+  wechat?: string;
+  gpa?: string;
 }

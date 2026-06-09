@@ -827,14 +827,18 @@ def tailor_form_fields_py(
     fields: list[str],
     chat_config_id: Optional[str] = None
 ) -> dict:
+    import re
     parsed_resume = db.get_user_resume(user_id, resume_file_id)
     if not parsed_resume:
         raise ValueError("未找到已解析的简历文件。")
 
     profile_summary = parsed_resume.get("extractedProfile", {})
 
-    # Extract personal profile details early
-    edu = profile_summary.get("education") or {}
+    settings = db.get_settings(user_id) or {}
+    preset_profile = settings.get("profile") or {}
+
+    # Extract personal profile details early (manually configured education overrides)
+    edu = preset_profile.get("education") or profile_summary.get("education") or {}
     if isinstance(edu, list) and len(edu) > 0:
         edu = edu[0]
         
@@ -878,13 +882,20 @@ def tailor_form_fields_py(
             major_val = " ".join(major_parts)
 
     profile = {
-        "name": profile_summary.get("name") or profile_summary.get("姓名") or "",
-        "phone": profile_summary.get("phone") or profile_summary.get("mobile") or profile_summary.get("电话") or profile_summary.get("手机号") or "",
-        "email": profile_summary.get("email") or profile_summary.get("邮箱") or "",
-        "school": school_val or profile_summary.get("school") or profile_summary.get("学校") or "",
-        "major": major_val or profile_summary.get("major") or profile_summary.get("专业") or "",
-        "degree": degree_val or profile_summary.get("degree") or profile_summary.get("学历") or "",
-        "grad_year": grad_year_val or profile_summary.get("grad_year") or profile_summary.get("graduation_year") or profile_summary.get("毕业年份") or profile_summary.get("毕业时间") or ""
+        "name": preset_profile.get("name") or profile_summary.get("name") or profile_summary.get("姓名") or "",
+        "phone": preset_profile.get("phone") or profile_summary.get("phone") or profile_summary.get("mobile") or profile_summary.get("电话") or profile_summary.get("手机号") or "",
+        "email": preset_profile.get("email") or profile_summary.get("email") or profile_summary.get("邮箱") or "",
+        "school": school_val or preset_profile.get("school") or profile_summary.get("school") or profile_summary.get("学校") or "",
+        "major": major_val or preset_profile.get("major") or profile_summary.get("major") or profile_summary.get("专业") or "",
+        "degree": degree_val or preset_profile.get("degree") or profile_summary.get("degree") or profile_summary.get("学历") or "",
+        "grad_year": grad_year_val or preset_profile.get("grad_year") or profile_summary.get("graduation_year") or profile_summary.get("毕业年份") or profile_summary.get("毕业时间") or "",
+        "gender": preset_profile.get("gender") or "",
+        "birth_date": preset_profile.get("birthDate") or "",
+        "political_status": preset_profile.get("politicalStatus") or "",
+        "hometown": preset_profile.get("hometown") or "",
+        "expected_salary": preset_profile.get("expectedSalary") or "",
+        "wechat": preset_profile.get("wechat") or "",
+        "gpa": preset_profile.get("gpa") or ""
     }
 
     # Optimization 1: Bypass LLM completely if no AI tailored fields are requested

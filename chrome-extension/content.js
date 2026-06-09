@@ -258,6 +258,20 @@
         fieldType = "degree";
       } else if (searchText(el, ["毕业年份", "毕业时间", "毕业年", "grad_year", "graduation year", "graduation date"])) {
         fieldType = "grad_year";
+      } else if (searchText(el, ["性别", "gender", "sex"])) {
+        fieldType = "gender";
+      } else if (searchText(el, ["出生日期", "出生年月", "生日", "出生时间", "birth", "birthday"])) {
+        fieldType = "birth_date";
+      } else if (searchText(el, ["政治面貌", "政治", "political", "party"])) {
+        fieldType = "political_status";
+      } else if (searchText(el, ["籍贯", "籍 贯", "hometown", "nativeplace"])) {
+        fieldType = "hometown";
+      } else if (searchText(el, ["期望薪资", "期望月薪", "意向薪资", "salary"])) {
+        fieldType = "expected_salary";
+      } else if (searchText(el, ["微信", "微信号", "wechat"])) {
+        fieldType = "wechat";
+      } else if (searchText(el, ["gpa", "绩点", "成绩", "排名"])) {
+        fieldType = "gpa";
       }
 
       if (fieldType) {
@@ -286,6 +300,13 @@
         major: "专业",
         degree: "学历",
         grad_year: "毕业年份",
+        gender: "性别",
+        birth_date: "出生日期",
+        political_status: "政治面貌",
+        hometown: "籍贯",
+        expected_salary: "期望薪资",
+        wechat: "微信",
+        gpa: "GPA/绩点",
         self_evaluation: "自我评价",
         projects: "项目经历",
         work_experience: "工作经历",

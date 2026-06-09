@@ -50,6 +50,61 @@ export function ProfileEditor({ profile, savedAt, onSave }: ProfileEditorProps) 
         <SkillTagEditor label="不想投的方向" values={draft.blockedDirections} onChange={(blockedDirections) => setDraft({ ...draft, blockedDirections })} />
         <SkillTagEditor label="目标城市 / 地点偏好" values={draft.targetCities} onChange={(targetCities) => setDraft({ ...draft, targetCities })} />
       </Card>
+      <Card title="网申附加预填项 (常见字段)" description="这些预设信息在简历中可能不完整，但在网申表单中经常需要填写。">
+        <div className="form-grid">
+          <label className="field">
+            <span>姓名</span>
+            <input value={draft.name || ""} onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
+          </label>
+          <label className="field">
+            <span>电话</span>
+            <input value={draft.phone || ""} onChange={(event) => setDraft({ ...draft, phone: event.target.value })} />
+          </label>
+          <label className="field">
+            <span>邮箱</span>
+            <input value={draft.email || ""} onChange={(event) => setDraft({ ...draft, email: event.target.value })} />
+          </label>
+          <label className="field">
+            <span>性别</span>
+            <select value={draft.gender || ""} onChange={(event) => setDraft({ ...draft, gender: event.target.value })}>
+              <option value="">未设定</option>
+              <option value="男">男</option>
+              <option value="女">女</option>
+            </select>
+          </label>
+          <label className="field">
+            <span>出生日期</span>
+            <input type="date" value={draft.birthDate || ""} onChange={(event) => setDraft({ ...draft, birthDate: event.target.value })} />
+          </label>
+          <label className="field">
+            <span>政治面貌</span>
+            <select value={draft.politicalStatus || ""} onChange={(event) => setDraft({ ...draft, politicalStatus: event.target.value })}>
+              <option value="">未设定</option>
+              <option value="中共党员">中共党员</option>
+              <option value="中共预备党员">中共预备党员</option>
+              <option value="共青团员">共青团员</option>
+              <option value="群众">群众</option>
+              <option value="其他">其他</option>
+            </select>
+          </label>
+          <label className="field">
+            <span>籍贯</span>
+            <input value={draft.hometown || ""} onChange={(event) => setDraft({ ...draft, hometown: event.target.value })} />
+          </label>
+          <label className="field">
+            <span>微信号</span>
+            <input value={draft.wechat || ""} onChange={(event) => setDraft({ ...draft, wechat: event.target.value })} />
+          </label>
+          <label className="field">
+            <span>期望薪资</span>
+            <input value={draft.expectedSalary || ""} onChange={(event) => setDraft({ ...draft, expectedSalary: event.target.value })} placeholder="如: 15k-20k / 200/天" />
+          </label>
+          <label className="field">
+            <span>GPA 绩点/排名</span>
+            <input value={draft.gpa || ""} onChange={(event) => setDraft({ ...draft, gpa: event.target.value })} placeholder="如: 3.8/4.0 或 前5%" />
+          </label>
+        </div>
+      </Card>
       <ProjectExperienceEditor projects={draft.projects} onChange={(projects) => setDraft({ ...draft, projects })} />
       <div className="sticky-action">
         <Button variant="primary" onClick={() => onSave(draft)}>

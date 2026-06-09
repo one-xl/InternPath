@@ -30,18 +30,22 @@ def _strip_json_fence(text: str) -> str:
     return t.strip()
 
 
+import threading
+
+_CACHE_LOCK = threading.RLock()
 _SKILLS_CACHE = {}
 _DECISION_CACHE = {}
 _REWRITE_CACHE = {}
 _STAGE2_CHECK_CACHE = {}
 
 def _limit_cache_size(cache_dict: dict, max_size: int = 1000):
-    if len(cache_dict) > max_size:
-        try:
-            oldest_key = next(iter(cache_dict))
-            cache_dict.pop(oldest_key, None)
-        except StopIteration:
-            pass
+    with _CACHE_LOCK:
+        if len(cache_dict) > max_size:
+            try:
+                oldest_key = next(iter(cache_dict))
+                cache_dict.pop(oldest_key, None)
+            except StopIteration:
+                pass
 
 
 class AIAnalyzer:
@@ -187,9 +191,10 @@ class AIAnalyzer:
         client, _, _, model_id = self._client(user_id)
         jd_hash = hashlib.md5(jd_text.encode("utf-8")).hexdigest()
         cache_key = f"{jd_hash}:{model_id}"
-        if cache_key in _SKILLS_CACHE:
-            print(f"[AI_ANALYZER] extract_skills cache hit for key: {cache_key}")
-            return _SKILLS_CACHE[cache_key]
+        with _CACHE_LOCK:
+            if cache_key in _SKILLS_CACHE:
+                print(f"[AI_ANALYZER] extract_skills cache hit for key: {cache_key}")
+                return _SKILLS_CACHE[cache_key]
 
         system_prompt = """
         你是面向个人求职者的 JD 拆解助手。请分析给定岗位 JD，并提取：
@@ -217,8 +222,9 @@ class AIAnalyzer:
             )
             result_text = _strip_json_fence((response.choices[0].message.content or "").strip())
             res = JobAnalysis(**json.loads(result_text))
-            _SKILLS_CACHE[cache_key] = res
-            _limit_cache_size(_SKILLS_CACHE)
+            with _CACHE_LOCK:
+                _SKILLS_CACHE[cache_key] = res
+                _limit_cache_size(_SKILLS_CACHE)
             return res
         except APIConnectionError as e:
             raise Exception(
@@ -254,9 +260,10 @@ class AIAnalyzer:
         resume_hash = hashlib.md5(resume_text.encode("utf-8")).hexdigest()
         k_hash = hashlib.md5("".join(sorted(knowledge_texts or [])).encode("utf-8")).hexdigest()
         cache_key = f"{jd_hash}:{resume_hash}:{k_hash}:{model_id}"
-        if cache_key in _DECISION_CACHE:
-            print(f"[AI_ANALYZER] generate_personal_decision cache hit for key: {cache_key}")
-            return _DECISION_CACHE[cache_key]
+        with _CACHE_LOCK:
+            if cache_key in _DECISION_CACHE:
+                print(f"[AI_ANALYZER] generate_personal_decision cache hit for key: {cache_key}")
+                return _DECISION_CACHE[cache_key]
 
         system_prompt = """
         你是一个严格但务实的个人求职产品经理。你的任务不是夸用户，而是帮个人判断这个岗位是否值得投，
@@ -349,8 +356,9 @@ class AIAnalyzer:
                 "bonus_points": b_match
             }
             decision_obj = PersonalDecision(**raw)
-            _DECISION_CACHE[cache_key] = decision_obj
-            _limit_cache_size(_DECISION_CACHE)
+            with _CACHE_LOCK:
+                _DECISION_CACHE[cache_key] = decision_obj
+                _limit_cache_size(_DECISION_CACHE)
             return decision_obj
         except APIConnectionError as e:
             raise Exception(f"个人决策生成无法连接到大模型服务: {e}") from e
@@ -705,9 +713,10 @@ class AIAnalyzer:
         orig_hash = hashlib.md5(original_text.encode("utf-8")).hexdigest()
         jd_hash = hashlib.md5((jd_text or "").encode("utf-8")).hexdigest()
         cache_key = f"{orig_hash}:{style}:{jd_hash}:{model_id}"
-        if cache_key in _REWRITE_CACHE:
-            print(f"[AI_ANALYZER] smart_rewrite_star cache hit for key: {cache_key}")
-            return _REWRITE_CACHE[cache_key]
+        with _CACHE_LOCK:
+            if cache_key in _REWRITE_CACHE:
+                print(f"[AI_ANALYZER] smart_rewrite_star cache hit for key: {cache_key}")
+                return _REWRITE_CACHE[cache_key]
 
         style_prompt = ""
         if style == "big-tech":
@@ -818,8 +827,9 @@ class AIAnalyzer:
                 "result": parsed.get("result", ""),
                 "polishedText": parsed.get("polishedText", ""),
             }
-            _REWRITE_CACHE[cache_key] = res
-            _limit_cache_size(_REWRITE_CACHE)
+            with _CACHE_LOCK:
+                _REWRITE_CACHE[cache_key] = res
+                _limit_cache_size(_REWRITE_CACHE)
             return res
         except json_mod.JSONDecodeError:
             # Fallback: return raw text as polishedText
@@ -830,8 +840,9 @@ class AIAnalyzer:
                 "result": "",
                 "polishedText": output_text,
             }
-            _REWRITE_CACHE[cache_key] = res
-            _limit_cache_size(_REWRITE_CACHE)
+            with _CACHE_LOCK:
+                _REWRITE_CACHE[cache_key] = res
+                _limit_cache_size(_REWRITE_CACHE)
             return res
         except Exception as e:
             error_type = type(e).__name__
@@ -872,9 +883,10 @@ class AIAnalyzer:
         resume_hash = hashlib.md5(resume_text.encode("utf-8")).hexdigest()
         jd_hash = hashlib.md5(jd_text.encode("utf-8")).hexdigest()
         cache_key = f"{resume_hash}:{jd_hash}:{model_id}"
-        if cache_key in _STAGE2_CHECK_CACHE:
-            print(f"[AI_ANALYZER] stage2_llm_check cache hit for key: {cache_key}")
-            return _STAGE2_CHECK_CACHE[cache_key]
+        with _CACHE_LOCK:
+            if cache_key in _STAGE2_CHECK_CACHE:
+                print(f"[AI_ANALYZER] stage2_llm_check cache hit for key: {cache_key}")
+                return _STAGE2_CHECK_CACHE[cache_key]
         
         system_prompt = """
         你是求职门槛甄别助手。你的任务是根据求职者简历与招聘 JD，判断求职者是否满足该职位的硬性指标/基本门槛。
@@ -922,8 +934,9 @@ class AIAnalyzer:
                 total_tokens = getattr(response.usage, "total_tokens", 0)
                 
             res = (passed, reason)
-            _STAGE2_CHECK_CACHE[cache_key] = res
-            _limit_cache_size(_STAGE2_CHECK_CACHE)
+            with _CACHE_LOCK:
+                _STAGE2_CHECK_CACHE[cache_key] = res
+                _limit_cache_size(_STAGE2_CHECK_CACHE)
             return res
         except Exception as e:
             success = False

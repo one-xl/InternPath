@@ -86,24 +86,29 @@ def update_background_progress(
     )
     return record
 
+import threading
+
+_CACHE_LOCK = threading.RLock()
 _JD_PARSE_CACHE = {}
 _HARD_CONSTRAINTS_CACHE = {}
 _DEEP_ANALYSIS_CACHE = {}
 
 def _limit_cache_size(cache_dict: dict, max_size: int = 1000):
-    if len(cache_dict) > max_size:
-        try:
-            oldest_key = next(iter(cache_dict))
-            cache_dict.pop(oldest_key, None)
-        except StopIteration:
-            pass
+    with _CACHE_LOCK:
+        if len(cache_dict) > max_size:
+            try:
+                oldest_key = next(iter(cache_dict))
+                cache_dict.pop(oldest_key, None)
+            except StopIteration:
+                pass
 
 def parse_job_description_py(client: Any, model: str, jd_text: str) -> dict:
     jd_hash = hashlib.md5(jd_text.encode("utf-8")).hexdigest()
     cache_key = f"{jd_hash}:{model}"
-    if cache_key in _JD_PARSE_CACHE:
-        print(f"[BG_ANALYSIS] parse_job_description_py cache hit for key: {cache_key}")
-        return _JD_PARSE_CACHE[cache_key]
+    with _CACHE_LOCK:
+        if cache_key in _JD_PARSE_CACHE:
+            print(f"[BG_ANALYSIS] parse_job_description_py cache hit for key: {cache_key}")
+            return _JD_PARSE_CACHE[cache_key]
 
     prompt = f"""
 You are a rigorous JD analysis assistant. Your task is to split a Job Description into structural requirements and constraints.
@@ -186,8 +191,9 @@ JD Text to parse:
         "nice_to_have": parsed.get("nice_to_have") or [],
         "raw_text": jd_text
     }
-    _JD_PARSE_CACHE[cache_key] = result
-    _limit_cache_size(_JD_PARSE_CACHE)
+    with _CACHE_LOCK:
+        _JD_PARSE_CACHE[cache_key] = result
+        _limit_cache_size(_JD_PARSE_CACHE)
     return result
 
 def check_hard_constraints_py(client: Any, model: str, parsed_jd: dict, parsed_resume: dict) -> dict:
@@ -203,9 +209,10 @@ def check_hard_constraints_py(client: Any, model: str, parsed_jd: dict, parsed_r
     resume_cleaned = parsed_resume.get("cleanedText") or ""
     resume_hash = hashlib.md5(resume_cleaned.encode("utf-8")).hexdigest()
     cache_key = f"{jd_hash}:{resume_hash}:{model}"
-    if cache_key in _HARD_CONSTRAINTS_CACHE:
-        print(f"[BG_ANALYSIS] check_hard_constraints_py cache hit for key: {cache_key}")
-        return _HARD_CONSTRAINTS_CACHE[cache_key]
+    with _CACHE_LOCK:
+        if cache_key in _HARD_CONSTRAINTS_CACHE:
+            print(f"[BG_ANALYSIS] check_hard_constraints_py cache hit for key: {cache_key}")
+            return _HARD_CONSTRAINTS_CACHE[cache_key]
 
     prompt = f"""
 You are an objective recruitment screening auditor. Your task is to audit the candidate's resume against the hard constraints specified in the Job Description.
@@ -255,8 +262,9 @@ Instructions:
         "hard_risks": risks,
         "has_blocking_risk": bool(parsed.get("has_blocking_risk", False))
     }
-    _HARD_CONSTRAINTS_CACHE[cache_key] = result
-    _limit_cache_size(_HARD_CONSTRAINTS_CACHE)
+    with _CACHE_LOCK:
+        _HARD_CONSTRAINTS_CACHE[cache_key] = result
+        _limit_cache_size(_HARD_CONSTRAINTS_CACHE)
     return result
 
 def run_background_resume_analysis(
@@ -417,10 +425,11 @@ def run_background_resume_analysis(
         deep_cache_key = f"{jd_hash}:{resume_hash}:{material_hash}:{chat_model}"
         
         parsed_analysis = None
-        if deep_cache_key in _DEEP_ANALYSIS_CACHE:
-            print(f"[BG_ANALYSIS] Deep analysis cache hit for key: {deep_cache_key}")
-            parsed_analysis = _DEEP_ANALYSIS_CACHE[deep_cache_key]
-        else:
+        with _CACHE_LOCK:
+            if deep_cache_key in _DEEP_ANALYSIS_CACHE:
+                print(f"[BG_ANALYSIS] Deep analysis cache hit for key: {deep_cache_key}")
+                parsed_analysis = _DEEP_ANALYSIS_CACHE[deep_cache_key]
+        if parsed_analysis is None:
             # Stage B: Structured deep LLM analysis prompt
             update_background_progress(user_id, record_id, "gemini_analysis", "running", {
                 "subState": "deep_analyzing",
@@ -533,8 +542,9 @@ def run_background_resume_analysis(
                 llm_text = response.choices[0].message.content
                 parsed_analysis = json.loads(_strip_json_fence(llm_text))
                 
-            _DEEP_ANALYSIS_CACHE[deep_cache_key] = parsed_analysis
-            _limit_cache_size(_DEEP_ANALYSIS_CACHE)
+            with _CACHE_LOCK:
+                _DEEP_ANALYSIS_CACHE[deep_cache_key] = parsed_analysis
+                _limit_cache_size(_DEEP_ANALYSIS_CACHE)
             
         update_background_progress(user_id, record_id, "gemini_analysis", "success")
         
@@ -912,12 +922,13 @@ def tailor_form_fields_py(
     cache_key = f"{resume_file_id}:{jd_hash}:{fields_key}:{chat_config_id}"
 
     # Optimization 2: Cache hit check
-    if cache_key in _TAILOR_CACHE:
-        print(f"[TAILOR_FIELDS] Cache hit for key {cache_key}")
-        return {
-            "tailored_data": _TAILOR_CACHE[cache_key],
-            "profile": profile
-        }
+    with _CACHE_LOCK:
+        if cache_key in _TAILOR_CACHE:
+            print(f"[TAILOR_FIELDS] Cache hit for key {cache_key}")
+            return {
+                "tailored_data": _TAILOR_CACHE[cache_key],
+                "profile": profile
+            }
 
     chat_client, _, _, chat_model = analyzer._client(user_id, chat_config_id)
     resume_text = parsed_resume.get("cleanedText", "")
@@ -986,7 +997,9 @@ def tailor_form_fields_py(
             result = {f: "智能提炼失败，请手动填写" for f in fields}
 
     # Save to cache
-    _TAILOR_CACHE[cache_key] = result
+    with _CACHE_LOCK:
+        _TAILOR_CACHE[cache_key] = result
+        _limit_cache_size(_TAILOR_CACHE)
 
     return {
         "tailored_data": result,

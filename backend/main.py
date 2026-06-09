@@ -688,12 +688,12 @@ def create_app(
         user_id: Any = Depends(current_user_id)
     ) -> dict[str, Any]:
         # Check if a resume with the same file name already exists in the database
-        existing_resumes = state.auth_db.list_user_resumes(user_id)
+        existing_resumes = await asyncio.to_thread(state.auth_db.list_user_resumes, user_id)
         existing_resume = None
         for r in existing_resumes:
             if r.get("name") == file.filename:
                 # Find this existing resume
-                existing_resume = state.auth_db.get_user_resume(user_id, r.get("id"))
+                existing_resume = await asyncio.to_thread(state.auth_db.get_user_resume, user_id, r.get("id"))
                 if existing_resume:
                     break
         
@@ -713,13 +713,14 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="上传文件过大，请压缩后重新上传。")
 
         try:
-            parsed_resume = parse_resume(file.filename or "resume", file.content_type or "", content)
+            parsed_resume = await asyncio.to_thread(parse_resume, file.filename or "resume", file.content_type or "", content)
         except DocumentParseError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         
         # Save to persistent database
         try:
-            state.auth_db.save_user_resume(
+            await asyncio.to_thread(
+                state.auth_db.save_user_resume,
                 user_id=user_id,
                 resume_id=parsed_resume["file"]["id"],
                 file_name=parsed_resume["file"]["name"],
@@ -805,12 +806,14 @@ def create_app(
             
         # 2. state.auth_db
         if not db_resume:
-            db_resume = state.auth_db.get_user_resume(user_id, resume_id)
+            db_resume = await asyncio.to_thread(state.auth_db.get_user_resume, user_id, resume_id)
             
         # 3. state.service.user_db(user_id)
         if not db_resume:
             try:
-                db_resume = state.service.user_db(user_id).get_user_resume(user_id, resume_id)
+                db_resume = await asyncio.to_thread(
+                    lambda: state.service.user_db(user_id).get_user_resume(user_id, resume_id)
+                )
             except Exception:
                 pass
                 
@@ -833,8 +836,12 @@ def create_app(
                 chunk["embedding"] = emb
 
         max_workers = min(16, len(chunks))
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            list(executor.map(process_chunk, chunks))
+        
+        def run_thread_pool():
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                list(executor.map(process_chunk, chunks))
+
+        await asyncio.to_thread(run_thread_pool)
 
         db_resume["vectorized"] = True
         db_resume["chunks"] = chunks
@@ -845,7 +852,8 @@ def create_app(
 
         save_errors = []
         try:
-            state.auth_db.save_user_resume(
+            await asyncio.to_thread(
+                state.auth_db.save_user_resume,
                 user_id=user_id,
                 resume_id=resume_id,
                 file_name=file_name,
@@ -857,13 +865,15 @@ def create_app(
             save_errors.append(f"auth_db: {e}")
 
         try:
-            state.service.user_db(user_id).save_user_resume(
-                user_id=user_id,
-                resume_id=resume_id,
-                file_name=file_name,
-                file_size=file_size,
-                file_type=file_type,
-                parsed_resume=db_resume
+            await asyncio.to_thread(
+                lambda: state.service.user_db(user_id).save_user_resume(
+                    user_id=user_id,
+                    resume_id=resume_id,
+                    file_name=file_name,
+                    file_size=file_size,
+                    file_type=file_type,
+                    parsed_resume=db_resume
+                )
             )
         except Exception as e:
             save_errors.append(f"service_db: {e}")
@@ -1591,9 +1601,13 @@ def create_app(
         user_id: Any = Depends(current_user_id),
     ) -> dict[str, Any]:
         content = await file.read()
+        if len(content) > 20 * 1024 * 1024:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="上传文件过大，请限制在 20MB 以内。")
         adapter = UploadedFileAdapter(file.filename or "upload.txt", content)
         try:
-            document = state.service.upload_knowledge_document(user_id, adapter, source_type, title=title)
+            document = await asyncio.to_thread(
+                state.service.upload_knowledge_document, user_id, adapter, source_type, title=title
+            )
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         return {"document": document}

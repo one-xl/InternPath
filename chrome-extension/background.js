@@ -206,7 +206,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       })
       .then(res => {
         if (res.ok) {
-          sendResponse({ success: true, tailored_data: res.tailored_data });
+          sendResponse({ success: true, tailored_data: res.tailored_data, profile: res.profile });
         } else {
           sendResponse({ success: false, error: res.detail || "AI提炼失败" });
         }

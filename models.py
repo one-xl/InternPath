@@ -234,18 +234,3 @@ class FitExamAttempt(BaseModel):
     answers: List[int] = Field(default_factory=list, description="用户每题所选下标")
     score: float = Field(..., ge=0.0, le=1.0)
     created_at: datetime = Field(default_factory=datetime.now)
-
-
-class StarStory(BaseModel):
-    id: Optional[Any] = None
-    user_id: Optional[Any] = None
-    title: str
-    situation: str = ""
-    task: str = ""
-    action: str = ""
-    result: str = ""
-    full_text: str = ""
-    style: str = "standard"
-    created_at: datetime = Field(default_factory=datetime.now)
-    updated_at: datetime = Field(default_factory=datetime.now)
-

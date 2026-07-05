@@ -183,25 +183,25 @@ class EvidenceCheckNode(BaseNode):
     def run(self, state: WorkflowState) -> WorkflowState:
         from app.verification.evidence_checker import verify_claims_section_aware
         chunks = state.data.get("retrieval", {}).get("retrievedChunks") or state.data.get("resumeContext", {}).get("allChunks", [])
-        
+
         claims = state.data.get("claims", [])
         claims_texts = [claim["claimText"] for claim in claims]
         verification_results = verify_claims_section_aware(claims_texts, chunks)
-        
+
         results = []
         supported = weak = unsupported = contradicted = 0
-        
+
         for claim, v_res in zip(claims, verification_results):
             status = v_res["status"]
             confidence = v_res["confidenceScore"]
-            
+
             if status == "supported":
                 supported += 1
             elif status == "weak":
                 weak += 1
             else:
                 unsupported += 1
-                
+
             ev_chunks = []
             if v_res.get("evidence"):
                 matching_chunk_id = v_res["evidence"]["chunkId"]
@@ -222,7 +222,7 @@ class EvidenceCheckNode(BaseNode):
                     })
             if not ev_chunks and chunks:
                 ev_chunks = claim_evidence_chunks(chunks, confidence)
-                
+
             results.append(
                 {
                     "claimId": claim["claimId"],
@@ -236,7 +236,7 @@ class EvidenceCheckNode(BaseNode):
                     "evidence": v_res.get("evidence")
                 }
             )
-            
+
         total = supported + weak + unsupported + contradicted
         state.data["verification"] = {
             "verificationResults": results,
@@ -350,6 +350,33 @@ class CitationNode(BaseNode):
                     }
                 )
                 idx += 1
+        if not citations:
+            fallback_chunks = (
+                state.data.get("retrieval", {}).get("retrievedChunks")
+                or state.data.get("resumeContext", {}).get("contextDocuments")
+                or []
+            )
+            for chunk in fallback_chunks[:3]:
+                metadata = chunk.get("metadata", {})
+                citations.append(
+                    {
+                        "citationId": f"cite-{idx}",
+                        "claimId": "",
+                        "claimText": "",
+                        "documentId": chunk.get("documentId", ""),
+                        "sectionId": chunk.get("sectionId") or metadata.get("sectionId") or f"sec-{metadata.get('sourceType', 'other')}-pre",
+                        "sectionType": chunk.get("sectionType") or metadata.get("sectionType") or "generic_section",
+                        "sectionTitle": chunk.get("sectionTitle") or metadata.get("sectionTitle") or "Document Content",
+                        "hierarchy": chunk.get("hierarchy") or metadata.get("hierarchy") or ["Document Content"],
+                        "chunkId": chunk.get("chunkId", ""),
+                        "fileName": chunk.get("fileName") or metadata.get("fileName", ""),
+                        "retrievalScore": chunk.get("score"),
+                        "retrievalReasons": chunk.get("retrievalReasons", ["retrieved_context"]),
+                        "evidenceText": chunk.get("text", "")[:300],
+                        "sourceType": chunk.get("sourceType") or metadata.get("sourceType", ""),
+                    }
+                )
+                idx += 1
         state.data["citations"] = citations
         return state
 
@@ -416,16 +443,9 @@ class SectionParserNode(BaseNode):
         from app.rag.section_parser import parse_sections
         jd_sections = parse_sections(state.request.jdText, source_type="jd")
         resume_sections = parse_sections(state.request.resumeText, source_type="resume")
-        
+
         state.data["jdSections"] = jd_sections
         state.data["resumeSections"] = resume_sections
-        state.workflow_logs.append({
-            "nodeName": self.node_name,
-            "status": "success",
-            "durationMs": 1,
-            "inputSummary": self.input_summary(state),
-            "outputSummary": self.output_summary(state)
-        })
         return state
 
     def output_summary(self, state: WorkflowState) -> str:
@@ -441,13 +461,6 @@ class MetadataChunkNode(BaseNode):
 
     def run(self, state: WorkflowState) -> WorkflowState:
         # Note: metadata inheritance is run seamlessly inside build_chunks
-        state.workflow_logs.append({
-            "nodeName": self.node_name,
-            "status": "success",
-            "durationMs": 1,
-            "inputSummary": self.input_summary(state),
-            "outputSummary": self.output_summary(state)
-        })
         return state
 
     def output_summary(self, state: WorkflowState) -> str:
@@ -464,13 +477,6 @@ class EmbeddingFormatNode(BaseNode):
 
     def run(self, state: WorkflowState) -> WorkflowState:
         # Structured embedding is pre-generated in build_chunks
-        state.workflow_logs.append({
-            "nodeName": self.node_name,
-            "status": "success",
-            "durationMs": 1,
-            "inputSummary": self.input_summary(state),
-            "outputSummary": self.output_summary(state)
-        })
         return state
 
     def output_summary(self, state: WorkflowState) -> str:
@@ -488,32 +494,24 @@ class HybridRetrievalNode(BaseNode):
         from app.rag.hybrid_retriever import retrieve_hybrid
         ctx = state.data.get("resumeContext", {})
         evidence_chunks = ctx.get("contextDocuments") or ctx.get("allChunks") or []
-        
+
         emb_config = {
             "model_id": getattr(state.request, "embeddingModelId", None),
             "provider": getattr(state.request, "embeddingProvider", None),
             "api_key": getattr(state.request, "embeddingApiKey", None),
             "base_url": getattr(state.request, "embeddingBaseUrl", None),
         }
-        
+
         if state.request.options.enableRag:
             query = " ".join(state.data.get("jdParse", {}).get("techKeywords", [])) or state.request.jdText[:500]
             hybrid_results = retrieve_hybrid(evidence_chunks, query, 15, embedding_config=emb_config)
         else:
             hybrid_results = []
-            
+
         state.data["hybridRetrieval"] = {
             "hybridChunks": hybrid_results,
             "evidenceCount": len(hybrid_results)
         }
-        
-        state.workflow_logs.append({
-            "nodeName": self.node_name,
-            "status": "success",
-            "durationMs": 2,
-            "inputSummary": self.input_summary(state),
-            "outputSummary": self.output_summary(state)
-        })
         return state
 
     def output_summary(self, state: WorkflowState) -> str:
@@ -531,22 +529,14 @@ class SemanticRankingNode(BaseNode):
         from app.rag.semantic_ranker import rerank_chunks
         hybrid_chunks = state.data.get("hybridRetrieval", {}).get("hybridChunks", [])
         query = " ".join(state.data.get("jdParse", {}).get("techKeywords", [])) or state.request.jdText[:500]
-        
+
         ranked = rerank_chunks(hybrid_chunks, query, 8)
-        
+
         state.data["retrieval"] = {
             "retrievedChunks": ranked,
             "citationsDraft": build_citations_from_chunks(ranked),
             "evidenceCount": len(ranked)
         }
-        
-        state.workflow_logs.append({
-            "nodeName": self.node_name,
-            "status": "success",
-            "durationMs": 2,
-            "inputSummary": self.input_summary(state),
-            "outputSummary": self.output_summary(state)
-        })
         return state
 
     def output_summary(self, state: WorkflowState) -> str:
@@ -607,12 +597,19 @@ def build_chunks(documents: list[Any]) -> list[dict[str, Any]]:
         metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
         if not document_id:
             continue
-            
+
         # If it's already a single chunk with a chunkId (pre-chunked legacy flow)
         if raw.get("chunkId") or raw.get("chunk_id"):
             chunk_id = str(raw.get("chunkId") or raw.get("chunk_id"))
             text = content or str(raw.get("text", ""))
-            
+            importance_value = raw.get("importance")
+            if importance_value is None:
+                importance_value = metadata.get("importance", 0.60)
+            try:
+                importance = float(importance_value)
+            except (TypeError, ValueError):
+                importance = 0.60
+
             # Map default metadata
             out.append({
                 "documentId": document_id,
@@ -620,26 +617,27 @@ def build_chunks(documents: list[Any]) -> list[dict[str, Any]]:
                 "text": text,
                 "score": raw.get("score"),
                 "sectionId": raw.get("sectionId") or f"sec-{metadata.get('sourceType', 'other')}-pre",
-                "sectionType": raw.get("sectionType") or "generic_section",
-                "sectionTitle": raw.get("sectionTitle") or "Document Content",
-                "hierarchy": raw.get("hierarchy") or ["Document Content"],
-                "semanticType": raw.get("semanticType") or "general",
-                "importance": float(raw.get("importance", 0.60)),
-                "keywords": raw.get("keywords") or [],
+                "sectionType": raw.get("sectionType") or metadata.get("sectionType") or "generic_section",
+                "sectionTitle": raw.get("sectionTitle") or metadata.get("sectionTitle") or "Document Content",
+                "hierarchy": raw.get("hierarchy") or metadata.get("hierarchy") or ["Document Content"],
+                "semanticType": raw.get("semanticType") or metadata.get("semanticType") or "general",
+                "importance": importance,
+                "keywords": raw.get("keywords") or metadata.get("keywords") or [],
                 "embeddingText": raw.get("embeddingText") or text,
+                "embedding": raw.get("embedding") or metadata.get("embedding"),
                 "fileName": raw.get("fileName") or metadata.get("fileName") or "",
                 "sourceType": raw.get("sourceType") or metadata.get("sourceType") or "other",
                 "metadata": {**metadata, "chunkIndex": metadata.get("chunkIndex", 0)},
             })
             continue
-            
+
         if not content.strip():
             continue
-            
+
         # Metadata-aware chunking
         source_type = str(metadata.get("sourceType", "generic")).lower()
         file_name = str(metadata.get("fileName", "document.txt"))
-        
+
         doc_chunks = chunk_document_with_sections(
             content=content,
             document_id=document_id,
@@ -648,7 +646,7 @@ def build_chunks(documents: list[Any]) -> list[dict[str, Any]]:
             chunk_size=CHUNK_SIZE,
             overlap=CHUNK_OVERLAP
         )
-        
+
         for c in doc_chunks:
             out.append({
                 "documentId": c["documentId"],
@@ -665,7 +663,7 @@ def build_chunks(documents: list[Any]) -> list[dict[str, Any]]:
                 "embeddingText": c.get("embeddingText"),
                 "metadata": c.get("metadata")
             })
-            
+
     return out
 
 

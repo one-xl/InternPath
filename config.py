@@ -58,6 +58,17 @@ class Config:
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     GEMINI_BASE_URL: str = os.getenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
 
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "").strip()
+    DATABASE_SCHEMA: str = os.getenv("DATABASE_SCHEMA", "public").strip() or "public"
+    REDIS_URL: str = os.getenv("REDIS_URL", "").strip()
+    RQ_QUEUE_NAME: str = os.getenv("RQ_QUEUE_NAME", "internpath-default").strip() or "internpath-default"
+    RQ_JOB_TIMEOUT_SECONDS: int = get_int_env("RQ_JOB_TIMEOUT_SECONDS", 1800)
+    RQ_RESULT_TTL_SECONDS: int = get_int_env("RQ_RESULT_TTL_SECONDS", 86400)
+    AGENT_CACHE_STORE: str = os.getenv("AGENT_CACHE_STORE", "file").strip() or "file"
+    AGENT_CACHE_TTL_SECONDS: int = get_int_env("AGENT_CACHE_TTL_SECONDS", 86400 * 14)
+    AGENT_CACHE_LOCK_TIMEOUT_SECONDS: int = get_int_env("AGENT_CACHE_LOCK_TIMEOUT_SECONDS", 10)
+    PGVECTOR_REQUIRED: bool = get_bool_env("PGVECTOR_REQUIRED", True)
+
     EMAIL_VERIFICATION_REQUIRED: bool = get_bool_env("EMAIL_VERIFICATION_REQUIRED", True)
     EMAIL_CODE_TTL_MINUTES: int = get_int_env("EMAIL_CODE_TTL_MINUTES", 10)
     EMAIL_CODE_MAX_ATTEMPTS: int = get_int_env("EMAIL_CODE_MAX_ATTEMPTS", 5)

@@ -137,13 +137,14 @@ export function createEmptyDraft(): JobDraft {
     workMode: "unknown",
     level: "intern",
     jdText: "",
-    targetType: "实习 / 初级",
-    jobDirection: "前端 / 全栈 / AI 应用",
+    targetType: "",
+    jobDirection: "",
     resumeText: "",
     projectText: "",
     skillsText: "",
     goalText: "",
     useDefaultProfile: true,
+    enableAgentResume: false,
   };
 }
 

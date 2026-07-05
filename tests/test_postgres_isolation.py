@@ -7,7 +7,7 @@ These tests verify that:
 3. userId is never accepted from request body for ownership.
 4. New CRUD endpoints for drafts/settings/configs work correctly.
 
-All tests use SQLite (no DATABASE_URL) for local CI compatibility.
+All tests run against the configured PostgreSQL database using isolated schemas.
 """
 from pathlib import Path
 
@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 
 from backend.main import create_app
 from config import Config
-from database import Database
+from database import Database, DatabaseConnectionWrapper, DatabaseCursorWrapper
 from models import JobAnalysis
 from service import CareerPathAIService
 
@@ -51,6 +51,20 @@ def _register(client: TestClient, username: str, password: str = "Password123!")
     resp = client.post("/api/auth/register", json={"username": username, "password": password})
     assert resp.status_code == 200, resp.text
     return resp.json()["token"]
+
+
+# ── PostgreSQL-only runtime contract ──
+
+def test_database_runtime_rejects_non_postgres_paths(tmp_path):
+    db = Database(str(tmp_path / "postgres-only.db"))
+
+    assert db.is_postgres is True
+    with pytest.raises(RuntimeError, match="PostgreSQL only"):
+        db.is_postgres = False
+    with pytest.raises(RuntimeError, match="PostgreSQL connections only"):
+        DatabaseCursorWrapper(object(), False)
+    with pytest.raises(RuntimeError, match="PostgreSQL connections only"):
+        DatabaseConnectionWrapper(object(), False)
 
 
 # ── Draft isolation ──
@@ -197,15 +211,18 @@ def test_history_isolation_between_users(tmp_path, monkeypatch):
     headers_a = {"Authorization": f"Bearer {token_a}"}
     headers_b = {"Authorization": f"Bearer {token_b}"}
 
-    # Alice runs an analysis which creates a history record
-    resp = client.post("/api/analyze", headers=headers_a, json={
-        "jd_text": "Need Python FastAPI backend intern with API development experience.",
-        "resume_text": "I built a Python service with FastAPI.",
-        "knowledge_document_ids": [],
-        "expert_options": {},
+    # Alice creates a history record through the public history endpoint.
+    resp = client.post("/api/history", headers=headers_a, json={
+        "status": "watching",
+        "result": {
+            "draft": {"jdText": "Need Python FastAPI backend intern with API development experience."},
+            "matchScore": 82,
+            "decision": "yes",
+            "oneLineReason": "技能匹配。",
+        },
     })
     assert resp.status_code == 200
-    alice_record_id = resp.json()["record"]["id"]
+    alice_record_id = resp.json()["id"]
 
     # Alice can see the record
     resp = client.get("/api/history", headers=headers_a)

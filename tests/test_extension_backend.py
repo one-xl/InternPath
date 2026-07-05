@@ -56,7 +56,7 @@ def test_env(local_tmp_dir, monkeypatch):
     test_db = Database(db_path)
 
     # Monkeypatch the module-level instances in background_analyzer
-    import background_analyzer
+    from backend import background_analyzer
     monkeypatch.setattr(background_analyzer, "db", test_db)
 
     mock_analyzer = MagicMock()
@@ -146,7 +146,7 @@ def test_tailor_form_fields_api_success(test_env):
     assert response.status_code == 200
     body = response.json()
     assert body["ok"] is True
-    
+
     # Assert tailored AI strings
     tailored = body["tailored_data"]
     assert tailored["self_evaluation"] == "这是一个针对岗位特别定制的自我评价文案。"
@@ -237,7 +237,7 @@ def test_tailor_form_fields_with_presets(test_env):
     assert response.status_code == 200
     body = response.json()
     assert body["ok"] is True
-    
+
     profile = body["profile"]
     # Check overrides
     assert profile["name"] == "李四"

@@ -35,7 +35,7 @@ export function formatSuggestion(suggestion: string): string {
   return clean.trim();
 }
 
-function AdviceItem({ item, onGoToRewrite, onShowEvidence }: { item: ResumeAdvice; onGoToRewrite?: (adviceId: string) => void; onShowEvidence?: (chunkIds: string[]) => void }) {
+function AdviceItem({ item, onShowEvidence }: { item: ResumeAdvice; onShowEvidence?: (chunkIds: string[]) => void }) {
   const [copied, setCopied] = useState(false);
 
   function handleCopy() {
@@ -79,36 +79,6 @@ function AdviceItem({ item, onGoToRewrite, onShowEvidence }: { item: ResumeAdvic
             </button>
           )}
         </div>
-        {onGoToRewrite && (
-          <button
-            type="button"
-            onClick={() => onGoToRewrite(item.id)}
-            style={{
-              background: "var(--accent-bg)",
-              color: "var(--accent)",
-              border: "1px solid var(--accent)",
-              borderRadius: "12px",
-              padding: "2px 10px",
-              fontSize: "11px",
-              fontWeight: "600",
-              cursor: "pointer",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "4px",
-              transition: "all 0.2s ease"
-            }}
-            onMouseOver={(e) => {
-              e.currentTarget.style.background = "var(--accent)";
-              e.currentTarget.style.color = "var(--surface)";
-            }}
-            onMouseOut={(e) => {
-              e.currentTarget.style.background = "var(--accent-bg)";
-              e.currentTarget.style.color = "var(--accent)";
-            }}
-          >
-            ✨ 去 STAR 工坊改写
-          </button>
-        )}
       </div>
       <div className="advice-body">
         <div className="advice-issue">
@@ -155,24 +125,24 @@ function AdviceItem({ item, onGoToRewrite, onShowEvidence }: { item: ResumeAdvic
   );
 }
 
-function AdviceSection({ title, items, onGoToRewrite, onShowEvidence }: { title: string; items: ResumeAdvice[]; onGoToRewrite?: (adviceId: string) => void; onShowEvidence?: (chunkIds: string[]) => void }) {
+function AdviceSection({ title, items, onShowEvidence }: { title: string; items: ResumeAdvice[]; onShowEvidence?: (chunkIds: string[]) => void }) {
   if (!items.length) return null;
   return (
     <div className="advice-section">
       <h3>{title}</h3>
       {items.map((item) => (
-        <AdviceItem key={item.id} item={item} onGoToRewrite={onGoToRewrite} onShowEvidence={onShowEvidence} />
+        <AdviceItem key={item.id} item={item} onShowEvidence={onShowEvidence} />
       ))}
     </div>
   );
 }
 
-export function ResumeAdviceList({ advice, onGoToRewrite, onShowEvidence }: { advice: ResumeAdvice[]; onGoToRewrite?: (adviceId: string) => void; onShowEvidence?: (chunkIds: string[]) => void }) {
+export function ResumeAdviceList({ advice, onShowEvidence }: { advice: ResumeAdvice[]; onShowEvidence?: (chunkIds: string[]) => void }) {
   return (
     <Card title="简历改造建议" description="按优先级分级处理，直接在下面对比修改前后的表述细节，支持一键复制。">
-      <AdviceSection title="必须改 (高优先级)" items={advice.filter((item) => item.priority === "high")} onGoToRewrite={onGoToRewrite} onShowEvidence={onShowEvidence} />
-      <AdviceSection title="推荐优化 (中优先级)" items={advice.filter((item) => item.priority === "medium")} onGoToRewrite={onGoToRewrite} onShowEvidence={onShowEvidence} />
-      <AdviceSection title="锦上添花 (低优先级)" items={advice.filter((item) => item.priority === "low")} onGoToRewrite={onGoToRewrite} onShowEvidence={onShowEvidence} />
+      <AdviceSection title="必须改 (高优先级)" items={advice.filter((item) => item.priority === "high")} onShowEvidence={onShowEvidence} />
+      <AdviceSection title="推荐优化 (中优先级)" items={advice.filter((item) => item.priority === "medium")} onShowEvidence={onShowEvidence} />
+      <AdviceSection title="锦上添花 (低优先级)" items={advice.filter((item) => item.priority === "low")} onShowEvidence={onShowEvidence} />
     </Card>
   );
 }

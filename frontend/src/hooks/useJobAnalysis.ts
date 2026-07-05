@@ -232,6 +232,7 @@ export function useJobAnalysis() {
           resume_file_id: input.resumeFile.id,
           embedding_config_id: input.embeddingConfig.id,
           chat_config_id: input.chatConfig.id,
+          enable_agent_resume: input.draft.enableAgentResume || false,
         })
       });
 
@@ -276,7 +277,21 @@ export function useJobAnalysis() {
           isCompleted = true;
           throw new Error(record.errorMessage || "大模型分析执行失败。");
         } else {
-          progress.setStatus(record.status === "pending" ? "validating" : record.status as any);
+          const runningStep = record.steps?.find((s: any) => s.status === "running");
+          if (runningStep) {
+            const stepId = runningStep.id;
+            const mappedStatus =
+              stepId === "validate" ? "validating" :
+              stepId === "resume_embedding" ? "embedding_resume" :
+              stepId === "jd_embedding" ? "embedding_jd" :
+              stepId === "retrieve_chunks" ? "retrieving" :
+              stepId === "gemini_analysis" ? "analyzing" :
+              stepId === "save_history" ? "saving" :
+              stepId;
+            progress.setStatus(mappedStatus as any);
+          } else {
+            progress.setStatus(record.status === "pending" ? "validating" : record.status as any);
+          }
         }
 
         // Max polling timeout (10 minutes)
@@ -300,7 +315,7 @@ export function useJobAnalysis() {
     } catch (caught: any) {
       console.error("[analysis] background analysis failed:", caught);
       const friendlyError = toUserFriendlyAnalysisError(caught, "gemini_analysis", input.embeddingConfig, input.chatConfig);
-      
+
       progress.setError(friendlyError);
       progress.setStatus("failed");
       return {

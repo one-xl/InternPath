@@ -11,7 +11,6 @@ interface ResumeChunkPreviewProps {
   title?: string;
   description?: string;
   emptyText?: string;
-  onGoToRewrite?: (adviceId: string) => void;
 }
 
 export function ResumeChunkPreview({
@@ -20,7 +19,6 @@ export function ResumeChunkPreview({
   title = "本次分析参考的简历片段",
   description = "系统根据 JD 从你的简历中检索出最相关的经历片段，并基于这些内容生成投递决策和简历改造建议。",
   emptyText = "暂无检索片段。",
-  onGoToRewrite,
 }: ResumeChunkPreviewProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -78,46 +76,15 @@ export function ResumeChunkPreview({
                     )}
                   </span>
                   <Badge tone="info">
-                    {chunk.score !== undefined 
-                      ? `score: ${(chunk.score > 1 ? chunk.score / 100 : chunk.score).toFixed(2)} (${Math.round(chunk.score > 1 ? chunk.score : chunk.score * 100)}%)` 
+                    {chunk.score !== undefined
+                      ? `score: ${(chunk.score > 1 ? chunk.score / 100 : chunk.score).toFixed(2)} (${Math.round(chunk.score > 1 ? chunk.score : chunk.score * 100)}%)`
                       : "score: 1.00 (100%)"}
                   </Badge>
                 </button>
                 <p style={{ marginTop: "8px", color: "var(--text-light)" }}>{expanded ? chunk.content : `${chunk.content.slice(0, 120)}${chunk.content.length > 120 ? "..." : ""}`}</p>
-                
-                {hasAdvice && expanded && onGoToRewrite && (
-                  <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "12px", padding: "10px", background: "rgba(0,0,0,0.02)", borderRadius: "var(--radius-sm)", border: "1px dashed var(--line)" }}>
-                    <div style={{ fontSize: "11px", fontWeight: "700", color: "var(--muted)", marginBottom: "4px" }}>🎯 可选的智能改写项目建议：</div>
-                    {associatedAdvice.map((adv) => (
-                      <div key={adv.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11.5px", gap: "12px", padding: "4px 0", borderBottom: "1px solid rgba(0,0,0,0.03)" }}>
-                        <span style={{ color: "var(--text)", textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap", flex: 1 }}>
-                          <strong>{adv.priority === "high" ? "必须改" : "建议改"}</strong>: {formatIssue(adv.issue)}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => onGoToRewrite(adv.id)}
-                          style={{
-                            background: "var(--accent)",
-                            color: "var(--surface)",
-                            border: "none",
-                            borderRadius: "4px",
-                            padding: "4px 10px",
-                            fontSize: "11px",
-                            fontWeight: "600",
-                            cursor: "pointer",
-                            flexShrink: 0,
-                            transition: "opacity 0.2s ease"
-                          }}
-                          onMouseOver={(e) => e.currentTarget.style.opacity = "0.85"}
-                          onMouseOut={(e) => e.currentTarget.style.opacity = "1"}
-                        >
-                          ✍️ 一键智能改写
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                
+
+
+
                 {chunk.keywords?.length ? <div className="tag-row">{chunk.keywords.slice(0, 8).map((keyword) => <span key={keyword}>{keyword}</span>)}</div> : null}
               </article>
             );

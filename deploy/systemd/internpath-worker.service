@@ -1,0 +1,30 @@
+[Unit]
+Description=InternPath RQ Worker
+After=network.target postgresql.service redis-server.service internpath-ai.service
+Wants=postgresql.service redis-server.service internpath-ai.service
+
+[Service]
+Type=simple
+User=internpath
+Group=internpath
+WorkingDirectory=/opt/internpath
+EnvironmentFile=/opt/internpath/.env
+Environment=HOME=/opt/internpath
+Environment=XDG_CACHE_HOME=/opt/internpath/.cache
+ExecStart=/opt/internpath/.venv/bin/python -m backend.rq_worker
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+LockPersonality=true
+RestrictRealtime=true
+ReadWritePaths=/opt/internpath
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

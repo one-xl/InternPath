@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import type { AnalysisResult } from "../types/analysis";
 import { DecisionCard } from "../components/result/DecisionCard";
 import { LearningPlanPanel } from "../components/result/LearningPlanPanel";
@@ -6,6 +6,7 @@ import { MatchScorePanel } from "../components/result/MatchScorePanel";
 import { NextActionBar } from "../components/result/NextActionBar";
 import { ResumeAdviceList } from "../components/result/ResumeAdviceList";
 import { ResumeChunkPreview } from "../components/resume/ResumeChunkPreview";
+import { ResumeDiffView } from "../components/resume/ResumeDiffView";
 import { Badge } from "../components/ui/Badge";
 import { Card } from "../components/ui/Card";
 import { EmptyState } from "../components/ui/EmptyState";
@@ -20,13 +21,33 @@ interface ResultPageProps {
   onCopyAdvice: () => void;
   onMarkApplied: () => void;
   onAbandon: () => void;
-  onGoToRewrite?: (jdId: string, adviceId: string) => void;
+  onUpdateResult: (result: AnalysisResult) => void;
 }
+
+const taskStatusLabels: Record<string, string> = {
+  PENDING: "准备中",
+  RUNNING: "处理中",
+  COMPLETED: "已完成",
+  FAILED: "失败",
+  WAITING_FOR_HUMAN: "待确认",
+};
+
+const processFilterLabels: Record<"all" | "thought" | "tool", string> = {
+  all: "全部",
+  thought: "核对",
+  tool: "调用",
+};
+
+const claimStatusLabels: Record<string, string> = {
+  SUPPORTED: "依据充分",
+  WEAK: "依据较弱",
+  UNSUPPORTED: "缺少依据",
+};
 
 function ResumeEvidenceCard({ result }: { result: AnalysisResult }) {
   if (result.resumeFile) {
     return (
-      <Card title="简历文件、检索和模型使用" description={result.retrievalSummary || "本次结果基于上传简历解析后的片段检索生成。"}>
+      <Card title="简历文件和依据来源" description={result.retrievalSummary || "本次结果基于上传简历解析后的片段生成。"}>
         <div className="resume-evidence-grid">
           <div>
             <span>文件名</span>
@@ -41,11 +62,11 @@ function ResumeEvidenceCard({ result }: { result: AnalysisResult }) {
             <strong>{formatDateTime(result.resumeFile.uploadedAt)}</strong>
           </div>
           <div>
-            <span>向量模型</span>
+            <span>检索服务</span>
             <strong>{result.modelUsage ? `${result.modelUsage.embeddingProvider} / ${result.modelUsage.embeddingModelId}` : "未记录"}</strong>
           </div>
           <div>
-            <span>大语言模型</span>
+            <span>生成服务</span>
             <strong>{result.modelUsage ? `${result.modelUsage.chatProvider} / ${result.modelUsage.chatModelId}` : "未记录"}</strong>
           </div>
           <div>
@@ -53,14 +74,14 @@ function ResumeEvidenceCard({ result }: { result: AnalysisResult }) {
             <strong>{result.retrievedResumeChunks?.length ?? 0}</strong>
           </div>
         </div>
-        {result.retrievalScore !== undefined && <p className="muted-line">平均检索相似度：{result.retrievalScore}</p>}
+        {result.retrievalScore !== undefined && <p className="muted-line">平均匹配度：{result.retrievalScore}</p>}
       </Card>
     );
   }
 
   return (
-    <Card title="旧版文本输入记录" description="这条历史记录来自旧版手动输入材料流程，因此没有上传文件 and RAG 检索片段。">
-      <Badge tone="info">兼容旧数据</Badge>
+    <Card title="旧版文本输入记录" description="这条历史记录来自旧版手动输入材料流程，因此没有上传文件和依据片段。">
+      <Badge tone="info">兼容旧记录</Badge>
       {result.candidateMaterial || result.draft?.resumeText ? <p className="legacy-material">{result.candidateMaterial || result.draft?.resumeText}</p> : null}
     </Card>
   );
@@ -70,7 +91,7 @@ function AdviceEvidenceCard({ result }: { result: AnalysisResult }) {
   const linked = (result.resumeAdvice ?? []).filter((item) => item.basedOnChunkIds?.length);
   if (!linked.length) return null;
   return (
-    <Card title="简历建议引用关系" description="Gemini 返回的简历建议与检索片段引用关系。">
+    <Card title="简历建议引用关系" description="简历建议和依据片段的对应关系。">
       <div className="advice-evidence-list">
         {linked.map((item) => (
           <article key={item.id}>
@@ -90,16 +111,16 @@ function AdviceEvidenceCard({ result }: { result: AnalysisResult }) {
 function CitationsAndEvidenceCheckPanel({ result }: { result: AnalysisResult }) {
   const claimsMapping: any[] = [];
   const res = result as any;
-  
+
   if (res.citations && Array.isArray(res.citations)) {
     res.citations.forEach((cite: any) => {
       const score = typeof cite.retrievalScore === "number" ? cite.retrievalScore : 0.90;
       const isWeak = score < 0.50;
       claimsMapping.push({
-        claimText: cite.claimText || "模型事实论断",
+        claimText: cite.claimText || "待核对表述",
         status: isWeak ? "WEAK" : "SUPPORTED",
         confidenceScore: score,
-        sectionTitle: cite.sectionTitle || "未指定 Section",
+        sectionTitle: cite.sectionTitle || "未指定位置",
         sectionType: cite.sectionType || "generic_section",
         hierarchy: cite.hierarchy || [],
         fileName: cite.fileName || "上传简历",
@@ -108,7 +129,7 @@ function CitationsAndEvidenceCheckPanel({ result }: { result: AnalysisResult }) 
       });
     });
   }
-  
+
   const unsupportedItems = res.lowSupportNotice || res.hallucinationControl?.rewrittenItems || [];
   if (Array.isArray(unsupportedItems)) {
     unsupportedItems.forEach((item: string) => {
@@ -116,7 +137,7 @@ function CitationsAndEvidenceCheckPanel({ result }: { result: AnalysisResult }) 
         .replace("证据不足，不能作为事实输出：", "")
         .replace("证据较弱，建议降级表述：", "")
         .trim();
-        
+
       if (!claimsMapping.some(c => c.claimText === cleanText)) {
         claimsMapping.push({
           claimText: cleanText,
@@ -142,12 +163,12 @@ function CitationsAndEvidenceCheckPanel({ result }: { result: AnalysisResult }) 
   };
 
   return (
-    <Card title="🎓 可信度审查 & Claim Evidence 证据映射" description="对模型分析报告中的核心事实论断进行证据可信度审查与溯源（Section-level Evidence Check）。">
+    <Card title="依据核对" description="对分析报告中的核心表述做依据核对和来源追踪。">
       <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
         {claimsMapping.map((item, idx) => {
           const style = statusColors[item.status] || statusColors.SUPPORTED;
           const hierarchyPath = item.hierarchy && item.hierarchy.length > 0 ? item.hierarchy.join(" > ") : item.sectionTitle;
-          
+
           return (
             <article key={idx} style={{
               background: "var(--surface)",
@@ -172,18 +193,18 @@ function CitationsAndEvidenceCheckPanel({ result }: { result: AnalysisResult }) 
                   border: style.border,
                   flexShrink: 0
                 }}>
-                  {item.status}
+                  {claimStatusLabels[item.status] || item.status}
                 </span>
               </div>
 
               {item.status !== "UNSUPPORTED" && (
                 <div style={{ fontSize: "12.5px", color: "var(--text-light)", display: "flex", flexDirection: "column", gap: "4px" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                    <span>📍 证据出处：</span>
+                    <span>依据出处：</span>
                     <strong style={{ color: "var(--accent)" }}>{hierarchyPath}</strong>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                    <span>📊 检索置信度 (Retrieval Score)：</span>
+                    <span>匹配度：</span>
                     <strong style={{ color: "var(--text)" }}>
                       {(item.confidenceScore > 1 ? item.confidenceScore / 100 : item.confidenceScore).toFixed(2)}{" "}
                       ({Math.round(item.confidenceScore > 1 ? item.confidenceScore : item.confidenceScore * 100)}%)
@@ -199,10 +220,10 @@ function CitationsAndEvidenceCheckPanel({ result }: { result: AnalysisResult }) 
                 fontSize: "12px",
                 lineHeight: "1.5",
                 color: "var(--muted)",
-                borderLeft: `3px solid ${item.status === "SUPPORTED" ? "#10b981" : item.status === "WEAK" ? "#f59e0b" : "#ef4444"}`
+                borderLeft: `3px solid ${item.status === "SUPPORTED" ? "var(--success)" : item.status === "WEAK" ? "var(--warning)" : "var(--danger)"}`
               }}>
                 <span style={{ fontWeight: "700", display: "block", marginBottom: "4px", fontSize: "11.5px" }}>
-                  {item.status === "UNSUPPORTED" ? "⚠️ 审查结论" : "📝 简历原文证据"}
+                  {item.status === "UNSUPPORTED" ? "核对结论" : "简历原文依据"}
                 </span>
                 {item.evidenceText}
               </div>
@@ -239,9 +260,191 @@ export function ResultPage({
   onCopyAdvice,
   onMarkApplied,
   onAbandon,
-  onGoToRewrite
+  onUpdateResult
 }: ResultPageProps) {
   const [activeEvidenceChunk, setActiveEvidenceChunk] = useState<any | null>(null);
+  const [activeTab, setActiveTab] = useState<"analysis" | "diff" | "preview">("analysis");
+  const [copied, setCopied] = useState(false);
+
+  // Resume optimization states
+  const [showOptimizeModal, setShowOptimizeModal] = useState(false);
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  const [activeTask, setActiveTask] = useState<any | null>(null);
+  const [isOptimizing, setIsOptimizing] = useState(false);
+  const [showConsole, setShowConsole] = useState(false);
+  const [terminalFilter, setTerminalFilter] = useState<"all" | "thought" | "tool">("all");
+  const autoPromptedRef = useRef<string | null>(null);
+  const terminalEndRef = useRef<HTMLDivElement | null>(null);
+
+  // Resume comparison editor states
+  const [selectedEditIdx, setSelectedEditIdx] = useState<number>(0);
+  const [isEditing, setIsEditing] = useState<boolean>(false);
+  const [editText, setEditText] = useState<string>("");
+  const [isSavingEdit, setIsSavingEdit] = useState<boolean>(false);
+
+  const currentEditItem = result?.modification_log?.[selectedEditIdx];
+
+  // Auto-pop iOS-style optimization modal
+  useEffect(() => {
+    if (result && result.matchScore < 85 && result.resumeAdvice && result.resumeAdvice.length > 0 && !result.optimized_resume_md) {
+      if (autoPromptedRef.current !== result.id) {
+        autoPromptedRef.current = result.id;
+        setShowOptimizeModal(true);
+      }
+    } else {
+      setShowOptimizeModal(false);
+    }
+  }, [result]);
+
+  // Sync edit text with selected paragraph
+  useEffect(() => {
+    if (currentEditItem) {
+      setEditText(currentEditItem.new || "");
+      setIsEditing(false);
+    }
+  }, [selectedEditIdx, currentEditItem]);
+
+  // Scroll terminal logs to bottom
+  useEffect(() => {
+    if (terminalEndRef.current) {
+      terminalEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [activeTask?.logs]);
+
+  // Polling optimization task status
+  useEffect(() => {
+    if (!activeTaskId) return;
+
+    const intervalId = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/agent/resume/tasks/${activeTaskId}`);
+        if (!res.ok) {
+          clearInterval(intervalId);
+          return;
+        }
+        const data = await res.json();
+
+        const taskData = {
+          task_id: data.taskId,
+          status: data.status,
+          resume_id: data.resumeId,
+          original_resume_name: data.originalResumeName,
+          jd_text: data.jdText,
+          logs: data.logs || [],
+          optimized_resume_md: data.optimizedResumeMd || "",
+          error_message: data.errorMessage || "",
+          created_at: data.createdAt,
+          updated_at: data.updatedAt,
+          modification_diff_md: data.modificationDiffMd || "",
+          has_docx: data.hasDocx || false,
+          modification_log: data.modificationLog || []
+        };
+
+        setActiveTask(taskData);
+
+        if (data.status === "COMPLETED" || data.status === "FAILED") {
+          clearInterval(intervalId);
+          setActiveTaskId(null);
+          setIsOptimizing(false);
+
+          // Fetch updated record and reload
+          const refreshRes = await fetch(`/api/history/${result?.id}`);
+          if (refreshRes.ok) {
+            const refreshData = await refreshRes.json();
+            if (refreshData.record) {
+              onUpdateResult(refreshData.record);
+              setActiveTab("diff"); // Automatically switch to Diff tab on completion
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Error polling optimization task:", err);
+        clearInterval(intervalId);
+        setIsOptimizing(false);
+      }
+    }, 1500);
+
+    return () => clearInterval(intervalId);
+  }, [activeTaskId, result?.id, onUpdateResult]);
+
+  const handleStartOptimize = async () => {
+    if (!result || !result.resumeFile) return;
+    setShowOptimizeModal(false);
+    setIsOptimizing(true);
+    setShowConsole(true);
+
+    try {
+      const res = await fetch("/api/agent/resume/optimize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          resume_id: result.resumeFile.id,
+          jd_text: result.draft.jdText,
+          config_id: null,
+          task_id: result.id
+        })
+      });
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.detail || "启动简历优化失败");
+      }
+
+      const data = await res.json();
+      setActiveTaskId(data.taskId);
+      setActiveTask({
+        task_id: data.taskId,
+        status: "PENDING",
+        resume_id: result.resumeFile.id,
+        original_resume_name: result.resumeFile.name,
+        jd_text: result.draft.jdText,
+        logs: [],
+        optimized_resume_md: "",
+        error_message: "",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        modification_diff_md: "",
+        has_docx: false,
+        modification_log: []
+      });
+    } catch (err: any) {
+      alert(err.message || "请求失败");
+      setIsOptimizing(false);
+    }
+  };
+
+  const handleSaveEdit = async () => {
+    if (!result || !currentEditItem) return;
+    setIsSavingEdit(true);
+    try {
+      const res = await fetch(`/api/agent/resume/tasks/${result.id}/save`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          section_index: currentEditItem.section_index,
+          new_text: editText
+        })
+      });
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.detail || "保存修改失败");
+      }
+
+      // Fetch updated record
+      const refreshRes = await fetch(`/api/history/${result.id}`);
+      if (refreshRes.ok) {
+        const refreshData = await refreshRes.json();
+        if (refreshData.record) {
+          onUpdateResult(refreshData.record);
+          setIsEditing(false);
+          alert("修改保存成功！Word & PDF 原地排版保留重构完成。");
+        }
+      }
+    } catch (err: any) {
+      alert(err.message || "请求失败");
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
 
   if (!result) {
     return (
@@ -262,38 +465,453 @@ export function ResultPage({
     }
   };
 
+  const hasAgentResult = Boolean(result.optimized_resume_md);
+
+  const handleCopyMarkdown = () => {
+    if (!result.optimized_resume_md) return;
+    navigator.clipboard.writeText(result.optimized_resume_md);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const renderMarkdown = (text: string) => {
+    if (!text) return null;
+    const lines = text.split("\n");
+    return (
+      <div className="markdown-preview-content" style={{ lineHeight: "1.6", color: "var(--text)" }}>
+        {lines.map((line, idx) => {
+          let trimmed = line.trim();
+          if (trimmed.startsWith("# ")) {
+            return <h2 key={idx} style={{ marginTop: "18px", marginBottom: "8px", color: "var(--text)", fontSize: "20px", fontWeight: "800", borderBottom: "1px solid var(--line)", paddingBottom: "6px" }}>{trimmed.replace(/^#\s*/, "")}</h2>;
+          }
+          if (trimmed.startsWith("## ")) {
+            return <h3 key={idx} style={{ marginTop: "16px", marginBottom: "6px", color: "var(--text)", fontSize: "16px", fontWeight: "700" }}>{trimmed.replace(/^##\s*/, "")}</h3>;
+          }
+          if (trimmed.startsWith("### ")) {
+            return <h4 key={idx} style={{ marginTop: "14px", marginBottom: "6px", color: "var(--accent)", fontSize: "14.5px", fontWeight: "700" }}>{trimmed.replace(/^###\s*/, "")}</h4>;
+          }
+          if (trimmed.startsWith("**") && trimmed.endsWith("**")) {
+            return <p key={idx} style={{ fontWeight: 700, color: "var(--text)", marginBottom: "6px" }}>{trimmed.replace(/\*\*/g, "")}</p>;
+          }
+          if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+            let boldParsed = trimmed.replace(/^[-*]\s*/, "");
+            const parts = boldParsed.split("**");
+            return (
+              <li key={idx} style={{ marginLeft: "18px", listStyleType: "disc", marginBottom: "6px", color: "var(--text)" }}>
+                {parts.map((p, i) => i % 2 === 1 ? <strong key={i} style={{ color: "var(--accent)", fontWeight: "700" }}>{p}</strong> : p)}
+              </li>
+            );
+          }
+          if (!trimmed) return <div key={idx} style={{ height: "8px" }} />;
+          const parts = trimmed.split("**");
+          return (
+            <p key={idx} style={{ marginBottom: "6px", lineHeight: "1.6", color: "var(--text)" }}>
+              {parts.map((p, i) => i % 2 === 1 ? <strong key={i} style={{ color: "var(--accent)", fontWeight: "700" }}>{p}</strong> : p)}
+            </p>
+          );
+        })}
+      </div>
+    );
+  };
+
   return (
-    <div className="page-stack result-page">
+    <div className="page-stack result-page" style={{ position: "relative", paddingBottom: showConsole ? "380px" : "40px" }}>
       <div className="page-title">
         <span className="section-kicker">分析结果</span>
-        <h2>
-          {result.draft?.company || "未知公司"} · {result.draft?.title || "未命名岗位"}
-        </h2>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <h2>
+            {result.draft?.company || "未知公司"} · {result.draft?.title || "未命名岗位"}
+          </h2>
+          <div style={{ display: "flex", gap: "10px" }}>
+            {!hasAgentResult && !isOptimizing && (
+              <button
+                type="button"
+                onClick={handleStartOptimize}
+                style={{
+                  background: "linear-gradient(180deg, var(--accent), var(--accent-hover, var(--accent)))",
+                  color: "#ffffff",
+                  border: "none",
+                  padding: "8px 16px",
+                  borderRadius: "8px",
+                  fontWeight: "700",
+                  fontSize: "13px",
+                  cursor: "pointer",
+                  boxShadow: "var(--shadow-sm)"
+                }}
+              >
+                优化这份简历
+              </button>
+            )}
+            {isOptimizing && (
+              <button
+                type="button"
+                onClick={() => setShowConsole(true)}
+                style={{
+                  background: "var(--surface-soft, #2e2e2e)",
+                  color: "var(--text)",
+                  border: "1px solid var(--line)",
+                  padding: "8px 16px",
+                  borderRadius: "8px",
+                  fontWeight: "600",
+                  fontSize: "13px",
+                  cursor: "pointer"
+                }}
+              >
+                查看过程记录
+              </button>
+            )}
+          </div>
+        </div>
         <p>{result.draft?.location || "地点未注明"} · {(result.detectedKeywords ?? []).join(" / ") || "未识别关键词"}</p>
       </div>
-      <DecisionCard result={result} />
-      <MatchScorePanel result={result} />
-      <ResumeEvidenceCard result={result} />
-      <ResumeChunkPreview
-        chunks={result.retrievedResumeChunks ?? []}
-        advice={result.resumeAdvice ?? []}
-        onGoToRewrite={onGoToRewrite ? (adviceId) => onGoToRewrite(result.id, adviceId) : undefined}
-      />
-      <ResumeAdviceList
-        advice={result.resumeAdvice ?? []}
-        onGoToRewrite={onGoToRewrite ? (adviceId) => onGoToRewrite(result.id, adviceId) : undefined}
-        onShowEvidence={handleShowEvidence}
-      />
-      <CitationsAndEvidenceCheckPanel result={result} />
-      <AdviceEvidenceCard result={result} />
-      <LearningPlanPanel suggestions={result.learningSuggestions ?? []} />
-      <Card title="下一步行动">
-        <ol className="action-list">
-          {(result.nextActions ?? []).map((action) => (
-            <li key={action}>{action}</li>
-          ))}
-        </ol>
-      </Card>
+
+      {hasAgentResult && (
+        <div className="tabs" style={{ marginBottom: "20px" }}>
+          <button
+            type="button"
+            className={activeTab === "analysis" ? "active" : ""}
+            onClick={() => setActiveTab("analysis")}
+          >
+            岗位匹配度分析
+          </button>
+          <button
+            type="button"
+            className={activeTab === "diff" ? "active" : ""}
+            onClick={() => setActiveTab("diff")}
+          >
+            简历修改对照
+          </button>
+          <button
+            type="button"
+            className={activeTab === "preview" ? "active" : ""}
+            onClick={() => setActiveTab("preview")}
+          >
+            优化后简历预览
+          </button>
+        </div>
+      )}
+
+      {activeTab === "analysis" && (
+        <>
+          <DecisionCard result={result} />
+          <MatchScorePanel result={result} />
+          <ResumeEvidenceCard result={result} />
+          <ResumeChunkPreview
+            chunks={result.retrievedResumeChunks ?? []}
+            advice={result.resumeAdvice ?? []}
+          />
+          <ResumeAdviceList
+            advice={result.resumeAdvice ?? []}
+            onShowEvidence={handleShowEvidence}
+          />
+          <CitationsAndEvidenceCheckPanel result={result} />
+          <AdviceEvidenceCard result={result} />
+          <LearningPlanPanel suggestions={result.learningSuggestions ?? []} />
+          <Card title="下一步行动">
+            <ol className="action-list">
+              {(result.nextActions ?? []).map((action) => (
+                <li key={action}>{action}</li>
+              ))}
+            </ol>
+          </Card>
+        </>
+      )}
+
+      {activeTab === "diff" && (
+        <Card title="简历修改对照" description="基于岗位 JD 和简历差距逐段调整，并保留修改理由。双击右侧修改后段落可直接编辑。">
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "300px 1fr",
+            gap: "20px",
+            alignItems: "stretch",
+            minHeight: "500px",
+            background: "var(--surface)",
+            borderRadius: "12px",
+            border: "1px solid var(--line)",
+            overflow: "hidden"
+          }}>
+            {/* Left Column: Sidebar Cards List */}
+            <div style={{
+              borderRight: "1px solid var(--line)",
+              padding: "16px",
+              display: "flex",
+              flexDirection: "column",
+              gap: "10px",
+              maxHeight: "650px",
+              overflowY: "auto",
+              background: "rgba(255,255,255,0.01)"
+            }}>
+              {(result.modification_log || []).map((item, idx) => {
+                const isSelected = selectedEditIdx === idx;
+                return (
+                  <div
+                    key={idx}
+                    onClick={() => setSelectedEditIdx(idx)}
+                    style={{
+                      padding: "12px",
+                      borderRadius: "8px",
+                      border: isSelected ? "1px solid var(--accent-border)" : "1px solid var(--line)",
+                      background: isSelected ? "var(--accent-bg)" : "transparent",
+                      cursor: "pointer",
+                      transition: "all 0.2s"
+                    }}
+                  >
+                    <div style={{ fontWeight: "700", fontSize: "14px", color: "var(--text)", marginBottom: "4px" }}>
+                      {item.section_name}
+                    </div>
+                    <div style={{ fontSize: "12px", color: "var(--text-muted)", textOverflow: "ellipsis", whiteSpace: "nowrap", overflow: "hidden" }}>
+                      {item.new}
+                    </div>
+                    {item.reason && (
+                      <div style={{ fontSize: "11px", color: "var(--accent)", marginTop: "6px", display: "flex", alignItems: "center", gap: "4px" }}>
+                        <span>理由</span>
+                        <span style={{ textOverflow: "ellipsis", whiteSpace: "nowrap", overflow: "hidden" }}>
+                          {item.reason}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Right Column: Comparison & Editor */}
+            <div style={{ padding: "20px", display: "flex", flexDirection: "column", gap: "16px", maxHeight: "650px", overflowY: "auto" }}>
+              {currentEditItem ? (
+                <>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--line)", paddingBottom: "12px" }}>
+                    <h4 style={{ margin: 0, fontSize: "16px", fontWeight: "700" }}>{currentEditItem.section_name}</h4>
+                    <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>双击右侧内容进入编辑模式</span>
+                  </div>
+
+                  {currentEditItem.reason && (
+                    <div style={{
+                      padding: "10px 14px",
+                      background: "var(--accent-bg)",
+                      borderLeft: "4px solid var(--accent)",
+                      fontSize: "12.5px",
+                      color: "var(--text)",
+                      lineHeight: "1.5"
+                    }}>
+                      <strong>修改理由：</strong> {currentEditItem.reason}
+                    </div>
+                  )}
+
+                  {/* Side by Side Diff Panels */}
+                  <div style={{ display: "flex", gap: "16px", flex: 1 }}>
+                    {/* Original (Left) */}
+                    <div style={{
+                      flex: 1,
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "8px"
+                    }}>
+                      <div style={{ fontSize: "12px", fontWeight: "700", color: "var(--danger)" }}>修改前</div>
+                      <div style={{
+                        flex: 1,
+                        background: "rgba(239, 68, 68, 0.04)",
+                        border: "1px solid rgba(239, 68, 68, 0.15)",
+                        borderRadius: "8px",
+                        padding: "14px",
+                        fontSize: "13px",
+                        lineHeight: "1.6",
+                        color: "var(--danger)",
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-all"
+                      }}>
+                        {currentEditItem.original}
+                      </div>
+                    </div>
+
+                    {/* Optimized / Editor (Right) */}
+                    <div style={{
+                      flex: 1,
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "8px"
+                    }}>
+                      <div style={{ fontSize: "12px", fontWeight: "700", color: "var(--success)" }}>修改后</div>
+                      {isEditing ? (
+                        <div style={{ display: "flex", flexDirection: "column", gap: "10px", flex: 1 }}>
+                          <textarea
+                            value={editText}
+                            onChange={(e) => setEditText(e.target.value)}
+                            style={{
+                              flex: 1,
+                              minHeight: "200px",
+                              background: "var(--surface-soft, #2e2e2e)",
+                              border: "1px solid var(--accent)",
+                              borderRadius: "8px",
+                              padding: "14px",
+                              fontSize: "13px",
+                              lineHeight: "1.6",
+                              color: "var(--text)",
+                              outline: "none",
+                              resize: "vertical",
+                              fontFamily: "inherit"
+                            }}
+                          />
+                          <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end" }}>
+                            <button
+                              type="button"
+                              onClick={() => setIsEditing(false)}
+                              disabled={isSavingEdit}
+                              style={{
+                                background: "transparent",
+                                border: "1px solid var(--line)",
+                                color: "var(--text-muted)",
+                                padding: "6px 12px",
+                                borderRadius: "6px",
+                                fontSize: "12.5px",
+                                cursor: "pointer"
+                              }}
+                            >
+                              取消
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleSaveEdit}
+                              disabled={isSavingEdit}
+                              style={{
+                                background: "var(--accent)",
+                                border: "none",
+                                color: "#ffffff",
+                                padding: "6px 12px",
+                                borderRadius: "6px",
+                                fontSize: "12.5px",
+                                fontWeight: "600",
+                                cursor: "pointer"
+                              }}
+                            >
+                              {isSavingEdit ? "保存中..." : "保存修改"}
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div
+                          onDoubleClick={() => setIsEditing(true)}
+                          style={{
+                            flex: 1,
+                            background: "rgba(16, 185, 129, 0.04)",
+                            border: "1px solid rgba(16, 185, 129, 0.15)",
+                            borderRadius: "8px",
+                            padding: "14px",
+                            fontSize: "13px",
+                            lineHeight: "1.6",
+                            color: "var(--success)",
+                            whiteSpace: "pre-wrap",
+                            wordBreak: "break-all",
+                            cursor: "pointer"
+                          }}
+                          title="双击进行编辑"
+                        >
+                          {currentEditItem.new}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", flex: 1, color: "var(--text-muted)" }}>
+                  请从左侧选择需要查看的修改模块
+                </div>
+              )}
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {activeTab === "preview" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--surface)", border: "1px solid var(--line)", padding: "12px 18px", borderRadius: "12px" }}>
+            <span style={{ fontSize: "14px", fontWeight: "600", color: "var(--text-muted)" }}>
+              优化简历已生成，支持以下操作：
+            </span>
+            <div style={{ display: "flex", gap: "10px" }}>
+              <button
+                type="button"
+                onClick={handleCopyMarkdown}
+                style={{
+                  background: copied ? "#10b981" : "var(--surface-muted)",
+                  color: copied ? "#ffffff" : "var(--text-main)",
+                  border: "1px solid var(--line)",
+                  padding: "6px 14px",
+                  borderRadius: "8px",
+                  fontSize: "13px",
+                  fontWeight: "600",
+                  cursor: "pointer",
+                  transition: "all 0.2s"
+                }}
+              >
+                {copied ? "已复制" : "复制 MD"}
+              </button>
+              <a
+                href={`/api/agent/resume/tasks/${result.id}/download`}
+                style={{
+                  background: "var(--accent)",
+                  color: "#ffffff",
+                  textDecoration: "none",
+                  padding: "6px 14px",
+                  borderRadius: "8px",
+                  fontSize: "13px",
+                  fontWeight: "700",
+                  cursor: "pointer"
+                }}
+              >
+                下载 MD
+              </a>
+              {result.has_docx && (
+                <a
+                  href={`/api/agent/resume/tasks/${result.id}/download?format=docx`}
+                  style={{
+                    background: "#10b981",
+                    color: "#ffffff",
+                    textDecoration: "none",
+                    padding: "6px 14px",
+                    borderRadius: "8px",
+                    fontSize: "13px",
+                    fontWeight: "700",
+                    cursor: "pointer"
+                  }}
+                >
+                  下载 DOCX
+                </a>
+              )}
+              {result.has_docx && (
+                <a
+                  href={`/api/agent/resume/tasks/${result.id}/download?format=pdf`}
+                  style={{
+                    background: "#ef4444",
+                    color: "#ffffff",
+                    textDecoration: "none",
+                    padding: "6px 14px",
+                    borderRadius: "8px",
+                    fontSize: "13px",
+                    fontWeight: "700",
+                    cursor: "pointer"
+                  }}
+                >
+                  下载 PDF
+                </a>
+              )}
+            </div>
+          </div>
+
+          <Card title="优化后简历排版预览">
+            <div style={{
+              background: "var(--surface)",
+              border: "1px solid var(--line)",
+              borderRadius: "12px",
+              padding: "24px",
+              maxHeight: "750px",
+              overflowY: "auto"
+            }}>
+              {renderMarkdown(result.optimized_resume_md || "")}
+            </div>
+          </Card>
+        </div>
+      )}
+
       <NextActionBar
         result={result}
         isSaved={isSaved}
@@ -302,6 +920,247 @@ export function ResultPage({
         onMarkApplied={onMarkApplied}
         onAbandon={onAbandon}
       />
+
+      {/* iOS style Onboarding Optimize Modal */}
+      {showOptimizeModal && (
+        <div style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
+          width: "100vw",
+          height: "100vh",
+          background: "rgba(0, 0, 0, 0.6)",
+          backdropFilter: "blur(8px)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 2000,
+          animation: "fadeIn 0.25s ease-out"
+        }}>
+          <div style={{
+            background: "var(--surface, #1e1e1e)",
+            border: "1px solid var(--line, #2e2e2e)",
+            borderRadius: "20px",
+            padding: "24px",
+            width: "420px",
+            boxShadow: "0 10px 40px rgba(0,0,0,0.3)",
+            display: "flex",
+            flexDirection: "column",
+            gap: "16px",
+            fontFamily: "var(--font-sans, system-ui, sans-serif)",
+            color: "var(--text, #fff)",
+            textAlign: "center"
+          }}>
+            <div style={{ fontSize: "12px", fontWeight: "800", color: "var(--accent)", letterSpacing: "0.08em" }}>简历定向优化</div>
+            <h3 style={{ margin: 0, fontSize: "18px", fontWeight: "700" }}>为这个岗位生成投递版简历</h3>
+            <p style={{ margin: 0, fontSize: "14px", color: "var(--text-muted, #8e8e93)", lineHeight: "1.5" }}>
+              当前简历和岗位要求还有一些差距。可以基于已有修改建议生成一版投递简历，并尽量保留原简历的字体和排版。
+            </p>
+            <div style={{ display: "flex", gap: "12px", marginTop: "8px" }}>
+              <button
+                type="button"
+                onClick={() => setShowOptimizeModal(false)}
+                style={{
+                  flex: 1,
+                  background: "rgba(255, 255, 255, 0.05)",
+                  color: "var(--text, #fff)",
+                  border: "1px solid var(--line, #2e2e2e)",
+                  padding: "12px",
+                  borderRadius: "10px",
+                  fontSize: "14px",
+                  fontWeight: "600",
+                  cursor: "pointer",
+                  transition: "all 0.15s"
+                }}
+              >
+                稍后再说
+              </button>
+              <button
+                type="button"
+                onClick={handleStartOptimize}
+                style={{
+                  flex: 1,
+                  background: "linear-gradient(180deg, var(--accent), var(--accent-hover, var(--accent)))",
+                  color: "#fff",
+                  border: "none",
+                  padding: "12px",
+                  borderRadius: "10px",
+                  fontSize: "14px",
+                  fontWeight: "600",
+                  cursor: "pointer",
+                  transition: "all 0.15s",
+                  boxShadow: "var(--shadow-sm)"
+                }}
+              >
+                开始优化
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Resume optimization process drawer */}
+      {showConsole && activeTask && (
+        <div style={{
+          position: "fixed",
+          bottom: 0,
+          left: 0,
+          right: 0,
+          height: "360px",
+          background: "var(--surface)",
+          borderTop: "1px solid var(--line)",
+          boxShadow: "0 -18px 56px rgba(0,0,0,0.32)",
+          zIndex: 998,
+          display: "flex",
+          flexDirection: "column",
+          fontFamily: "inherit"
+        }}>
+          {/* Header */}
+          <div style={{
+            padding: "12px 18px",
+            background: "var(--surface-soft, var(--surface))",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            borderBottom: "1px solid var(--line)"
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <span style={{
+                color: "var(--text)",
+                fontSize: "13px",
+                fontWeight: "800"
+              }}>
+                过程记录
+              </span>
+              <span style={{
+                color: "var(--muted)",
+                fontSize: "12px",
+                fontWeight: "650"
+              }}>
+                {taskStatusLabels[activeTask.status] || activeTask.status}
+              </span>
+            </div>
+
+            <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+              <div style={{ display: "flex", gap: "6px" }}>
+                {(["all", "thought", "tool"] as const).map(type => (
+                  <button
+                    key={type}
+                    type="button"
+                    onClick={() => setTerminalFilter(type)}
+                    style={{
+                      background: terminalFilter === type ? "var(--accent-bg)" : "transparent",
+                      color: terminalFilter === type ? "var(--accent)" : "var(--muted)",
+                      border: "1px solid var(--line)",
+                      borderRadius: "999px",
+                      padding: "4px 10px",
+                      fontSize: "11px",
+                      cursor: "pointer",
+                      fontWeight: "700"
+                    }}
+                  >
+                    {processFilterLabels[type]}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (activeTask.status === "RUNNING") {
+                    if (window.confirm("任务仍在处理中，确定关闭过程记录吗？（任务会继续运行）")) {
+                      setShowConsole(false);
+                    }
+                  } else {
+                    setShowConsole(false);
+                  }
+                }}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: "var(--muted)",
+                  fontSize: "16px",
+                  cursor: "pointer",
+                  padding: "0 6px"
+                }}
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+
+          {/* Logs */}
+          <div style={{
+            flexGrow: 1,
+            overflowY: "auto",
+            padding: "16px",
+            display: "flex",
+            flexDirection: "column",
+            gap: "10px",
+            fontSize: "12.5px",
+            lineHeight: "1.5"
+          }}>
+            {activeTask.status === "PENDING" && (
+              <div style={{ color: "var(--muted)" }}>任务已创建，正在准备处理环境...</div>
+            )}
+
+            {activeTask.logs && activeTask.logs.filter((log: any) => {
+              if (terminalFilter === "thought") return log.type === "thought";
+              if (terminalFilter === "tool") return log.type === "tool_call" || log.type === "tool_response";
+              return true;
+            }).map((log: any, index: number) => {
+              let color = "var(--muted)";
+              let prefix = "记录";
+
+              if (log.type === "info") color = "var(--text)";
+              else if (log.type === "thought") {
+                color = "var(--success)";
+                prefix = "核对";
+              } else if (log.type === "tool_call") {
+                color = "var(--accent)";
+                prefix = "调用";
+              } else if (log.type === "tool_response") {
+                color = "var(--muted)";
+                prefix = "返回";
+              } else if (log.type === "warning") color = "var(--warning)";
+              else if (log.type === "error") {
+                color = "var(--danger)";
+                prefix = "错误";
+              }
+
+              return (
+                <div key={index} style={{ color: color, wordBreak: "break-all" }}>
+                  <span style={{ color: "var(--subtle)", marginRight: "6px" }}>
+                    [{new Date(log.timestamp).toLocaleTimeString()}]
+                  </span>
+                  <strong style={{ marginRight: "6px" }}>{prefix}</strong>
+                  {log.message}
+                  {log.detail && (
+                    <pre style={{
+                      margin: "4px 0 0 0",
+                      background: "var(--surface-muted)",
+                      padding: "8px",
+                      borderRadius: "6px",
+                      color: "var(--text)",
+                      fontSize: "11.5px",
+                      overflowX: "auto",
+                      whiteSpace: "pre-wrap"
+                    }}>
+                      {typeof log.detail === "string" ? log.detail : JSON.stringify(log.detail, null, 2)}
+                    </pre>
+                  )}
+                </div>
+              );
+            })}
+
+            {activeTask.status === "RUNNING" && (
+              <div style={{ color: "var(--muted)" }}>
+                正在后台处理，请稍等...
+              </div>
+            )}
+            <div ref={terminalEndRef} />
+          </div>
+        </div>
+      )}
 
       {activeEvidenceChunk && (
         <>
@@ -339,7 +1198,7 @@ export function ResultPage({
             animation: "slideIn 0.2s ease-out"
           }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--line, #2c2c2e)", paddingBottom: "12px" }}>
-              <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "var(--text)" }}>📄 证据链原始凭证</h3>
+              <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "var(--text)" }}>原文依据</h3>
               <button
                 type="button"
                 onClick={() => setActiveEvidenceChunk(null)}
@@ -355,7 +1214,7 @@ export function ResultPage({
                 ✕
               </button>
             </div>
-            
+
             <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
               <div style={{ fontSize: "11px", textTransform: "uppercase", color: "var(--muted, #8e8e93)", fontWeight: "600" }}>位置出处</div>
               <strong style={{ fontSize: "14px", color: "var(--accent, #007aff)" }}>
@@ -399,7 +1258,7 @@ export function ResultPage({
                 {activeEvidenceChunk.content || activeEvidenceChunk.text}
               </div>
             </div>
-            
+
             <div style={{ display: "flex", gap: "10px", marginTop: "auto", paddingTop: "12px", borderTop: "1px solid var(--line, #2c2c2e)" }}>
               <button
                 type="button"

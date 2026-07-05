@@ -1,23 +1,27 @@
 import type { AnalysisStep } from "../../types/analysis";
 import type { ChatModelConfig } from "../../types/modelConfig";
-import { getModelName } from "./AnalysisProgressPanel";
 
 interface AnalysisStepItemProps {
   step: AnalysisStep;
   index: number;
   activeChatConfig?: ChatModelConfig;
+  isLast?: boolean;
 }
 
-export function AnalysisStepItem({ step, index, activeChatConfig }: AnalysisStepItemProps) {
+export function AnalysisStepItem({ step, index, isLast }: AnalysisStepItemProps) {
   const { status, title, description, durationMs, errorMessage, metadata } = step;
 
-  // Dynamically adapt Step 5 Gemini texts to the actual selected model
-  const modelName = getModelName(metadata?.chatModelId, activeChatConfig);
+  // Keep generated progress copy user-facing while preserving underlying step ids.
+  const cleanTitle = title.replace(/^步骤\s*\d+[:：]\s*/, "");
   const displayTitle = step.id === "gemini_analysis"
-    ? `步骤 5：生成岗位匹配分析 (${modelName})`
-    : title;
+    ? `步骤 ${index + 1}：生成岗位匹配分析`
+    : step.id === "agent_resume"
+    ? `步骤 ${index + 1}：简历定向优化`
+    : `步骤 ${index + 1}：${cleanTitle}`;
   const displayDescription = step.id === "gemini_analysis"
-    ? `使用 ${modelName} 基于 JD 和检索片段生成投递决策、匹配度和简历建议。`
+    ? `根据 JD 和匹配到的经历生成投递判断、匹配度和简历建议。`
+    : step.id === "agent_resume"
+    ? `正在逐段调整简历，并核对表述是否有真实经历支撑。`
     : description;
 
   // Icon based on status
@@ -86,7 +90,7 @@ export function AnalysisStepItem({ step, index, activeChatConfig }: AnalysisStep
     } else if (metadata.embeddedChunksCount !== undefined) {
       items.push(
         <span key="embedded">
-          向量化数量: <strong>{metadata.embeddedChunksCount}</strong>
+          整理数量: <strong>{metadata.embeddedChunksCount}</strong>
         </span>
       );
     }
@@ -102,7 +106,7 @@ export function AnalysisStepItem({ step, index, activeChatConfig }: AnalysisStep
     if (metadata.embeddingModelId) {
       items.push(
         <span key="embeddingModel">
-          向量模型: <code>{metadata.embeddingModelId}</code>
+          检索服务: <code>{metadata.embeddingModelId}</code>
         </span>
       );
     }
@@ -110,7 +114,7 @@ export function AnalysisStepItem({ step, index, activeChatConfig }: AnalysisStep
     if (metadata.chatModelId) {
       items.push(
         <span key="chatModel">
-          分析模型: <code>{metadata.chatModelId}</code>
+          生成服务: <code>{metadata.chatModelId}</code>
         </span>
       );
     }
@@ -118,7 +122,7 @@ export function AnalysisStepItem({ step, index, activeChatConfig }: AnalysisStep
     if (metadata.retryCount !== undefined && metadata.retryCount > 0) {
       items.push(
         <span key="retries" className="metadata-highlight-danger">
-          由于 503 异常，正在自动第 <strong>{metadata.retryCount}</strong> 次重试
+          由于 503 异常，正在第 <strong>{metadata.retryCount}</strong> 次重试
         </span>
       );
     }
@@ -142,24 +146,24 @@ export function AnalysisStepItem({ step, index, activeChatConfig }: AnalysisStep
       if (step.id === "gemini_analysis") {
         const subState = metadata?.subState;
         const subProgress = metadata?.subProgress ?? 0;
-        
-        let subStateText = "正在准备多维匹配分析...";
+
+        let subStateText = "正在准备岗位匹配分析...";
         let subStateColor = "var(--muted)";
         if (subState === "checking_constraints") {
-          subStateText = "🔍 正在核对学历、年限、地点等硬性过滤门槛...";
-          subStateColor = "#3b82f6";
+          subStateText = "正在核对学历、年限、地点等硬性要求...";
+          subStateColor = "var(--info)";
         } else if (subState === "deep_analyzing") {
-          subStateText = "🧠 正在结合检索经历片段进行多维深度技能双向匹配...";
-          subStateColor = "#a855f7";
+          subStateText = "正在结合相关经历片段判断技能匹配度...";
+          subStateColor = "var(--accent)";
         } else if (subState === "generating_advice") {
-          subStateText = "💡 正在挖掘简历描述缺陷并计算优化润色建议...";
-          subStateColor = "#f59e0b";
+          subStateText = "正在整理简历问题和修改建议...";
+          subStateColor = "var(--warning)";
         } else if (subState === "building_roadmap") {
-          subStateText = "🗺️ 正在定位技能差额规划针对性面试与学习路径...";
-          subStateColor = "#14b8a6";
+          subStateText = "正在整理技能差距、面试准备和学习路径...";
+          subStateColor = "var(--success)";
         } else if (subState === "completed") {
-          subStateText = "✅ 分析完成！即将渲染结果页面...";
-          subStateColor = "#10b981";
+          subStateText = "分析完成，即将展示结果...";
+          subStateColor = "var(--success)";
         }
 
         return (
@@ -168,11 +172,11 @@ export function AnalysisStepItem({ step, index, activeChatConfig }: AnalysisStep
               {subStateText}
             </p>
             <div className="step-progress-bar-container" style={{ height: "6px", background: "rgba(0,0,0,0.06)", borderRadius: "3px", overflow: "hidden", marginTop: "6px" }}>
-              <div 
-                className="step-progress-bar" 
-                style={{ 
-                  width: `${subProgress}%`, 
-                  background: subStateColor, 
+              <div
+                className="step-progress-bar"
+                style={{
+                  width: `${subProgress}%`,
+                  background: subStateColor,
                   boxShadow: `0 0 4px ${subStateColor}`,
                   transition: "width 0.4s ease-out, background-color 0.4s ease",
                   height: "100%"
@@ -198,7 +202,7 @@ export function AnalysisStepItem({ step, index, activeChatConfig }: AnalysisStep
     <div className={`analysis-step-item step-status-${status}`}>
       <div className="step-left">
         {getIcon()}
-        {index < 6 && <div className="step-timeline-connector"></div>}
+        {!isLast && <div className="step-timeline-connector"></div>}
       </div>
       <div className="step-body">
         <div className="step-header">

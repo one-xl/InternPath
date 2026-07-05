@@ -70,6 +70,8 @@ def parse_resume(file_name: str, content_type: str, data: bytes) -> dict[str, An
 
     cleaned_text = clean_resume_text(raw_text)
     file_id = uuid4().hex
+    import base64
+    b64_content = base64.b64encode(data).decode("utf-8")
     resume_file = {
         "id": file_id,
         "name": file_name,
@@ -77,6 +79,7 @@ def parse_resume(file_name: str, content_type: str, data: bytes) -> dict[str, An
         "type": content_type,
         "uploadedAt": datetime.now().isoformat(),
         "status": "parsed",
+        "b64_content": b64_content,
     }
     chunks = chunk_resume(cleaned_text, file_id, file_name)
     return {

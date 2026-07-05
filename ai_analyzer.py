@@ -57,13 +57,13 @@ class AIAnalyzer:
         self._http_client = httpx.Client(timeout=timeout)
         self.model = Config.LLM_MODEL
 
-    def _client(self, user_id: Optional[Any] = None, config_id: Optional[str] = None, allow_fallback: bool = True) -> Tuple[OpenAI, Optional[str], str, str]:
+    def _client(self, user_id: Optional[Any] = None, config_id: Optional[str] = None, allow_server_default: bool = True) -> Tuple[OpenAI, Optional[str], str, str]:
         # 1. If user_id is provided, try to find it in the database
         if user_id:
             try:
                 from database import Database
                 db = Database()
-                placeholder = "%s" if db.is_postgres else "?"
+                placeholder = "%s"
                 with db.get_connection() as conn:
                     cursor = conn.cursor()
                     if config_id and config_id.strip():
@@ -110,7 +110,7 @@ class AIAnalyzer:
                                 (user_id,)
                             )
                             rows = cursor.fetchall()
-                
+
                 if rows:
                     for r in rows:
                         cfg_id, provider, model_id, encrypted_key, config_json = r
@@ -124,13 +124,13 @@ class AIAnalyzer:
                                     base_url = extra.get("baseUrl") or extra.get("base_url") or ""
                                 except:
                                     pass
-                            
+
                             if not base_url:
                                 if provider == "gemini":
                                     base_url = "https://generativelanguage.googleapis.com/v1beta"
                                 elif provider == "openai-compatible":
                                     base_url = "https://api.openai.com/v1"
-                                    
+
                             if base_url:
                                 self.model = model_id
                                 if provider == "gemini":
@@ -155,7 +155,7 @@ class AIAnalyzer:
                                         except:
                                             pass
                                         base_url = base
-                                        
+
                                 return OpenAI(
                                     api_key=decrypted_key,
                                     base_url=base_url,
@@ -164,8 +164,8 @@ class AIAnalyzer:
             except Exception as e:
                 print(f"[STAR_AI] Database model config resolution error: {e}")
 
-        # Fallback to system default LLM from .env
-        if not allow_fallback:
+        # Use the server-managed default LLM from the deployment environment when allowed.
+        if not allow_server_default:
             raise Exception("请先在个人中心 > 模型配置中配置并启用您的大模型，STAR 工坊需要使用您已配置的模型。")
         if Config.LLM_API_KEY and Config.LLM_API_KEY not in _PLACEHOLDER_KEYS and Config.LLM_BASE_URL:
             self.model = Config.LLM_MODEL
@@ -335,19 +335,19 @@ class AIAnalyzer:
             )
             result_text = _strip_json_fence((response.choices[0].message.content or "").strip())
             raw = json.loads(result_text)
-            
+
             # Enforce backend-calculated unified scoring (education 30%, skills 30%, projects 30%, keywords/bonus 10%)
             breakdown = raw.get("score_breakdown") or {}
             h_match = max(0, min(100, int(breakdown.get("hard_constraint_match", 50))))
             t_match = max(0, min(100, int(breakdown.get("tech_stack_match", 50))))
             p_match = max(0, min(100, int(breakdown.get("project_relevance", 50))))
             b_match = max(0, min(100, int(breakdown.get("bonus_points", 50))))
-            
+
             calculated_score = int(round(h_match * 0.3 + t_match * 0.3 + p_match * 0.3 + b_match * 0.1))
             # Apply hard constraint blocker cap (Scheme 1 rule)
             if h_match <= 40:
                 calculated_score = min(59, calculated_score)
-                
+
             raw["match_score"] = max(0, min(100, calculated_score))
             raw["score_breakdown"] = {
                 "hard_constraint_match": h_match,
@@ -500,9 +500,9 @@ class AIAnalyzer:
         user_id: Optional[Any] = None,
         config_id: Optional[str] = None,
     ) -> str:
-        client, resolved_config_id, provider, model_id = self._client(user_id, config_id, allow_fallback=False)
+        client, resolved_config_id, provider, model_id = self._client(user_id, config_id, allow_server_default=False)
         current = current_star or {}
-        
+
         system_prompt = f"""
         你是极其资深的简历打磨和求职规划专家。你的任务是协助用户针对特定的项目经历，按照 STAR 原则打磨其第 {segment_type} 阶段的文字。
         STAR 拆解指引：
@@ -605,8 +605,8 @@ class AIAnalyzer:
         user_id: Optional[Any] = None,
         config_id: Optional[str] = None,
     ) -> str:
-        client, resolved_config_id, provider, model_id = self._client(user_id, config_id, allow_fallback=False)
-        
+        client, resolved_config_id, provider, model_id = self._client(user_id, config_id, allow_server_default=False)
+
         style_prompt = ""
         if style == "big-tech":
             style_prompt = "【大厂风】：要求措辞高级，突出微服务、分布式、系统可用性、高并发保障、健壮架构设计、团队方法论、业务闭环思考。大量使用如“高内聚低耦合”、“高可用保证”、“高并发瓶颈突破”等工业界硬核词汇。"
@@ -617,7 +617,7 @@ class AIAnalyzer:
 
         system_prompt = f"""
         你是极其顶级的技术简历撰写专家。你的任务是将用户提供的 STAR (Situation, Task, Action, Result) 4个拆解字段，重塑并融合成一段极具含金量、可以直接贴入简历的【项目描述】。
-        
+
         风格要求：{style_prompt}
 
         核心合成规范：
@@ -709,7 +709,7 @@ class AIAnalyzer:
         user_id: Optional[Any] = None,
         config_id: Optional[str] = None,
     ) -> dict:
-        client, resolved_config_id, provider, model_id = self._client(user_id, config_id, allow_fallback=False)
+        client, resolved_config_id, provider, model_id = self._client(user_id, config_id, allow_server_default=False)
         orig_hash = hashlib.md5(original_text.encode("utf-8")).hexdigest()
         jd_hash = hashlib.md5((jd_text or "").encode("utf-8")).hexdigest()
         cache_key = f"{orig_hash}:{style}:{jd_hash}:{model_id}"
@@ -879,7 +879,7 @@ class AIAnalyzer:
     def stage2_llm_check(self, user_id: Any, resume_text: str, jd_text: str) -> Tuple[bool, str]:
         """Checks if the resume meets the hard constraints of the JD using a cheap LLM call."""
         client, resolved_config_id, provider, model_id = self._client(user_id)
-        
+
         resume_hash = hashlib.md5(resume_text.encode("utf-8")).hexdigest()
         jd_hash = hashlib.md5(jd_text.encode("utf-8")).hexdigest()
         cache_key = f"{resume_hash}:{jd_hash}:{model_id}"
@@ -887,21 +887,21 @@ class AIAnalyzer:
             if cache_key in _STAGE2_CHECK_CACHE:
                 print(f"[AI_ANALYZER] stage2_llm_check cache hit for key: {cache_key}")
                 return _STAGE2_CHECK_CACHE[cache_key]
-        
+
         system_prompt = """
         你是求职门槛甄别助手。你的任务是根据求职者简历与招聘 JD，判断求职者是否满足该职位的硬性指标/基本门槛。
         硬性指标主要包括：学历要求、工作年限、特定的极重要证书或必须具备的特定技能。
         如果求职者基本满足或没有明确冲突，返回 passed 为 true。如果存在明显冲突或缺失（例如：JD要求必须是统招硕士，求职者为大专；或者JD要求有3年相关工作经验，求职者完全是应届生且无相关项目），返回 passed 为 false 并给出理由。
-        
+
         只返回如下 JSON 格式，不要有任何其他文字或 markdown 标记：
         {
           "passed": true,
           "reason": "如果通过则可以为空，如果不通过说明不符合哪些条件"
         }
         """
-        
+
         user_prompt = f"### 候选人简历 ###\n{resume_text}\n\n### 岗位职位描述(JD) ###\n{jd_text}"
-        
+
         start_time = time.time()
         success = True
         error_type = None
@@ -909,7 +909,7 @@ class AIAnalyzer:
         completion_tokens = 0
         total_tokens = 0
         output_text = ""
-        
+
         try:
             # We set a low max_tokens to keep the call fast and cheap.
             response = client.chat.completions.create(
@@ -923,16 +923,16 @@ class AIAnalyzer:
             )
             output_text = (response.choices[0].message.content or "").strip()
             cleaned = _strip_json_fence(output_text)
-            
+
             data = json.loads(cleaned)
             passed = bool(data.get("passed", True))
             reason = data.get("reason", "")
-            
+
             if hasattr(response, "usage") and response.usage:
                 prompt_tokens = getattr(response.usage, "prompt_tokens", 0)
                 completion_tokens = getattr(response.usage, "completion_tokens", 0)
                 total_tokens = getattr(response.usage, "total_tokens", 0)
-                
+
             res = (passed, reason)
             with _CACHE_LOCK:
                 _STAGE2_CHECK_CACHE[cache_key] = res

@@ -52,22 +52,22 @@ function ModelConfigHint({
   onGoSettings: () => void;
 }) {
   return (
-    <Card title="当前模型配置" description="本次分析会使用当前启用的向量模型和大语言模型。">
+    <Card title="当前服务配置" description="本次分析会使用当前启用的检索服务和生成服务。">
       <div className="model-hint-grid">
         <div>
-          <span>向量模型</span>
+          <span>检索服务</span>
           <strong>{embeddingConfig ? `${embeddingConfig.provider} / ${embeddingConfig.modelId}` : "未配置"}</strong>
           {embeddingConfig && <Badge tone={embeddingConfig.testStatus === "success" ? "success" : "warning"}>{embeddingConfig.testStatus === "success" ? "已测试" : "尚未测试"}</Badge>}
         </div>
         <div>
-          <span>大语言模型</span>
+          <span>生成服务</span>
           <strong>{chatConfig ? `${chatConfig.provider} / ${chatConfig.modelId}` : "未配置"}</strong>
           {chatConfig && <Badge tone={chatConfig.testStatus === "success" ? "success" : "warning"}>{chatConfig.testStatus === "success" ? "已测试" : "尚未测试"}</Badge>}
         </div>
       </div>
-      {(!embeddingConfig || !chatConfig) && <p className="settings-warning">{!embeddingConfig ? "请先配置向量模型。" : "请先配置大语言模型。"}</p>}
+      {(!embeddingConfig || !chatConfig) && <p className="settings-warning">{!embeddingConfig ? "请先配置检索服务。" : "请先配置生成服务。"}</p>}
       {embeddingConfig && chatConfig && (embeddingConfig.testStatus !== "success" || chatConfig.testStatus !== "success") && (
-        <p className="settings-warning">当前模型尚未全部测试，允许继续，但建议先测试连通性。</p>
+        <p className="settings-warning">当前服务尚未全部测试，允许继续，但建议先测试连通性。</p>
       )}
       <Button type="button" variant="secondary" onClick={onGoSettings}>
         去配置
@@ -179,7 +179,7 @@ export function JobInputForm({
               </label>
               <label className="field">
                 <span>岗位方向</span>
-                <input value={draft.jobDirection} onChange={(event) => onChange({ jobDirection: event.target.value })} placeholder="前端 / 全栈 / AI 应用" />
+                <input value={draft.jobDirection} onChange={(event) => onChange({ jobDirection: event.target.value })} placeholder="前端 / 全栈 / 数据产品" />
               </label>
               <label className="field">
                 <span>求职目标</span>
@@ -207,6 +207,24 @@ export function JobInputForm({
 
         <div className="form-right-col">
           <ModelConfigHint embeddingConfig={activeEmbeddingConfig} chatConfig={activeChatConfig} onGoSettings={onGoSettings} />
+          <Card title="简历定向优化" description="在岗位分析时同步生成一版面向该岗位的简历修改建议。">
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+              <label style={{ display: "flex", alignItems: "flex-start", gap: "10px", cursor: "pointer", padding: "4px 0" }}>
+                <input
+                  type="checkbox"
+                  checked={draft.enableAgentResume || false}
+                  onChange={(e) => onChange({ enableAgentResume: e.target.checked })}
+                  style={{ marginTop: "4px" }}
+                />
+                <span style={{ fontSize: "13px", lineHeight: "1.4", color: "var(--text-main)" }}>
+                  <strong style={{ display: "block", marginBottom: "4px", color: "var(--text)" }}>同步生成投递版简历</strong>
+                  <span style={{ color: "var(--text-muted)", fontSize: "12px" }}>
+                    根据岗位要求梳理差距、调整段落并核对事实依据，生成优化版简历与修改对照，并提供多格式下载。
+                  </span>
+                </span>
+              </label>
+            </div>
+          </Card>
           {sidePanel}
         </div>
       </div>
@@ -227,7 +245,7 @@ export function JobInputForm({
         </Button>
         <span className="save-note">
           {missingModel
-            ? "请配置向量与大语言模型"
+            ? "请配置分析与生成服务"
             : !resumeFile
               ? "请上传简历文件"
               : !resumeReady

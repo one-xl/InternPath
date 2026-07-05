@@ -35,20 +35,23 @@ def update_background_progress(
     overall_status: str = "processing"
 ) -> dict:
     record = db.get_analysis_record(user_id, record_id) or {}
-    
+
     # Initialize steps list if not present
     if "steps" not in record:
-        record["steps"] = [
+        steps_list = [
             { "id": "validate", "title": "检查输入与配置", "description": "正在验证输入内容并加载模型配置...", "status": "pending" },
             { "id": "resume_embedding", "title": "向量化简历片段", "description": "正在生成简历片段的向量索引...", "status": "pending" },
             { "id": "jd_embedding", "title": "向量化岗位 JD", "description": "正在对岗位描述进行结构化分析与向量化...", "status": "pending" },
             { "id": "retrieve_chunks", "title": "检索最相关片段", "description": "基于语义相似度检索最匹配的简历经历...", "status": "pending" },
-            { "id": "gemini_analysis", "title": "调用 Gemini 分析", "description": "大语言模型正在进行匹配度深度审计与改写建议...", "status": "pending" },
-            { "id": "save_history", "title": "保存分析记录", "description": "保存分析数据至云端面板...", "status": "pending" }
+            { "id": "gemini_analysis", "title": "调用模型分析", "description": "大语言模型正在进行匹配度分析与改写建议...", "status": "pending" },
         ]
-        
+        if record.get("enable_agent_resume"):
+            steps_list.append({ "id": "agent_resume", "title": "智能简历优化", "description": "Agent 正在针对岗位对简历进行定制重写...", "status": "pending" })
+        steps_list.append({ "id": "save_history", "title": "保存分析记录", "description": "保存分析数据到云端面板...", "status": "pending" })
+        record["steps"] = steps_list
+
     steps = record["steps"]
-    
+
     # Update matching step
     for step in steps:
         if step["id"] == step_id:
@@ -60,7 +63,7 @@ def update_background_progress(
             if error_message is not None:
                 step["errorMessage"] = error_message
             break
-            
+
     # Calculate current progressStep
     progress_step = -1
     for idx, step in enumerate(steps):
@@ -72,9 +75,9 @@ def update_background_progress(
             if step["status"] == "pending":
                 progress_step = idx
                 break
-                
+
     record["progressStep"] = progress_step
-    
+
     # Save back to DB
     input_json = record.get("draft")
     db.save_analysis_record(
@@ -144,7 +147,7 @@ JD Text to parse:
         except Exception as e2:
             print(f"[BG_ANALYSIS] parseJobDescription failed: {e2}")
             parsed = {}
-            
+
     # Standardize output structure
     requirements = []
     raw_reqs = parsed.get("requirements") or []
@@ -159,7 +162,7 @@ JD Text to parse:
                 "keywords": r.get("keywords") or [],
                 "reason": r.get("reason") or ""
             })
-            
+
     if not requirements:
         requirements = [
             {
@@ -169,10 +172,10 @@ JD Text to parse:
                 "priority": "must_have",
                 "is_hard_requirement": False,
                 "keywords": [],
-                "reason": "JD 结构化提取未识别到要求，降级为全文模糊匹配"
+                "reason": "JD 结构化提取未识别到要求，降级为全文模糊匹配。",
             }
         ]
-        
+
     result = {
         "job_title": parsed.get("job_title") or "未知岗位",
         "company": parsed.get("company") or "未知公司",
@@ -203,7 +206,7 @@ def check_hard_constraints_py(client: Any, model: str, parsed_jd: dict, parsed_r
             "hard_risks": [],
             "has_blocking_risk": False
         }
-        
+
     jd_raw = parsed_jd.get("raw_text") or ""
     jd_hash = hashlib.md5(jd_raw.encode("utf-8")).hexdigest()
     resume_cleaned = parsed_resume.get("cleanedText") or ""
@@ -245,7 +248,7 @@ Instructions:
     except Exception as e:
         print(f"[BG_ANALYSIS] checkHardConstraints failed: {e}")
         parsed = {}
-        
+
     risks = []
     for r in (parsed.get("hard_risks") or []):
         if isinstance(r, dict):
@@ -257,7 +260,7 @@ Instructions:
                 "reason": r.get("reason") or "",
                 "evidence": r.get("evidence") or []
             })
-            
+
     result = {
         "hard_risks": risks,
         "has_blocking_risk": bool(parsed.get("has_blocking_risk", False))
@@ -273,40 +276,41 @@ def run_background_resume_analysis(
     draft_data: dict,
     resume_file_id: str,
     embedding_config_id: Optional[str] = None,
-    chat_config_id: Optional[str] = None
+    chat_config_id: Optional[str] = None,
+    enable_agent_resume: bool = False
 ) -> None:
     try:
         # Step 1: Validate input
         update_background_progress(user_id, record_id, "validate", "running")
-        
+
         # Verify inputs exist
         jd_text = draft_data.get("jdText", "").strip()
         if not jd_text or len(jd_text) < 80:
             raise ValueError("岗位 JD 内容过短，请检查输入后重新提交分析。")
-            
+
         parsed_resume = db.get_user_resume(user_id, resume_file_id)
         if not parsed_resume:
             raise ValueError("未找到已解析的简历文件。")
-            
+
         chunks = parsed_resume.get("chunks") or []
         if not chunks:
             raise ValueError("简历解析结果为空，没有有效的简历文本片段。")
-            
+
         # Resolve LLM configuration
         chat_client, resolved_chat_config_id, chat_provider, chat_model = analyzer._client(user_id, chat_config_id)
-        
+
         # Resolve Embedding configuration
         emb_provider, emb_model, _, _ = service._resolve_embedding_config(user_id)
-        
+
         # Validate complete success
         update_background_progress(user_id, record_id, "validate", "success")
-        
+
         # Step 2: Vectorize resume chunks
         update_background_progress(user_id, record_id, "resume_embedding", "running", {
             "embeddedChunksCount": 0,
             "chunksCount": len(chunks)
         })
-        
+
         embedded_chunks = []
         for idx, chunk in enumerate(chunks):
             content = chunk.get("content", "")
@@ -320,27 +324,27 @@ def run_background_resume_analysis(
                 "embeddedChunksCount": idx + 1,
                 "chunksCount": len(chunks)
             })
-            
+
         update_background_progress(user_id, record_id, "resume_embedding", "success")
-        
+
         # Step 3: Vectorize job JD
         update_background_progress(user_id, record_id, "jd_embedding", "running")
-        
+
         # Stage A: Structural decomposition using LLM
         parsed_jd = parse_job_description_py(chat_client, chat_model, jd_text)
-        
+
         # Stage B: Vectorize whole JD
         jd_embedding = service.get_embedding_for_text(user_id, jd_text) or []
         update_background_progress(user_id, record_id, "jd_embedding", "success")
-        
+
         # Step 4: Retrieve most relevant chunks
         update_background_progress(user_id, record_id, "retrieve_chunks", "running")
-        
+
         requirement_matches = []
         for req in parsed_jd["requirements"]:
             req_text = req["text"]
             req_embedding = service.get_embedding_for_text(user_id, req_text) or []
-            
+
             matched_evidence = []
             if req_embedding:
                 scored = []
@@ -349,7 +353,7 @@ def run_background_resume_analysis(
                     scored.append({"chunk": ec, "similarity": sim})
                 # Sort descending
                 scored.sort(key=lambda x: x["similarity"], reverse=True)
-                
+
                 # Take top K (3) with threshold check
                 for item in scored[:3]:
                     matched_evidence.append({
@@ -359,9 +363,9 @@ def run_background_resume_analysis(
                         "similarity": round(float(item["similarity"]), 4),
                         "source_section": item["chunk"].get("section") or "other"
                     })
-                    
+
             best_sim = max([e["similarity"] for e in matched_evidence]) if matched_evidence else 0.0
-            
+
             requirement_matches.append({
                 "requirement_id": req["id"],
                 "requirement_text": req["text"],
@@ -371,7 +375,7 @@ def run_background_resume_analysis(
                 "best_similarity": best_sim,
                 "has_potential_evidence": best_sim >= 0.3
             })
-            
+
         retrieved_chunks = []
         seen_ids = set()
         for rm in requirement_matches:
@@ -387,7 +391,7 @@ def run_background_resume_analysis(
                             "embedding": None
                         })
         retrieved_chunks.sort(key=lambda x: x.get("score") or 0, reverse=True)
-        
+
         # Fallback if no matching chunks retrieved
         if not retrieved_chunks and jd_embedding:
             scored = []
@@ -400,30 +404,30 @@ def run_background_resume_analysis(
                 })
             scored.sort(key=lambda x: x.get("score") or 0, reverse=True)
             retrieved_chunks = scored[:8]
-            
+
         update_background_progress(user_id, record_id, "retrieve_chunks", "success", {
             "retrievedChunksCount": len(retrieved_chunks)
         })
-        
+
         if not retrieved_chunks:
             raise ValueError("没有检索到相关简历片段，请检查简历解析结果或 JD 内容。")
-            
+
         # Step 5: Call Gemini analysis
         update_background_progress(user_id, record_id, "gemini_analysis", "running", {
             "subState": "checking_constraints",
             "subProgress": 15
         })
-        
+
         # Stage A: Check hard constraints
         hard_constraints_res = check_hard_constraints_py(chat_client, chat_model, parsed_jd, parsed_resume)
-        
+
         # Check deep analysis cache
         jd_hash = hashlib.md5(jd_text.encode("utf-8")).hexdigest()
         resume_hash = hashlib.md5(parsed_resume.get("cleanedText", "").encode("utf-8")).hexdigest()
         material = draft_data.get("candidateMaterial") or "无"
         material_hash = hashlib.md5(material.encode("utf-8")).hexdigest()
         deep_cache_key = f"{jd_hash}:{resume_hash}:{material_hash}:{chat_model}"
-        
+
         parsed_analysis = None
         with _CACHE_LOCK:
             if deep_cache_key in _DEEP_ANALYSIS_CACHE:
@@ -435,43 +439,41 @@ def run_background_resume_analysis(
                 "subState": "deep_analyzing",
                 "subProgress": 50
             })
-            
-            prompt = f"""你是一名严格、客观、不讨好用户的求职分析专家。
-你必须基于提供的 JD 结构化结果、简历证据片段、向量召回结果 and 硬性条件检查结果进行分析。
-向量相似度只代表语义相关，不代表用户满足岗位要求。
-你不能编造用户没有提供的经历。
-你不能把“学习过”当成“熟练掌握”。
-你不能把课程项目直接等同于生产经验。
-你必须区分 matched、partial、missing、unknown。
-如果证据不足，必须输出 unknown 或 evidence_insufficient。
-如果存在硬性风险，必须优先指出。
-请输出严格 JSON，不要输出 markdown，不要包含 markdown 代码块。
 
-【分析输入】
-1. 岗位结构化 JD:
+            prompt = f"""你是一名严格、客观的求职分析专家。请只基于提供的 JD、简历证据片段、向量召回结果和硬性条件检查结果进行分析。
+
+规则：
+- 不要编造用户未提供的经历。
+- 向量相似度只代表语义相关，不代表用户满足岗位要求。
+- 必须区分 matched、partial、missing、unknown。
+- 证据不足时输出 unknown 或 evidence_insufficient。
+- 如存在硬性条件风险，必须优先指出。
+- 只输出合法 JSON，不要输出 Markdown。
+
+输入：
+1. 结构化 JD:
 {json.dumps(parsed_jd, ensure_ascii=False, indent=2)}
 
-2. 针对每个岗位要求的简历向量召回证据 (requirementMatches):
+2. 按岗位要求召回的简历证据 requirementMatches:
 {json.dumps(requirement_matches, ensure_ascii=False, indent=2)}
 
-3. 硬性条件筛查结果 (hardConstraintsResult):
+3. 硬性条件检查 hardConstraintsResult:
 {json.dumps(hard_constraints_res, ensure_ascii=False, indent=2)}
 
 4. 候选人补充说明:
-{draft_data.get("candidateMaterial") or "无"}
+{material}
 
-【输出 JSON 格式要求】
-必须严格符合以下 JSON 模式 (JSON Schema)：
+输出 JSON schema：
 {{
   "requirement_assessments": [
     {{
       "requirement_id": "req_001",
-      "requirement_text": "JD要求原文",
+      "requirement_text": "JD 要求原文",
       "status": "matched | partial | missing | unknown",
       "confidence": "high | medium | low",
-      "evidence_used": ["关联的简历片段 ID，如 chunk id"],
-      "reason": "具体匹配判断理由，基于证据对比",
-      "gap": "逻辑缺陷或不匹配之处",
+      "evidence_used": ["相关简历片段 id"],
+      "reason": "基于证据的匹配判断理由",
+      "gap": "逻辑缺口或不匹配之处",
       "fixable_by_resume_rewrite": true
     }}
   ],
@@ -481,8 +483,8 @@ def run_background_resume_analysis(
     "overall_score": 85,
     "summary": "一句话投递决策总结",
     "why_this_decision": ["决策理由 1", "决策理由 2"],
-    "main_risks": ["潜在缺口或硬性条件风险 1", "潜在缺口 2"],
-    "main_opportunities": ["已具备优势或机会 1", "机会 2"]
+    "main_risks": ["潜在缺口或硬性条件风险"],
+    "main_opportunities": ["已有优势或机会"]
   }},
   "matchBreakdown": {{
     "techStack": 90,
@@ -500,25 +502,25 @@ def run_background_resume_analysis(
       "resume_section": "项目经历/工作经历/技能",
       "current_problem": "当前简历表达的问题",
       "rewrite_strategy": "改写策略与方向",
-      "example_rewrite": "改写后的高契合度对比表达，符合 STAR 原则和量化要求，不虚构经历",
+      "example_rewrite": "不虚构经历的改写示例",
       "risk": "do_not_exaggerate | needs_more_evidence | safe_to_rewrite"
     }}
   ],
   "learning_plan": [
     {{
       "gap": "对应缺失的技能或业务背景",
-      "topic": "推荐学习或刷题的主题",
+      "topic": "建议学习或补强主题",
       "priority": "high | medium | low",
-      "reason": "推荐理由，与岗位的关联性",
-      "suggested_action": "具体的学习/刷题行动指南",
+      "reason": "与岗位的关联理由",
+      "suggested_action": "具体行动建议",
       "estimated_effort": "2天 / 5天 / 2周"
     }}
   ],
   "interview_prep": [
     {{
-      "topic": "常问高频技术点",
+      "topic": "高频技术点",
       "question_type": "技术问答 / 场景设计 / 取舍分析",
-      "reason": "JD 强相关且简历中仅偏理论"
+      "reason": "准备该问题的原因"
     }}
   ]
 }}
@@ -541,44 +543,132 @@ def run_background_resume_analysis(
                 )
                 llm_text = response.choices[0].message.content
                 parsed_analysis = json.loads(_strip_json_fence(llm_text))
-                
+
             with _CACHE_LOCK:
                 _DEEP_ANALYSIS_CACHE[deep_cache_key] = parsed_analysis
                 _limit_cache_size(_DEEP_ANALYSIS_CACHE)
-            
+
         update_background_progress(user_id, record_id, "gemini_analysis", "success")
-        
+
+        # Conditionally run resume optimization agent workflow
+        optimized_resume_md = ""
+        modification_log = []
+        has_docx = False
+        has_pdf = False
+
+        if enable_agent_resume:
+            update_background_progress(user_id, record_id, "agent_resume", "running")
+
+            resume_text = parsed_resume.get("cleanedText") or parsed_resume.get("rawText") or ""
+            if not resume_text.strip():
+                raise ValueError("所选简历内容为空，无法进行智能优化重写。")
+
+            import os
+            from config import Config
+            from backend.agents.tools.workspace_tools import get_safe_workspace_path
+            from backend.agents.orchestrator import Orchestrator
+
+            workspace_path = os.path.join(Config.USER_DB_DIR, "workspaces", f"user_{user_id}", f"task_{record_id}")
+
+            try:
+                db.delete_agent_resume_task(user_id, record_id)
+            except Exception:
+                pass
+
+            db.create_agent_resume_task(
+                task_id=record_id,
+                user_id=user_id,
+                resume_id=resume_file_id,
+                original_resume_name=parsed_resume.get("file", {}).get("name") or "resume.pdf",
+                jd_text=jd_text,
+                workspace_path=workspace_path
+            )
+            db.update_agent_resume_task_status(
+                task_id=record_id,
+                user_id=user_id,
+                status="PENDING",
+                execution_plan=json.dumps({
+                    "bootstrap_only": True,
+                    "config_id": chat_config_id,
+                    "is_co_pilot": False,
+                    "steps": [],
+                    "cache_stats": {
+                        "hits": 0,
+                        "misses": 0,
+                        "saved_model_calls": 0,
+                        "items": [],
+                    },
+                }, ensure_ascii=False)
+            )
+
+            import asyncio
+            asyncio.run(
+                Orchestrator().run_orchestration(
+                    task_id=record_id,
+                    user_id=user_id,
+                    config_id=chat_config_id,
+                    is_co_pilot=False,
+                )
+            )
+
+            # Verify status
+            task_record = db.get_agent_resume_task(user_id, record_id)
+            if not task_record or task_record.get("status") != "COMPLETED":
+                error_msg = task_record.get("error_message") if task_record else "简历优化 Agent 未能成功运行。"
+                raise ValueError(f"智能简历优化失败: {error_msg}")
+
+            update_background_progress(user_id, record_id, "agent_resume", "success")
+
+            # Read back generated files from workspace
+            opt_md_path = get_safe_workspace_path(user_id, record_id, "optimized_resume.md")
+            if os.path.exists(opt_md_path):
+                with open(opt_md_path, "r", encoding="utf-8") as f:
+                    optimized_resume_md = f.read()
+
+            log_json_path = get_safe_workspace_path(user_id, record_id, "modification_log.json")
+            if os.path.exists(log_json_path):
+                try:
+                    with open(log_json_path, "r", encoding="utf-8") as f:
+                        modification_log = json.load(f)
+                except Exception as e:
+                    print(f"[BG_ANALYSIS] Failed to load modification_log.json: {e}")
+
+            docx_path = get_safe_workspace_path(user_id, record_id, "optimized_resume.docx")
+            pdf_path = get_safe_workspace_path(user_id, record_id, "optimized_resume.pdf")
+            has_docx = os.path.exists(docx_path)
+            has_pdf = os.path.exists(pdf_path)
+
         # Step 6: Save history record
         update_background_progress(user_id, record_id, "save_history", "running")
-        
+
         # --- Post-process and normalize results ---
         raw_decision = parsed_analysis.get("decision", {}) or {}
         raw_breakdown = parsed_analysis.get("matchBreakdown", {}) or {}
-        
+
         # Calculated unified score
         tech_stack = int(raw_breakdown.get("techStack", 50))
         project_experience = int(raw_breakdown.get("projectExperience", 50))
         education_background = int(raw_breakdown.get("educationBackground", 50))
         keyword_coverage = int(raw_breakdown.get("keywordCoverage", 50))
-        
+
         calculated_score = round(
             education_background * 0.3 +
             tech_stack * 0.3 +
             project_experience * 0.3 +
             keyword_coverage * 0.1
         )
-        
+
         # Enforce Scheme 1: Education <= 40 caps match score at 59
         if education_background <= 40:
             calculated_score = min(59, calculated_score)
-            
+
         # Hard constraint blocking risk caps match score at 50
         overall_decision = raw_decision.get("decision") or "cautious"
         if hard_constraints_res.get("has_blocking_risk"):
             calculated_score = min(calculated_score, 50)
             if overall_decision in ("strong_apply", "apply"):
                 overall_decision = "cautious"
-                
+
         # Map decision labels
         final_decision = "maybe"
         if overall_decision in ("strong_apply", "strong_yes"):
@@ -589,7 +679,7 @@ def run_background_resume_analysis(
             final_decision = "maybe"
         elif overall_decision in ("not_recommended", "no", "low_priority"):
             final_decision = "no"
-            
+
         # Map dimension descriptions
         def dimension_obj(dim_id, label, score, explanation):
             return {
@@ -599,18 +689,18 @@ def run_background_resume_analysis(
                 "tags": [],
                 "explanation": explanation
             }
-            
+
         dimensions = [
-            dimension_obj("techStack", "技能匹配", tech_stack, "基于 JD 技术栈和检索片段的技术证据判断。"),
+            dimension_obj("techStack", "技能匹配", tech_stack, "基于 JD 技术栈和检索片段中的技术证据判断。"),
             dimension_obj("projectExperience", "项目经历匹配", project_experience, "基于项目深度、职责边界和交付结果判断。"),
             dimension_obj("educationBackground", "学历 / 背景匹配", education_background, "基于教育背景和岗位门槛判断。"),
-            dimension_obj("keywordCoverage", "关键词覆盖", keyword_coverage, "基于 JD 关键词在检索片段中的覆盖判断。"),
+            dimension_obj("keywordCoverage", "关键词覆盖", keyword_coverage, "基于 JD 关键词在检索片段中的覆盖情况判断。"),
             dimension_obj("seniorityFit", "年限 / 级别匹配", raw_breakdown.get("seniorityFit", 50), "基于岗位级别和简历证据判断。"),
             dimension_obj("competitionLevel", "岗位竞争难度", raw_breakdown.get("competitionLevel", 50), "竞争难度越高，越需要强证据支撑。"),
             dimension_obj("evidenceStrength", "证据强度", raw_breakdown.get("evidenceStrength", 50), "检索片段是否足以支撑投递判断。"),
             dimension_obj("resumeImprovementPotential", "简历改造空间", raw_breakdown.get("resumeImprovementPotential", 50), "通过改写和补证据能提升多少匹配度。")
         ]
-        
+
         # Map rewrite recommendations
         advice_list = []
         raw_advice = parsed_analysis.get("resume_rewrite_suggestions") or []
@@ -622,13 +712,13 @@ def run_background_resume_analysis(
                     ass = next((a for a in parsed_analysis["requirement_assessments"] if a.get("requirement_id") == req_id), None)
                     if ass and isinstance(ass.get("evidence_used"), list):
                         based_chunk_ids = [str(cid) for cid in ass["evidence_used"] if cid]
-                        
+
                 req_priority = "unknown"
                 if req_id and requirement_matches:
                     rm = next((m for m in requirement_matches if m.get("requirement_id") == req_id), None)
                     if rm:
                         req_priority = rm.get("priority")
-                        
+
                 risk = s.get("risk") or "safe_to_rewrite"
                 priority = "low"
                 if risk == "needs_more_evidence":
@@ -637,7 +727,7 @@ def run_background_resume_analysis(
                     priority = "high" if req_priority == "must_have" else "medium"
                 else:
                     priority = "medium" if req_priority == "must_have" else "low"
-                    
+
                 advice_list.append({
                     "id": f"advice-{idx}",
                     "priority": priority,
@@ -650,7 +740,7 @@ def run_background_resume_analysis(
                     "resume_section": s.get("resume_section"),
                     "risk": risk
                 })
-                
+
         # Map learning plan
         suggestions = []
         raw_learning = parsed_analysis.get("learning_plan") or []
@@ -661,13 +751,13 @@ def run_background_resume_analysis(
                     "skill": l.get("topic") or l.get("gap") or "专业背景提升",
                     "order": idx + 1,
                     "estimatedTime": l.get("estimated_effort") or "3-7 天",
-                    "practiceDirection": f"【缺口: {l.get('gap')}】行动指南: {l.get('suggested_action')}",
+                    "practiceDirection": f"【缺口】{l.get('gap')}；行动指南：{l.get('suggested_action')}",
                     "interviewFocus": f"【重点】{l.get('reason')}",
                     "gap": l.get("gap"),
                     "priority": l.get("priority"),
                     "reason": l.get("reason")
                 })
-                
+
         # Citations
         cited_chunks = []
         if isinstance(parsed_analysis.get("requirement_assessments"), list):
@@ -678,24 +768,24 @@ def run_background_resume_analysis(
                         if cid:
                             ids.add(str(cid))
             cited_chunks = list(ids)
-            
+
         # Next actions
         next_actions = [
             "针对硬性条件和筛查结论进行自查与核实",
-            "优先改造【必须改 (高优先级)】的简历表达",
+            "优先改造【必须改（高优先级）】的简历表达",
             "围绕岗位核心缺口做针对性的项目实践和学习",
             "准备面试中的取舍论证和场景设计"
         ]
         raw_prep = parsed_analysis.get("interview_prep") or []
         if isinstance(raw_prep, list):
             for prep in raw_prep[:2]:
-                next_actions.append(f"准备面试问题：{prep.get('topic')} (类型: {prep.get('question_type')}，原因: {prep.get('reason')})")
-                
+                next_actions.append(f"准备面试问题：{prep.get('topic')}（类型：{prep.get('question_type')}，原因：{prep.get('reason')}）")
+
         # Construct final AnalysisResult payload
         average_score = 0
         if retrieved_chunks:
             average_score = round(sum(c.get("score") or 0 for c in retrieved_chunks) / len(retrieved_chunks))
-            
+
         final_result = {
             "id": record_id,
             "createdAt": datetime_now_str(),
@@ -738,30 +828,39 @@ def run_background_resume_analysis(
             "resumeAdvice": advice_list,
             "learningSuggestions": suggestions,
             "nextActions": next_actions,
-            
+
+            # Resume Optimization Agent outputs
+            "optimized_resume_md": optimized_resume_md,
+            "modification_log": modification_log,
+            "has_docx": has_docx,
+            "has_pdf": has_pdf,
+
             # Pipeline parameters
             "parsedJD": parsed_jd,
             "requirementMatches": { "requirement_matches": requirement_matches },
             "hardConstraintsResult": hard_constraints_res,
             "requirementAssessments": parsed_analysis.get("requirement_assessments") or []
         }
-        
+
         # Complete last step
-        final_result["steps"] = [
+        steps_list = [
             { "id": "validate", "title": "检查输入与配置", "description": "正在验证输入内容并加载模型配置...", "status": "success" },
             { "id": "resume_embedding", "title": "向量化简历片段", "description": "正在生成简历片段的向量索引...", "status": "success", "metadata": { "embeddedChunksCount": len(chunks), "chunksCount": len(chunks) } },
             { "id": "jd_embedding", "title": "向量化岗位 JD", "description": "正在对岗位描述进行结构化分析与向量化...", "status": "success" },
             { "id": "retrieve_chunks", "title": "检索最相关片段", "description": "基于语义相似度检索最匹配的简历经历...", "status": "success", "metadata": { "retrievedChunksCount": len(retrieved_chunks) } },
             { "id": "gemini_analysis", "title": "调用 Gemini 分析", "description": "大语言模型正在进行匹配度深度审计与改写建议...", "status": "success" },
-            { "id": "save_history", "title": "保存分析记录", "description": "保存分析数据至云端面板...", "status": "success" }
         ]
+        if enable_agent_resume:
+            steps_list.append({ "id": "agent_resume", "title": "智能简历优化", "description": "Agent 正在针对岗位对简历进行定制重写...", "status": "success" })
+        steps_list.append({ "id": "save_history", "title": "保存分析记录", "description": "保存分析数据至云端面板...", "status": "success" })
+        final_result["steps"] = steps_list
         final_result["progressStep"] = -1
-        
+
         # Decrement limit for standard users after successful background analysis
         user = db.get_user_by_id(user_id)
         if user and user.role != "admin":
             db.decrement_user_generation_limit(user_id)
-            
+
         # Save final complete record in 'watching' status
         db.save_analysis_record(
             user_id=user_id,
@@ -771,12 +870,12 @@ def run_background_resume_analysis(
             record_id=record_id
         )
         print(f"[BG_ANALYSIS] Background task {record_id} completed successfully.")
-        
+
     except Exception as exc:
         print(f"[BG_ANALYSIS] Background task {record_id} failed: {exc}")
         import traceback
         traceback.print_exc()
-        
+
         # Save a failed record
         failed_result = {
             "id": record_id,
@@ -786,13 +885,13 @@ def run_background_resume_analysis(
             "resumeFile": None,
             "parsedResume": None,
             "retrievedResumeChunks": [],
-            "retrievalSummary": f"分析中断。原因: {exc}",
+            "retrievalSummary": f"分析中断。原因：{exc}",
             "retrievalScore": 0,
             "decision": "no",
             "matchScore": 0,
             "riskLevel": "high",
             "priority": "P3",
-            "oneLineReason": f"分析失败: {exc}",
+            "oneLineReason": f"分析失败：{exc}",
             "detectedKeywords": [],
             "missingKeywords": [],
             "dimensions": [],
@@ -803,7 +902,7 @@ def run_background_resume_analysis(
             "is_failed": True,
             "errorMessage": str(exc)
         }
-        
+
         # Update progress steps to failed
         record = db.get_analysis_record(user_id, record_id) or {}
         steps = record.get("steps") or []
@@ -814,7 +913,7 @@ def run_background_resume_analysis(
                 break
         failed_result["steps"] = steps
         failed_result["progressStep"] = record.get("progressStep", -1)
-        
+
         db.save_analysis_record(
             user_id=user_id,
             status="failed",
@@ -851,31 +950,31 @@ def tailor_form_fields_py(
     edu = preset_profile.get("education") or profile_summary.get("education") or {}
     if isinstance(edu, list) and len(edu) > 0:
         edu = edu[0]
-        
+
     school_val = ""
     major_val = ""
     degree_val = ""
     grad_year_val = ""
 
     if isinstance(edu, dict):
-        school_val = edu.get("school") or edu.get("学校") or ""
-        major_val = edu.get("major") or edu.get("专业") or ""
-        degree_val = edu.get("degree") or edu.get("学历") or ""
-        grad_year_val = edu.get("graduation_year") or edu.get("grad_year") or edu.get("毕业年份") or edu.get("毕业时间") or ""
+        school_val = edu.get("school") or edu.get("瀛︽牎") or ""
+        major_val = edu.get("major") or edu.get("涓撲笟") or ""
+        degree_val = edu.get("degree") or edu.get("瀛﹀巻") or ""
+        grad_year_val = edu.get("graduation_year") or edu.get("grad_year") or edu.get("姣曚笟骞翠唤") or edu.get("姣曚笟鏃堕棿") or ""
     elif isinstance(edu, str):
         school_val = edu
-        school_match = re.search(r"\S*(?:大学|学院|分校)\S*", edu)
+        school_match = re.search(r"\S*(?:澶у|瀛﹂櫌|鍒嗘牎)\S*", edu)
         if school_match:
             school_val = school_match.group(0)
-            
-        degree_match = re.search(r"本科|学士|硕士|研究生|博士|大专|高中", edu)
+
+        degree_match = re.search(r"鏈|瀛﹀＋|纭曞＋|鐮旂┒鐢焲鍗氬＋|澶т笓|楂樹腑", edu)
         if degree_match:
             degree_val = degree_match.group(0)
-            
+
         year_match = re.search(r"\b(20\d{2}|19\d{2})\b", edu)
         if year_match:
             grad_year_val = year_match.group(1)
-            
+
         parts = edu.split()
         major_parts = []
         for p in parts:
@@ -885,7 +984,7 @@ def tailor_form_fields_py(
                 continue
             if grad_year_val and p in grad_year_val:
                 continue
-            if any(char.isdigit() or char in "-—" for char in p):
+            if any(char.isdigit() or char in "-/年月日." for char in p):
                 continue
             major_parts.append(p)
         if major_parts:
@@ -907,6 +1006,23 @@ def tailor_form_fields_py(
         "wechat": preset_profile.get("wechat") or "",
         "gpa": preset_profile.get("gpa") or ""
     }
+    if isinstance(edu, str):
+        edu_parts = [p for p in edu.split() if p]
+        degree_match = re.search(r"博士|硕士|研究生|本科|大专|高中", edu)
+        parsed_degree = degree_match.group(0) if degree_match else ""
+        parsed_school = ""
+        school_match = re.search(r"\S*(?:大学|学院|学校)\S*", edu)
+        if school_match:
+            parsed_school = school_match.group(0)
+        elif edu_parts:
+            parsed_school = edu_parts[0]
+        parsed_major_parts = [
+            part for part in edu_parts
+            if part != parsed_school and part != parsed_degree and not any(ch.isdigit() or ch in "-/年月日" for ch in part)
+        ]
+        profile["school"] = parsed_school or profile["school"]
+        profile["major"] = " ".join(parsed_major_parts) or profile["major"]
+        profile["degree"] = parsed_degree or profile["degree"]
 
     # Optimization 1: Bypass LLM completely if no AI tailored fields are requested
     if not fields:
@@ -936,26 +1052,25 @@ def tailor_form_fields_py(
     fields_desc = []
     for f in fields:
         if f == "self_evaluation":
-            fields_desc.append("- self_evaluation: 针对岗位JD定制的自我评价（不超过300字），突出候选人与岗位的核心匹配点。")
+            fields_desc.append("- self_evaluation: 针对岗位 JD 定制的自我评价（不超过 300 字），突出候选人与岗位的核心匹配点。")
         elif f == "projects":
-            fields_desc.append("- projects: 从简历中提炼出最匹配该岗位的项目经历（STAR原则：背景、任务、行动、结果），以量化结果优先，针对岗位职责进行改写，不虚构经历。")
+            fields_desc.append("- projects: 从简历中提炼出最匹配该岗位的项目经历，按 STAR 原则组织，优先使用量化结果，针对岗位职责改写，不虚构经历。")
         elif f == "work_experience":
-            fields_desc.append("- work_experience: 针对岗位的实习/工作经历描述，强调在过去的工作中承担的与当前岗位相关的职责和业绩。")
+            fields_desc.append("- work_experience: 针对岗位的实习/工作经历描述，强调过去经历中与当前岗位相关的职责和业绩。")
         elif f == "skills":
-            fields_desc.append("- skills: 匹配JD所需的技能清单，根据简历提及的技能分类整理（如：熟练掌握、了解等），优先排序最吻合的技能。")
+            fields_desc.append("- skills: 匹配 JD 所需的技能清单，根据简历提及的技能分类整理，优先排序最契合的技能。")
         elif f == "advantages":
-            fields_desc.append("- advantages: 个人优势/亮点总结，突出符合岗位痛点解决能力、技术特长或学习能力。")
+            fields_desc.append("- advantages: 个人优势/亮点总结，突出符合岗位痛点的解决能力、技术特长或学习能力。")
         else:
             fields_desc.append(f"- {f}: 根据当前岗位 JD 精心改写并提炼简历中与之相关的部分。")
 
     fields_list_str = "\n".join(fields_desc)
 
     # Optimization 3: Compressed concise prompt
-    prompt = f"""你是一个网申简历文案定制助手。请基于候选人简历和投递岗位描述（JD），针对指定的字段进行提炼与改写。
-
+    prompt = f"""你是一个网申简历文案定制助手。请基于候选人简历和投递岗位描述（JD），针对指定字段进行提炼与改写。
 要求：
 - 严格基于简历真实经历与数据，不可捏造。
-- 提炼出与岗位JD最相关的技能或项目，量化结果优先，格式裁剪以适应字段。
+- 提炼与岗位 JD 最相关的技能或项目，量化结果优先，格式裁剪以适应字段。
 - 请直接输出 JSON，格式为：{{ "字段名": "改写提炼后的文案内容" }}。
 
 【输入数据】
@@ -971,8 +1086,7 @@ def tailor_form_fields_py(
 【需要生成的字段规范】
 {fields_list_str}
 
-只返回合法 JSON，不包含 markdown 格式或代码块包裹。
-"""
+只返回合法 JSON，不包含 markdown 格式或代码块包装。"""
     try:
         response = chat_client.chat.completions.create(
             model=chat_model,
@@ -994,7 +1108,7 @@ def tailor_form_fields_py(
             result = json.loads(_strip_json_fence(content))
         except Exception as e2:
             print(f"[TAILOR_FIELDS] AI tailoring completely failed: {e2}")
-            result = {f: "智能提炼失败，请手动填写" for f in fields}
+            result = {f: "鏅鸿兘鎻愮偧澶辫触锛岃鎵嬪姩濉啓" for f in fields}
 
     # Save to cache
     with _CACHE_LOCK:

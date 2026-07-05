@@ -16,13 +16,13 @@ interface AnalysisProgressPanelProps {
 export function getModelName(chatModelId?: string, activeChatConfig?: ChatModelConfig | null): string {
   const modelId = chatModelId || activeChatConfig?.modelId || "";
   const provider = activeChatConfig?.provider || "";
-  if (!modelId) return "大语言模型";
-  
+  if (!modelId) return "生成服务";
+
   if (modelId.toLowerCase().includes("gemini")) return "Gemini";
   if (modelId.toLowerCase().includes("deepseek")) return "DeepSeek";
   if (modelId.toLowerCase().includes("doubao") || modelId.toLowerCase().includes("ark")) return "豆包 Ark";
   if (provider === "gemini") return "Gemini";
-  
+
   return modelId;
 }
 
@@ -42,16 +42,17 @@ export function AnalysisProgressPanel({
   const getTitle = () => {
     switch (status) {
       case "validating":
-        return "正在检查输入和模型配置";
+        return "正在检查输入和服务配置";
       case "embedding_resume":
-        return "正在向量化简历片段";
+        return "正在整理简历片段";
       case "embedding_jd":
-        return "正在向量化岗位 JD";
+        return "正在整理岗位要求";
       case "retrieving":
-        return "正在检索相关简历片段";
+        return "正在匹配相关简历片段";
       case "analyzing":
-        const name = getModelName(undefined, activeChatConfig);
-        return `正在调用 ${name} 生成分析结果`;
+        return "正在生成岗位分析结果";
+      case "agent_resume":
+        return "正在按岗位要求改写简历";
       case "saving":
         return "正在保存分析记录";
       case "success":
@@ -100,16 +101,16 @@ export function AnalysisProgressPanel({
       </div>
 
       {status !== "success" && status !== "failed" && (
-        <InteractiveMatchScanner 
-          status={status} 
-          subState={subState || (status === "analyzing" ? "deep_analyzing" : status)} 
-          subProgress={status === "analyzing" ? subProgress : undefined} 
+        <InteractiveMatchScanner
+          status={status}
+          subState={subState || (status === "analyzing" ? "deep_analyzing" : status)}
+          subProgress={status === "analyzing" ? subProgress : undefined}
         />
       )}
 
       <div className="steps-container">
         {steps.map((step, index) => (
-          <AnalysisStepItem key={step.id} step={step} index={index} activeChatConfig={activeChatConfig} />
+          <AnalysisStepItem key={step.id} step={step} index={index} activeChatConfig={activeChatConfig} isLast={index === steps.length - 1} />
         ))}
       </div>
 

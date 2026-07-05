@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+import sys
+import os
+
+# Add parent directory of ai-service to sys.path so we can import app_log
+root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if root_dir not in sys.path:
+    sys.path.append(root_dir)
+
 import re
 from typing import Any
 
@@ -23,6 +31,16 @@ app = FastAPI(title="InternPath AI Service", version="0.1.0")
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     import traceback
     traceback.print_exc()
+    try:
+        from app_log import log_event
+        log_event(
+            service="AI-SERVICE",
+            level="ERROR",
+            event="validation_error",
+            detail=f"URL: {request.url.path} | Errors: {exc.errors()}"
+        )
+    except Exception:
+        pass
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         content={
@@ -34,6 +52,17 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
+    try:
+        from app_log import log_event
+        level = "ERROR" if exc.status_code >= 500 else "WARNING"
+        log_event(
+            service="AI-SERVICE",
+            level=level,
+            event="http_exception",
+            detail=f"URL: {request.url.path} | Status: {exc.status_code} | Detail: {exc.detail}"
+        )
+    except Exception:
+        pass
     return JSONResponse(
         status_code=exc.status_code,
         content={
@@ -48,6 +77,17 @@ async def global_exception_handler(request: Request, exc: Exception):
     traceback.print_exc()
     error_type = exc.__class__.__name__
     error_detail = str(exc) or "No detail provided"
+    tb_str = traceback.format_exc()
+    try:
+        from app_log import log_event
+        log_event(
+            service="AI-SERVICE",
+            level="ERROR",
+            event="unhandled_exception",
+            detail=f"URL: {request.url.path} | [{error_type}] {error_detail} | Traceback: {tb_str}"
+        )
+    except Exception:
+        pass
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={
@@ -95,8 +135,29 @@ def analyze_jd(request: AnalyzeJdRequest) -> dict[str, Any]:
     state = WorkflowState(request=request)
     workflow = build_analyze_jd_workflow()
     try:
+        from app_log import log_event
+        log_event(
+            service="AI-SERVICE",
+            level="INFO",
+            event="analyze_jd_start",
+            detail=f"taskId={request.taskId} | userId={request.userId}"
+        )
+    except Exception:
+        pass
+
+    try:
         state = workflow.run(state)
-    except WorkflowExecutionError:
+    except WorkflowExecutionError as exc:
+        try:
+            from app_log import log_event
+            log_event(
+                service="AI-SERVICE",
+                level="ERROR",
+                event="analyze_jd_workflow_failed",
+                detail=f"taskId={request.taskId} | userId={request.userId} | error={str(exc)}"
+            )
+        except Exception:
+            pass
         return {
             "taskId": request.taskId,
             "status": "failed",
@@ -112,6 +173,17 @@ def analyze_jd(request: AnalyzeJdRequest) -> dict[str, Any]:
                 "qualityEvaluation": state.data.get("qualityEvaluation", {}),
             },
         }
+
+    try:
+        from app_log import log_event
+        log_event(
+            service="AI-SERVICE",
+            level="INFO",
+            event="analyze_jd_success",
+            detail=f"taskId={request.taskId} | userId={request.userId}"
+        )
+    except Exception:
+        pass
     return workflow_response(request.taskId, state)
 
 

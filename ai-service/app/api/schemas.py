@@ -15,6 +15,15 @@ class DocumentInput(_ApiModel):
     documentId: str
     content: str
     chunkId: str | None = None
+    sectionId: str | None = None
+    sectionType: str | None = None
+    sectionTitle: str | None = None
+    hierarchy: list[str] = Field(default_factory=list)
+    semanticType: str | None = None
+    importance: float | None = None
+    keywords: list[str] = Field(default_factory=list)
+    embeddingText: str | None = None
+    embedding: list[float] | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

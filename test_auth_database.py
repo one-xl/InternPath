@@ -164,7 +164,8 @@ def test_user_data_isolation_single_database(db_path, monkeypatch):
     bob_jd = bob_db.save_jd_record(2, "bob jd", make_analysis())
 
     assert alice_db.db_path == bob_db.db_path
-    assert Path(alice_db.db_path).is_file()
+    assert alice_db.schema_name == bob_db.schema_name
+    assert not Path(alice_db.db_path).exists()
     assert [record.id for record in alice_db.get_jd_records(1)] == [alice_jd]
     assert [record.id for record in bob_db.get_jd_records(2)] == [bob_jd]
     assert alice_db.get_jd_record_by_id(2, alice_jd) is None
@@ -174,30 +175,30 @@ def test_user_data_isolation_single_database(db_path, monkeypatch):
 def test_embedding_caching(db_path):
     db = Database(db_path)
     user_id = db.create_user("alice", "abc12345")
-    
+
     content = "This is a test document to vectorize."
     import hashlib
     content_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()
-    
+
     provider = "doubao-multimodal"
     model_id = "doubao-embedding-v1"
     embedding = [0.1, -0.2, 0.35, 0.99]
-    
+
     # Cache should be empty initially
     cached = db.get_cached_embedding(user_id, content_hash, provider, model_id)
     assert cached is None
-    
+
     # Save the embedding
     db.save_embedding(user_id, content_hash, embedding, provider, model_id)
-    
+
     # Cache should now return the saved embedding
     cached = db.get_cached_embedding(user_id, content_hash, provider, model_id)
     assert cached == embedding
-    
+
     # Cache should return None for a different provider or model
     assert db.get_cached_embedding(user_id, content_hash, "openai", model_id) is None
     assert db.get_cached_embedding(user_id, content_hash, provider, "other-model") is None
-    
+
     # Cache should return None for a different user
     other_user = db.create_user("bob", "abc12345")
     assert db.get_cached_embedding(other_user, content_hash, provider, model_id) is None

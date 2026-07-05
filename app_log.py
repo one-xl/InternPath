@@ -27,20 +27,30 @@ def setup_site_logging() -> None:
     _LOGGER.handlers.clear()
     _LOGGER.addHandler(fh)
     _LOGGER.propagate = False
-    _LOGGER.info("site_logging_ready | path=%s", path)
+    _LOGGER.info("[SYSTEM] site_logging_ready | path=%s", path)
+
+
+def log_event(service: str, level: str, event: str, detail: str = "") -> None:
+    setup_site_logging()
+    msg = f"[{service.upper()}] {event}"
+    if detail:
+        msg = f"{msg} | {detail[:4000]}"
+
+    lvl = level.upper()
+    if lvl == "ERROR":
+        _LOGGER.error(msg)
+    elif lvl in ("WARNING", "WARN"):
+        _LOGGER.warning(msg)
+    else:
+        _LOGGER.info(msg)
 
 
 def log_site_event(event: str, detail: str = "") -> None:
-    setup_site_logging()
-    if detail:
-        _LOGGER.info("%s | %s", event, detail[:4000])
-    else:
-        _LOGGER.info("%s", event)
+    log_event("BACKEND", "INFO", event, detail)
 
 
 def log_site_error(event: str, detail: str = "") -> None:
-    setup_site_logging()
-    _LOGGER.error("%s | %s", event, (detail or "")[:4000])
+    log_event("BACKEND", "ERROR", event, detail)
 
 
 def read_site_log_tail(max_lines: int = 250) -> str:

@@ -76,7 +76,20 @@ export interface AnalysisResult {
   learningSuggestions: LearningSuggestion[];
   nextActions: string[];
   is_failed?: boolean;
-  
+  errorMessage?: string;
+
+  // Resume Optimization Agent outputs
+  optimized_resume_md?: string;
+  modification_log?: Array<{
+    section_name: string;
+    section_index: number;
+    original: string;
+    new: string;
+    reason: string;
+  }>;
+  has_docx?: boolean;
+  has_pdf?: boolean;
+
   // Rearchitected pipeline structural outcomes
   parsedJD?: any; // ParsedJobDescription
   requirementMatches?: any; // RequirementsMatchesResult
@@ -98,6 +111,7 @@ export type AnalysisRunStatus =
   | "embedding_jd"
   | "retrieving"
   | "analyzing"
+  | "agent_resume"
   | "saving"
   | "success"
   | "failed";
@@ -108,6 +122,7 @@ export type AnalysisStepId =
   | "jd_embedding"
   | "retrieve_chunks"
   | "gemini_analysis"
+  | "agent_resume"
   | "save_history"
   | "render_result";
 
@@ -138,5 +153,3 @@ export interface AnalysisStep {
     subProgress?: number;
   };
 }
-
-

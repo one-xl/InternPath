@@ -15,7 +15,7 @@ import { ResultPage } from "./pages/ResultPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { LoginPage } from "./pages/LoginPage";
 import { AdminPage } from "./pages/AdminPage";
-import { StarPage } from "./pages/StarPage";
+import { AgentResumePage } from "./pages/AgentResumePage";
 import { createEmptyDraft } from "./services/mockAnalysis";
 import type { ApplicationStatus, HistoryRecord } from "./types/analysis";
 import type { JobDraft } from "./types/job";
@@ -34,13 +34,10 @@ function normalizeDraft(draft: JobDraft): JobDraft {
 export default function App() {
   const [activePage, setActivePage] = useState<PageKey>("dashboard");
   const [draft, setDraft] = useState<JobDraft>(() => createEmptyDraft());
-  
+
   // Track draft context
   const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
   const [draftSaveMessage, setDraftSaveMessage] = useState<string | null>(null);
-
-  // Track preselected context for STAR rewrite redirection from ResultPage
-  const [preselectedStarContext, setPreselectedStarContext] = useState<{ jdId: string; adviceId: string } | null>(null);
 
   // Authentication State
   const [currentUser, setCurrentUser] = useState<{ id: any; username: string; role?: string; generation_limit?: number } | null>(null);
@@ -118,7 +115,7 @@ export default function App() {
         localStorage.removeItem("job-desk:analysis-drafts");
         localStorage.removeItem("job-desk:active-configs");
         sessionStorage.removeItem("closed_session_announcements");
-        
+
         setCurrentUser(null);
         setActivePage("dashboard");
         alert("已退出登录");
@@ -352,7 +349,7 @@ export default function App() {
       if (Date.now() - session.timestamp < 30 * 60 * 1000) {
         // Clear session immediately to avoid infinite recovery loops if runAnalysis fails
         localStorage.removeItem("internpath:active-analysis-session");
-        
+
         const confirmRestore = window.confirm("检测到您有未完成的岗位分析，是否恢复并继续？");
         if (confirmRestore) {
           setDraft(normalizeDraft(session.draft));
@@ -368,7 +365,7 @@ export default function App() {
           }
           // Shift view to new analysis page to show progress
           setActivePage("new");
-          
+
           // Trigger the analysis after a short timeout so React state updates settle
           setTimeout(() => {
             void runAnalysis();
@@ -560,6 +557,7 @@ export default function App() {
             onNewAnalysis={startNewAnalysis}
             onOpenLatest={() => setActivePage("result")}
             onHistory={() => setActivePage("history")}
+            onNavigate={setActivePage}
           />
         )}
         {activePage === "new" && (
@@ -585,7 +583,7 @@ export default function App() {
             onRemoveResume={resumeUpload.removeFile}
             onGoSettings={() => setActivePage("settings")}
             onAnalyze={runAnalysis}
-            
+
             latestDraft={draftsControl.latestDraft}
             draftSaveMessage={draftSaveMessage}
             onRestoreDraft={handleRestoreDraft}
@@ -604,10 +602,7 @@ export default function App() {
             onCopyAdvice={copyAdvice}
             onMarkApplied={() => markCurrent("applied")}
             onAbandon={() => markCurrent("abandoned")}
-            onGoToRewrite={(jdId, adviceId) => {
-              setPreselectedStarContext({ jdId, adviceId });
-              setActivePage("star");
-            }}
+            onUpdateResult={analysis.setExistingResult}
           />
         )}
         {activePage === "history" && (
@@ -623,7 +618,7 @@ export default function App() {
             onDelete={history.deleteRecord}
             onStatusChange={history.updateStatus}
             onNewAnalysis={startNewAnalysis}
-            
+
             drafts={draftsControl.drafts}
             onRestoreDraft={handleRestoreDraft}
             onCloneDraft={handleCloneDraft}
@@ -650,19 +645,8 @@ export default function App() {
         {activePage === "admin" && currentUser?.role === "admin" && (
           <AdminPage />
         )}
-        {activePage === "star" && (
-          <StarPage
-            preselectedContext={preselectedStarContext}
-            onClearPreselectedContext={() => setPreselectedStarContext(null)}
-            onGenerationUsed={() => {
-              setCurrentUser((prev) => {
-                if (prev && prev.role !== "admin" && prev.generation_limit !== undefined) {
-                  return { ...prev, generation_limit: Math.max(0, prev.generation_limit - 1) };
-                }
-                return prev;
-              });
-            }}
-          />
+        {activePage === "agent-resume" && (
+          <AgentResumePage />
         )}
       </AppShell>
     </ErrorBoundary>

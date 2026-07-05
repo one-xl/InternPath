@@ -12,24 +12,36 @@ echo "=============================================="
 SERVICE_NAME="internpath"
 if systemctl list-unit-files | grep -q "${SERVICE_NAME}.service"; then
     echo "[Systemd Service Mode Detected]"
-    echo "Stopping ${SERVICE_NAME} service..."
-    sudo systemctl stop "${SERVICE_NAME}"
-    echo "Service ${SERVICE_NAME} stopped."
+    for unit in "${SERVICE_NAME}-worker" "${SERVICE_NAME}-ai" "${SERVICE_NAME}"; do
+        if systemctl list-unit-files | grep -q "${unit}.service"; then
+            echo "Stopping ${unit} service..."
+            sudo systemctl stop "${unit}"
+        fi
+    done
 fi
 
 # 2. Stop manual running background process if PID file exists
-if [ -f "logs/backend.pid" ]; then
-    PID=$(cat logs/backend.pid)
+stop_pid_file() {
+    local pid_file="$1"
+    local label="$2"
+    if [ ! -f "$pid_file" ]; then
+        return
+    fi
+    PID=$(cat "$pid_file")
     if kill -0 $PID 2>/dev/null; then
         echo "[Manual Running Process Detected]"
-        echo "Stopping background FastAPI process (PID: $PID)..."
+        echo "Stopping $label process (PID: $PID)..."
         kill $PID
-        rm logs/backend.pid
+        rm "$pid_file"
         echo "Process stopped."
     else
-        rm logs/backend.pid
+        rm "$pid_file"
     fi
-fi
+}
+
+stop_pid_file "logs/rq-worker.pid" "RQ worker"
+stop_pid_file "logs/backend.pid" "FastAPI backend"
+stop_pid_file "logs/ai-service.pid" "AI service"
 
 # 3. Stop Docker Compose if active
 if [ -f "docker-compose.yml" ] && command -v docker >/dev/null 2>&1 && docker compose ps >/dev/null 2>&1; then

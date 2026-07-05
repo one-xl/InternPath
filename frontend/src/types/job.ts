@@ -15,6 +15,7 @@ export interface JobDraft extends JobMeta {
   targetType: string;
   jobDirection: string;
   candidateMaterial?: string;
+  enableAgentResume?: boolean;
   // Legacy manual-material fields remain only for old local history compatibility.
   resumeText: string;
   projectText: string;

@@ -1,4 +1,4 @@
-export async function apiFetch<T>(url: string, options: RequestInit = {}): Promise<T> {
+﻿export async function apiFetch<T>(url: string, options: RequestInit = {}): Promise<T> {
   const res = await fetch(url, {
     credentials: "include",
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
@@ -48,4 +48,17 @@ export async function apiFetch<T>(url: string, options: RequestInit = {}): Promi
     throw err;
   }
   return res.json();
+}
+
+export async function reportLog(event: string, detail: string, level: "INFO" | "WARNING" | "ERROR" = "INFO"): Promise<void> {
+  try {
+    await fetch("/api/logs/report", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ event, detail, level }),
+    });
+  } catch (err) {
+    console.warn("Failed to report log to backend:", err);
+  }
 }

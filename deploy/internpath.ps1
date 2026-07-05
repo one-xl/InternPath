@@ -1,4 +1,4 @@
-param(
+﻿param(
     [ValidateSet("start", "stop", "restart", "status")]
     [string]$Action = "status"
 )
@@ -22,7 +22,23 @@ $AiPort = if ($env:INTERNPATH_AI_PORT) { [int]$env:INTERNPATH_AI_PORT } else { 8
 $BackendPort = if ($env:INTERNPATH_BACKEND_PORT) { [int]$env:INTERNPATH_BACKEND_PORT } else { 8787 }
 $WebPort = if ($env:INTERNPATH_WEB_PORT) { [int]$env:INTERNPATH_WEB_PORT } elseif ($env:LOCAL_PORT) { [int]$env:LOCAL_PORT } else { 5173 }
 
-# PostgreSQL configuration and fallback to workspace scratch path
+if (-not $env:RQ_QUEUE_NAME) {
+    $env:RQ_QUEUE_NAME = "internpath-default"
+}
+
+# Load .env file variables if present
+$EnvFile = Join-Path $ProjectRoot ".env"
+if (Test-Path $EnvFile) {
+    Get-Content $EnvFile | ForEach-Object {
+        $line = $_.Trim()
+        if ($line -and -not $line.StartsWith("#") -and $line -match "=") {
+            $key, $value = $line -split "=", 2
+            [System.Environment]::SetEnvironmentVariable($key.Trim(), $value.Trim())
+        }
+    }
+}
+
+# PostgreSQL configuration. Runtime requires PostgreSQL + pgvector; no SQLite runtime mode is supported.
 $PgBin = if ($env:INTERNPATH_PG_BIN) {
     $env:INTERNPATH_PG_BIN
 } else {
@@ -51,8 +67,10 @@ function Get-ListeningProcessIds {
     param([int]$Port)
 
     try {
-        Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+        $pids = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
             Select-Object -ExpandProperty OwningProcess -Unique
+        # 鏄惧紡鎺掗櫎 $null 鍏冪礌锛岄槻姝㈠寘瑁呮垚 [null] 瀵艰嚧 Count 涓?1
+        @($pids) | Where-Object { $_ -ne $null }
     } catch {
         @()
     }
@@ -101,7 +119,111 @@ function Start-DetachedCommand {
     $psi.Arguments = "/k chcp 65001 >nul && title $Title && $Command"
     $psi.UseShellExecute = $true
     $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Minimized
-    [System.Diagnostics.Process]::Start($psi) | Out-Null
+    return [System.Diagnostics.Process]::Start($psi)
+}
+
+function Test-PidFileProcess {
+    param([string]$PidFile)
+
+    if (-not (Test-Path $PidFile)) {
+        return $false
+    }
+    try {
+        $processId = [int](Get-Content $PidFile -ErrorAction Stop | Select-Object -First 1)
+        Get-Process -Id $processId -ErrorAction Stop | Out-Null
+        return $true
+    } catch {
+        Remove-Item -Force -ErrorAction SilentlyContinue $PidFile
+        return $false
+    }
+}
+
+function Stop-PidFileProcess {
+    param(
+        [string]$PidFile,
+        [string]$Name
+    )
+
+    if (-not (Test-Path $PidFile)) {
+        Write-Host "$Name is not running."
+        return
+    }
+    try {
+        $processId = [int](Get-Content $PidFile -ErrorAction Stop | Select-Object -First 1)
+        Stop-Process -Id $processId -Force -ErrorAction Stop
+        Remove-Item -Force -ErrorAction SilentlyContinue $PidFile
+        Write-Host "Stopped $Name process $processId."
+    } catch {
+        Remove-Item -Force -ErrorAction SilentlyContinue $PidFile
+        Write-Warning "Failed to stop $Name from PID file: $($_.Exception.Message)"
+    }
+}
+
+function Start-BackgroundPythonModule {
+    param(
+        [string]$Module,
+        [string[]]$Arguments,
+        [string]$WorkingDirectory,
+        [string]$LogFile,
+        [string]$ErrorLogFile
+    )
+
+    $argumentList = @("-m", $Module) + $Arguments
+    return Start-Process `
+        -FilePath $PythonCommand `
+        -ArgumentList $argumentList `
+        -WorkingDirectory $WorkingDirectory `
+        -RedirectStandardOutput $LogFile `
+        -RedirectStandardError $ErrorLogFile `
+        -WindowStyle Hidden `
+        -PassThru
+}
+
+function Assert-PostgresDatabaseUrl {
+    if (-not $env:DATABASE_URL) {
+        throw "DATABASE_URL is required. InternPath runs on PostgreSQL + pgvector only."
+    }
+    if ($env:DATABASE_URL -notmatch "^postgres(ql)?://") {
+        throw "DATABASE_URL must be a PostgreSQL connection string."
+    }
+}
+
+function Test-TcpEndpoint {
+    param(
+        [string]$HostName,
+        [int]$Port
+    )
+
+    $client = [System.Net.Sockets.TcpClient]::new()
+    try {
+        $async = $client.BeginConnect($HostName, $Port, $null, $null)
+        if (-not $async.AsyncWaitHandle.WaitOne(2000, $false)) {
+            return $false
+        }
+        $client.EndConnect($async)
+        return $true
+    } catch {
+        return $false
+    } finally {
+        $client.Close()
+    }
+}
+
+function Assert-RedisEndpoint {
+    if (-not $env:REDIS_URL) {
+        throw "REDIS_URL is required for Redis/RQ background jobs."
+    }
+    try {
+        $redisUri = [System.Uri]$env:REDIS_URL
+        $redisPort = if ($redisUri.Port -gt 0) { $redisUri.Port } else { 6379 }
+        $redisHost = $redisUri.DnsSafeHost
+        if (-not (Test-TcpEndpoint -HostName $redisHost -Port $redisPort)) {
+            throw "Redis endpoint is not reachable at ${redisHost}:${redisPort}."
+        }
+        Write-Host "Redis is reachable at ${redisHost}:${redisPort}." -ForegroundColor Green
+    } catch {
+        throw "REDIS_URL is invalid or unreachable: $($_.Exception.Message)"
+    }
 }
 
 function Start-InternPath {
@@ -109,15 +231,18 @@ function Start-InternPath {
 
     $aiLog = Join-Path $LogRoot "ai-service.log"
     $backendLog = Join-Path $LogRoot "backend.log"
+    $workerLog = Join-Path $LogRoot "rq-worker.log"
+    $workerErrorLog = Join-Path $LogRoot "rq-worker.error.log"
+    $workerPidFile = Join-Path $LogRoot "rq-worker.pid"
     $webLog = Join-Path $LogRoot "frontend.log"
     $pythonInvocation = Get-PythonInvocation
 
     # 1. Handle PostgreSQL Startup
     $pgCtlExe = Join-Path $PgBin "pg_ctl.exe"
-    $isPgConfigured = $false
-    if (Test-Path $pgCtlExe) {
-        $isPgConfigured = $true
-        
+    if ($env:DATABASE_URL) {
+        Assert-PostgresDatabaseUrl
+        Write-Host "PostgreSQL is configured via DATABASE_URL: $env:DATABASE_URL" -ForegroundColor Green
+    } elseif (Test-Path $pgCtlExe) {
         # Check and automatically install pgvector if missing
         $PgsqlLib = Join-Path $ProjectRoot "scratch\pgsql\lib"
         $VectorDll = Join-Path $PgsqlLib "vector.dll"
@@ -136,16 +261,42 @@ function Start-InternPath {
         }
 
         if (Test-PortBusy -Port $PgPort) {
-            Write-Host "PostgreSQL already appears to be running on port $PgPort."
+            $conn = Get-NetTCPConnection -LocalPort $PgPort -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($conn) {
+                $pid = $conn.OwningProcess
+                $proc = Get-Process -Id $pid -ErrorAction SilentlyContinue
+                $procPath = if ($proc) { $proc.Path } else { "" }
+                $procName = if ($proc) { $proc.Name } else { "Unknown" }
+                if ($procPath -and $procPath.ToLower().Contains("scratch\pgsql")) {
+                    Write-Host "PostgreSQL is already running on port $PgPort (PID: $pid, Project Instance)." -ForegroundColor Green
+                } else {
+                    throw "Port $PgPort is occupied by an external process (PID: $pid, Name: $procName, Path: $procPath). Set DATABASE_URL explicitly or release the port."
+                }
+            } else {
+                Write-Host "PostgreSQL already appears to be running on port $PgPort."
+            }
         } else {
             Write-Host "Starting local PostgreSQL on port $PgPort..."
             try {
-                # Start PostgreSQL
-                & $pgCtlExe -D $PgData -l $PgLog -o "-p $PgPort" start
-                Start-Sleep -Seconds 3
-                Write-Host "PostgreSQL started successfully."
+                # 浣跨敤鐩稿璺緞鑴辩涓枃缁濆璺緞缂栫爜瑙ｆ瀽骞叉壈锛屽湪鐙珛绐楀彛涓洿鎺ユ媺璧峰苟淇濇椿杩愯 postgres.exe
+                $pgCommand = "scratch\pgsql\bin\postgres.exe -D scratch\pgdata -p $PgPort >> scratch\pg_log.txt 2>>&1"
+                $null = Start-DetachedCommand -Title "PostgreSQL-54321" -WorkingDirectory $ProjectRoot -Command $pgCommand
+                Start-Sleep -Seconds 4
+
+                # 鍙岄噸鍋ュ悍搴︽牎楠岋細妫€鏌ョ鍙ｆ槸鍚︾湡鐨勫凡缁忚 PostgreSQL 鐩戝惉
+                if (Test-PortBusy -Port $PgPort) {
+                    Write-Host "PostgreSQL started successfully and is listening on port $PgPort." -ForegroundColor Green
+                } else {
+                    Write-Warning "PostgreSQL failed to start. Port $PgPort is not active."
+                    # 璇诲彇骞惰緭鍑烘棩蹇椾腑鏈€鍚?10 琛屼互鎻愮ず鐢ㄦ埛鍏蜂綋閿欒
+                    if (Test-Path $PgLog) {
+                        Write-Host "--- Recent PostgreSQL Logs ($PgLog) ---" -ForegroundColor Red
+                        Get-Content $PgLog -Tail 10 | ForEach-Object { Write-Host $_ -ForegroundColor Yellow }
+                    }
+                    throw "PostgreSQL failed to start. InternPath cannot run without PostgreSQL + pgvector."
+                }
             } catch {
-                Write-Warning "Failed to start PostgreSQL: $_"
+                throw "Failed to start PostgreSQL: $_"
             }
         }
 
@@ -168,31 +319,47 @@ function Start-InternPath {
                 & $createdbExe -U postgres -p $PgPort job_dashboard
                 Write-Host "Database 'job_dashboard' created successfully."
             } catch {
-                Write-Warning "Failed to create database 'job_dashboard': $_"
+                throw "Failed to create database 'job_dashboard': $_"
             }
         }
 
         # 3. Export DATABASE_URL env variable for child processes to inherit
         $env:DATABASE_URL = "postgresql://postgres@localhost:$PgPort/job_dashboard"
-        Write-Host "DATABASE_URL set to postgresql://postgres@localhost:$PgPort/job_dashboard"
+        Write-Host "DATABASE_URL set to $env:DATABASE_URL"
     } else {
-        Write-Warning "PostgreSQL binaries not found at: $pgCtlExe"
-        Write-Warning "Skipping local PostgreSQL startup. The application will fall back to SQLite."
+        throw "DATABASE_URL is required and local PostgreSQL binaries were not found at: $pgCtlExe"
     }
+
+    Assert-PostgresDatabaseUrl
+    Assert-RedisEndpoint
 
     if (Test-PortBusy -Port $AiPort) {
         Write-Host "AI service already appears to be running on http://127.0.0.1:$AiPort."
     } else {
         $aiCommand = "$pythonInvocation -m uvicorn app.main:app --host 127.0.0.1 --port $AiPort >> `"$aiLog`" 2>>&1"
-        Start-DetachedCommand -Title "InternPath AI Service" -WorkingDirectory $AiServiceRoot -Command $aiCommand
+        $null = Start-DetachedCommand -Title "InternPath AI Service" -WorkingDirectory $AiServiceRoot -Command $aiCommand
         Write-Host "Started AI service window on http://127.0.0.1:$AiPort."
+    }
+
+    if (Test-PidFileProcess -PidFile $workerPidFile) {
+        $workerPid = Get-Content $workerPidFile | Select-Object -First 1
+        Write-Host "RQ worker already appears to be running (PID: $workerPid, queue: $env:RQ_QUEUE_NAME)."
+    } else {
+        $workerProcess = Start-BackgroundPythonModule `
+            -Module "backend.rq_worker" `
+            -Arguments @() `
+            -WorkingDirectory $ProjectRoot `
+            -LogFile $workerLog `
+            -ErrorLogFile $workerErrorLog
+        Set-Content -Path $workerPidFile -Value $workerProcess.Id
+        Write-Host "Started RQ worker for queue '$($env:RQ_QUEUE_NAME)' (PID: $($workerProcess.Id))."
     }
 
     if (Test-PortBusy -Port $BackendPort) {
         Write-Host "Backend API already appears to be running on http://127.0.0.1:$BackendPort."
     } else {
         $backendCommand = "$pythonInvocation -m uvicorn backend.main:app --host 127.0.0.1 --port $BackendPort >> `"$backendLog`" 2>>&1"
-        Start-DetachedCommand -Title "InternPath Backend API" -WorkingDirectory $ProjectRoot -Command $backendCommand
+        $null = Start-DetachedCommand -Title "InternPath Backend API" -WorkingDirectory $ProjectRoot -Command $backendCommand
         Write-Host "Started backend API window on http://127.0.0.1:$BackendPort."
     }
 
@@ -204,7 +371,7 @@ function Start-InternPath {
         Write-Host "React workbench already appears to be running on http://127.0.0.1:$WebPort."
     } else {
         $webCommand = "npm run dev -- --port $WebPort >> `"$webLog`" 2>>&1"
-        Start-DetachedCommand -Title "InternPath React Workbench" -WorkingDirectory $FrontendRoot -Command $webCommand
+        $null = Start-DetachedCommand -Title "InternPath React Workbench" -WorkingDirectory $FrontendRoot -Command $webCommand
         Write-Host "Started React workbench window on http://127.0.0.1:$WebPort."
     }
 
@@ -213,6 +380,8 @@ function Start-InternPath {
 }
 
 function Stop-InternPath {
+    $workerPidFile = Join-Path $LogRoot "rq-worker.pid"
+    Stop-PidFileProcess -PidFile $workerPidFile -Name "RQ worker"
     Stop-PortProcess -Port $WebPort -Name "Web app"
     Stop-PortProcess -Port $BackendPort -Name "Backend API"
     Stop-PortProcess -Port $AiPort -Name "AI service"
@@ -236,14 +405,41 @@ function Stop-InternPath {
 
 function Show-InternPathStatus {
     $pgCtlExe = Join-Path $PgBin "pg_ctl.exe"
-    if (Test-Path $pgCtlExe) {
+    if ($env:DATABASE_URL) {
+        Write-Host "PostgreSQL: configured via DATABASE_URL"
+    } elseif (Test-Path $pgCtlExe) {
         if (Test-PortBusy -Port $PgPort) {
             Write-Host "PostgreSQL: running on port $PgPort"
         } else {
             Write-Host "PostgreSQL: stopped on port $PgPort"
         }
     } else {
-        Write-Host "PostgreSQL: binaries not found (using SQLite fallback)"
+        Write-Host "PostgreSQL: not configured. DATABASE_URL is required."
+    }
+
+    if ($env:REDIS_URL) {
+        try {
+            $redisUri = [System.Uri]$env:REDIS_URL
+            $redisPort = if ($redisUri.Port -gt 0) { $redisUri.Port } else { 6379 }
+            $redisHost = $redisUri.DnsSafeHost
+            if (Test-TcpEndpoint -HostName $redisHost -Port $redisPort) {
+                Write-Host "Redis: reachable at ${redisHost}:${redisPort}"
+            } else {
+                Write-Host "Redis: configured but unreachable at ${redisHost}:${redisPort}"
+            }
+        } catch {
+            Write-Host "Redis: invalid REDIS_URL"
+        }
+    } else {
+        Write-Host "Redis: not configured. REDIS_URL is required."
+    }
+
+    $workerPidFile = Join-Path $LogRoot "rq-worker.pid"
+    if (Test-PidFileProcess -PidFile $workerPidFile) {
+        $workerPid = Get-Content $workerPidFile | Select-Object -First 1
+        Write-Host "RQ worker: running (PID: $workerPid)"
+    } else {
+        Write-Host "RQ worker: stopped"
     }
 
     if (Test-PortBusy -Port $AiPort) {

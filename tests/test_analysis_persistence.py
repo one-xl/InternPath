@@ -276,36 +276,45 @@ def test_service_upload_knowledge_document_and_passes_chunks_to_ai_service(local
     assert fake_client.last_kwargs["documents"][0]["metadata"]["fileName"] == "resume.txt"
 
 
-def test_service_analyze_jd_with_guardrails_degrades_when_ai_service_unavailable(local_tmp_dir, monkeypatch):
+def test_service_analyze_jd_with_guardrails_fails_when_ai_service_unavailable(local_tmp_dir, monkeypatch):
     service = _service_with_tmp_user_db(local_tmp_dir, monkeypatch, _FailingAiServiceClient())
+    task_id = "task-ai-service-down"
 
-    result = service.analyze_jd_with_guardrails(
-        user_id=1,
-        jd_text="Need Python backend",
-        resume_text="Python evidence",
-    )
+    with pytest.raises(RuntimeError, match="增强校验服务调用失败"):
+        service.analyze_jd_with_guardrails(
+            user_id=1,
+            jd_text="Need Python backend",
+            resume_text="Python evidence",
+            task_id=task_id,
+        )
 
-    assert result["saved"] is False
-    assert result["warning"] == "增强校验服务暂不可用"
-    assert result["originalAnalysis"]["skills"] == ["Python"]
     assert service.list_analysis_reports(1) == []
-
-
-def test_service_build_personal_decision_falls_back_without_model(local_tmp_dir, monkeypatch):
-    service = _service_with_tmp_user_db(local_tmp_dir, monkeypatch, _FailingAiServiceClient())
-    decision = service.build_personal_decision(
-        jd_text="Need Python FastAPI",
-        analysis=JobAnalysis(
-            skills=["Python", "FastAPI", "SQL"],
-            difficulty="中等",
-            job_summary="backend",
-        ),
-        resume_text="I built a Python backend service with FastAPI.",
+    db = service.user_db(1)
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT status, error_message FROM analysis_task WHERE user_id = ? AND task_id = ?",
+        (1, task_id),
     )
+    row = cursor.fetchone()
+    conn.close()
+    assert row[0] == "FAILED"
+    assert "service down" in row[1]
 
-    assert decision.recommendation in {"APPLY", "CONSIDER", "SKIP"}
-    assert 0 <= decision.match_score <= 100
-    assert decision.action_plan
+
+def test_service_build_personal_decision_fails_without_model(local_tmp_dir, monkeypatch):
+    service = _service_with_tmp_user_db(local_tmp_dir, monkeypatch, _FailingAiServiceClient())
+
+    with pytest.raises(RuntimeError, match="大模型决策生成失败"):
+        service.build_personal_decision(
+            jd_text="Need Python FastAPI",
+            analysis=JobAnalysis(
+                skills=["Python", "FastAPI", "SQL"],
+                difficulty="中等",
+                job_summary="backend",
+            ),
+            resume_text="I built a Python backend service with FastAPI.",
+        )
 
 
 def test_database_workflow_logs_roundtrip(local_tmp_dir):

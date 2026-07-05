@@ -1,5 +1,6 @@
 import type { AnalysisResult, HistoryRecord } from "../types/analysis";
 import type { CandidateProfile } from "../types/profile";
+import type { PageKey } from "../types/navigation";
 import { decisionLabels, formatDateTime, statusLabels } from "../utils/format";
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
@@ -12,11 +13,12 @@ interface DashboardPageProps {
   onNewAnalysis: () => void;
   onOpenLatest: () => void;
   onHistory: () => void;
+  onNavigate: (page: PageKey) => void;
 }
 
-export function DashboardPage({ records, latestResult, profile, onNewAnalysis, onOpenLatest, onHistory }: DashboardPageProps) {
+export function DashboardPage({ records, latestResult, profile, onNewAnalysis, onOpenLatest, onHistory, onNavigate }: DashboardPageProps) {
   const safeRecords = records ?? [];
-  
+
   const appliedCount = safeRecords.filter((record) => record && record.status === "applied").length;
   const interviewCount = safeRecords.filter((record) => record && record.status === "interviewing").length;
   const worthCount = safeRecords.filter((record) => record && (record.decision === "strong_yes" || record.decision === "yes")).length;
@@ -30,9 +32,43 @@ export function DashboardPage({ records, latestResult, profile, onNewAnalysis, o
         <div>
           <span className="section-kicker">当前阶段</span>
           <h2>从岗位判断开始，而不是从焦虑开始。</h2>
-          <p>先判断是否值得投，再决定怎么改简历、补项目 and 准备面试。</p>
+          <p>先判断是否值得投，再决定怎么改简历、补项目并准备面试。</p>
         </div>
         <Button variant="primary" onClick={onNewAnalysis}>新建岗位分析</Button>
+      </section>
+
+      <section className="workflow-guide-panel">
+        <div className="workflow-guide-header">
+          <h3 className="workflow-guide-title">InternPath 求职五步流程</h3>
+          <p className="workflow-guide-subtitle">第一次使用？按这条路径完成岗位判断、简历修改和投递复盘</p>
+        </div>
+        <div className="workflow-grid">
+          <div className="workflow-card" onClick={() => onNavigate("settings")}>
+            <span className="workflow-step-num">01 服务连通</span>
+            <h4 className="workflow-step-title">服务连通</h4>
+            <p className="workflow-step-desc">先确认分析与生成服务可用，后续流程才会稳定出结果。</p>
+          </div>
+          <div className="workflow-card" onClick={() => onNavigate("profile")}>
+            <span className="workflow-step-num">02 导入简历</span>
+            <h4 className="workflow-step-title">个人材料</h4>
+            <p className="workflow-step-desc">在「个人材料」中上传并解析简历，生成结构化画像。</p>
+          </div>
+          <div className="workflow-card" onClick={() => onNavigate("new")}>
+            <span className="workflow-step-num">03 投递决策</span>
+            <h4 className="workflow-step-title">投递决策</h4>
+            <p className="workflow-step-desc">点击「新建岗位分析」按钮，输入岗位 JD，得到匹配度判断和待补强项。</p>
+          </div>
+          <div className="workflow-card" onClick={() => onNavigate("agent-resume")}>
+            <span className="workflow-step-num">04 定向优化</span>
+            <h4 className="workflow-step-title">定向优化</h4>
+            <p className="workflow-step-desc">进入「简历定向优化」，调整简历段落，下载 DOCX 简历和修改对照表。</p>
+          </div>
+          <div className="workflow-card" onClick={() => onNavigate("history")}>
+            <span className="workflow-step-num">05 求职归档</span>
+            <h4 className="workflow-step-title">求职归档</h4>
+            <p className="workflow-step-desc">在「历史记录」中跟进投递状态（已投递、面试中），沉淀个人岗位库。</p>
+          </div>
+        </div>
       </section>
 
       <div className="stats-grid">
@@ -96,4 +132,3 @@ export function DashboardPage({ records, latestResult, profile, onNewAnalysis, o
     </div>
   );
 }
-

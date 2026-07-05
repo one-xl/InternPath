@@ -3,6 +3,7 @@ set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/internpath}"
 APP_PORT="${APP_PORT:-8502}"
+AI_PORT="${AI_PORT:-8000}"
 SERVICE_NAME="${SERVICE_NAME:-internpath}"
 APP_USER="${APP_USER:-internpath}"
 REQUIREMENTS_FILE="${REQUIREMENTS_FILE:-$APP_DIR/requirements.server.txt}"
@@ -18,14 +19,14 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
-apt-get install -y python3 python3-venv python3-pip wget curl
+apt-get install -y python3 python3-venv python3-pip wget curl redis-server
 
 # PostgreSQL & pgvector automatic installation on cloud server
 if command -v apt-get >/dev/null 2>&1; then
   echo "=========================================================="
   echo "  Cloud Server: Installing PostgreSQL & pgvector Extension"
   echo "=========================================================="
-  
+
   # 1. Install PostgreSQL if not present (defaulting to PostgreSQL 16)
   if ! command -v psql >/dev/null 2>&1; then
     echo "PostgreSQL is not installed. Importing PostgreSQL APT repository..."
@@ -75,6 +76,11 @@ if command -v apt-get >/dev/null 2>&1; then
   echo "=========================================================="
 fi
 
+echo "Starting and enabling Redis service..."
+systemctl daemon-reload || true
+systemctl enable redis-server || true
+systemctl start redis-server || true
+
 if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
   echo "Installing Node.js and npm..."
   apt-get install -y nodejs npm || apt-get install -y nodejs
@@ -112,6 +118,19 @@ if ! grep -q "^DATABASE_URL=" "$PERSISTENT_ENV_FILE" 2>/dev/null; then
   echo "DATABASE_URL=postgresql://postgres@localhost:5432/job_dashboard" >> "$PERSISTENT_ENV_FILE"
   echo "Automatically added local PostgreSQL DATABASE_URL to $PERSISTENT_ENV_FILE."
 fi
+if ! grep -q "^REDIS_URL=" "$PERSISTENT_ENV_FILE" 2>/dev/null; then
+  echo "REDIS_URL=redis://127.0.0.1:6379/0" >> "$PERSISTENT_ENV_FILE"
+  echo "Automatically added local Redis REDIS_URL to $PERSISTENT_ENV_FILE."
+fi
+if ! grep -q "^RQ_QUEUE_NAME=" "$PERSISTENT_ENV_FILE" 2>/dev/null; then
+  echo "RQ_QUEUE_NAME=internpath-default" >> "$PERSISTENT_ENV_FILE"
+fi
+if ! grep -q "^RQ_JOB_TIMEOUT_SECONDS=" "$PERSISTENT_ENV_FILE" 2>/dev/null; then
+  echo "RQ_JOB_TIMEOUT_SECONDS=1800" >> "$PERSISTENT_ENV_FILE"
+fi
+if ! grep -q "^RQ_RESULT_TTL_SECONDS=" "$PERSISTENT_ENV_FILE" 2>/dev/null; then
+  echo "RQ_RESULT_TTL_SECONDS=86400" >> "$PERSISTENT_ENV_FILE"
+fi
 
 mkdir -p "$APP_DIR/.cache"
 chown -R "$APP_USER:$APP_USER" "$APP_DIR"
@@ -122,7 +141,8 @@ chmod 600 "$PERSISTENT_ENV_FILE"
 cat >/etc/systemd/system/${SERVICE_NAME}.service <<EOF
 [Unit]
 Description=InternPath FastAPI Service
-After=network.target
+After=network.target postgresql.service redis-server.service ${SERVICE_NAME}-ai.service ${SERVICE_NAME}-worker.service
+Wants=postgresql.service redis-server.service ${SERVICE_NAME}-ai.service ${SERVICE_NAME}-worker.service
 
 [Service]
 Type=simple
@@ -151,13 +171,85 @@ UMask=0077
 WantedBy=multi-user.target
 EOF
 
+cat >/etc/systemd/system/${SERVICE_NAME}-ai.service <<EOF
+[Unit]
+Description=InternPath AI Service
+After=network.target
+
+[Service]
+Type=simple
+User=${APP_USER}
+Group=${APP_USER}
+WorkingDirectory=${APP_DIR}/ai-service
+EnvironmentFile=${PERSISTENT_ENV_FILE}
+Environment=HOME=${APP_DIR}
+Environment=XDG_CACHE_HOME=${APP_DIR}/.cache
+ExecStart=${APP_DIR}/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port ${AI_PORT}
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+LockPersonality=true
+RestrictRealtime=true
+ReadWritePaths=${APP_DIR}
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat >/etc/systemd/system/${SERVICE_NAME}-worker.service <<EOF
+[Unit]
+Description=InternPath RQ Worker
+After=network.target postgresql.service redis-server.service ${SERVICE_NAME}-ai.service
+Wants=postgresql.service redis-server.service ${SERVICE_NAME}-ai.service
+
+[Service]
+Type=simple
+User=${APP_USER}
+Group=${APP_USER}
+WorkingDirectory=${APP_DIR}
+EnvironmentFile=${PERSISTENT_ENV_FILE}
+Environment=HOME=${APP_DIR}
+Environment=XDG_CACHE_HOME=${APP_DIR}/.cache
+ExecStart=${APP_DIR}/.venv/bin/python -m backend.rq_worker
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+LockPersonality=true
+RestrictRealtime=true
+ReadWritePaths=${APP_DIR}
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 systemctl daemon-reload
 systemctl enable "${SERVICE_NAME}"
+systemctl enable "${SERVICE_NAME}-ai"
+systemctl enable "${SERVICE_NAME}-worker"
 # Always restart so new code from deploy is picked up (enable --now does not restart a running unit).
+systemctl restart "${SERVICE_NAME}-ai"
+systemctl restart "${SERVICE_NAME}-worker"
 systemctl restart "${SERVICE_NAME}"
 systemctl --no-pager --full status "${SERVICE_NAME}"
+systemctl --no-pager --full status "${SERVICE_NAME}-ai"
+systemctl --no-pager --full status "${SERVICE_NAME}-worker"
 
 echo
 echo "InternPath is expected on port ${APP_PORT}."
+echo "InternPath AI service is expected on 127.0.0.1:${AI_PORT}."
 echo "Make sure your cloud firewall/security group allows inbound TCP ${APP_PORT}."
 echo "Installed dependencies from ${REQUIREMENTS_FILE}."

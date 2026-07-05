@@ -1,11 +1,17 @@
 (function() {
+  if (window !== window.top) return;
+
+  function isContextValid() {
+    return typeof chrome !== "undefined" && chrome.runtime && !!chrome.runtime.id;
+  }
+
   console.log("[InternPath] Content script loaded.");
 
   // 1. Sleek Floating Trigger (Round Bubble)
   const bubble = document.createElement("div");
   bubble.id = "internpath-floating-bubble";
   bubble.innerHTML = "🧭";
-  
+
   // Style bubble
   Object.assign(bubble.style, {
     position: "fixed",
@@ -31,7 +37,7 @@
   // 2. Drawer Panel (Smart Panel)
   const panel = document.createElement("div");
   panel.id = "internpath-smart-panel";
-  
+
   // Style panel
   Object.assign(panel.style, {
     position: "fixed",
@@ -63,7 +69,7 @@
       </span>
       <span id="internpath-close-panel" style="font-size: 16px; cursor: pointer; color: #94a3b8; transition: color 0.15s;">&times;</span>
     </div>
-    
+
     <!-- Resume Selector Section -->
     <div class="form-group" style="display: flex; flex-direction: column; gap: 4px;">
       <label style="font-size: 11px; color: #94a3b8; font-weight: 600;">选择上传的简历</label>
@@ -88,7 +94,7 @@
       <button id="internpath-smartfill-btn" style="width: 100%; color: #ffffff; border: none; border-radius: 6px; padding: 9px; font-size: 12px; font-weight: 600; cursor: pointer; transition: opacity 0.15s; background: linear-gradient(135deg, #0ea5e9, #2563eb); display: flex; align-items: center; justify-content: center; gap: 4px; margin-bottom: 6px;">
         <span>⚡</span> 智能填表网申
       </button>
-      
+
       <div id="internpath-job-actions" style="display: flex; gap: 8px;">
         <button id="internpath-autofill-btn" style="flex: 1; color: #ffffff; border: none; border-radius: 6px; padding: 8px; font-size: 11px; font-weight: 600; cursor: pointer; transition: opacity 0.15s; background: #334155; display: flex; align-items: center; justify-content: center; gap: 2px;">
           <span>📝</span> 自动回填职位
@@ -110,6 +116,10 @@
     bubble.style.boxShadow = "0 10px 25px -5px rgba(0, 0, 0, 0.4)";
   });
   bubble.addEventListener("click", () => {
+    if (!isContextValid()) {
+      showToast("⚠️ 插件已在后台更新，请重新刷新网页使用", true);
+      return;
+    }
     if (panel.style.display === "none") {
       panel.style.display = "flex";
       loadResumesDropdown();
@@ -119,8 +129,24 @@
     }
   });
 
-  document.body.appendChild(bubble);
-  document.body.appendChild(panel);
+  function ensureUIElements() {
+    if (!document.body) return false;
+    let added = false;
+    if (!document.getElementById("internpath-floating-bubble")) {
+      document.body.appendChild(bubble);
+      console.log("[InternPath] Bubble successfully appended to body.");
+      added = true;
+    }
+    if (!document.getElementById("internpath-smart-panel")) {
+      document.body.appendChild(panel);
+      console.log("[InternPath] Smart panel successfully appended to body.");
+      added = true;
+    }
+    return added;
+  }
+
+  // Attempt initial append
+  ensureUIElements();
 
   const closePanelSpan = panel.querySelector("#internpath-close-panel");
   closePanelSpan.addEventListener("mouseenter", () => closePanelSpan.style.color = "#f8fafc");
@@ -157,6 +183,10 @@
 
   // Load Resumes Dropdown from Backend
   function loadResumesDropdown() {
+    if (!isContextValid()) {
+      resumeSelect.innerHTML = `<option value="">⚠️ 插件已更新，请刷新网页</option>`;
+      return;
+    }
     chrome.runtime.sendMessage({ action: "get_resumes" }, (response) => {
       if (chrome.runtime.lastError) {
         console.warn("[InternPath] get_resumes runtime error:", chrome.runtime.lastError.message);
@@ -184,9 +214,11 @@
           });
         }
       } else {
+        const errMsg = (response && response.error) || "未知错误";
+        console.error("[InternPath] 获取简历失败:", errMsg);
         const opt = document.createElement("option");
         opt.value = "";
-        opt.textContent = "⚠️ 请先在插件菜单中登录工作台账号";
+        opt.textContent = `⚠️ 请先在插件菜单中登录工作台账号 (错误: ${errMsg})`;
         resumeSelect.appendChild(opt);
       }
     });
@@ -330,32 +362,32 @@
   // React/Vue State Compatible Input filler
   function setElementValue(el, val) {
     if (!el) return;
-    
+
     // Defensively cast to String to handle non-string values (e.g., numeric years)
     val = String(val === null || val === undefined ? "" : val);
-    
+
     if (el.tagName.toLowerCase() === "select") {
       const options = Array.from(el.options);
       let matchedOption = null;
-      
+
       const valTrimmed = val.trim();
       // 1. Try exact match on value or text
-      matchedOption = options.find(opt => 
-        (opt.value || "").trim() === valTrimmed || 
+      matchedOption = options.find(opt =>
+        (opt.value || "").trim() === valTrimmed ||
         (opt.textContent || "").trim() === valTrimmed
       );
-      
+
       // 2. Try partial case-insensitive match on text/value
       if (!matchedOption) {
         const valL = valTrimmed.toLowerCase();
-        matchedOption = options.find(opt => 
-          (opt.value || "").toLowerCase().includes(valL) || 
+        matchedOption = options.find(opt =>
+          (opt.value || "").toLowerCase().includes(valL) ||
           (opt.textContent || "").toLowerCase().includes(valL) ||
           valL.includes((opt.value || "").toLowerCase().trim()) ||
           valL.includes((opt.textContent || "").toLowerCase().trim())
         );
       }
-      
+
       if (matchedOption) {
         el.value = matchedOption.value;
       } else {
@@ -380,6 +412,10 @@
 
   // Smart Fill action handler
   smartFillBtn.addEventListener("click", () => {
+    if (!isContextValid()) {
+      showToast("⚠️ 插件已在后台更新，请重新刷新网页使用", true);
+      return;
+    }
     const resumeId = resumeSelect.value;
     if (!resumeId) {
       showToast("请先选择用于生成的简历", true);
@@ -524,6 +560,37 @@
     return "";
   }
 
+  function querySelectorExclude(selector, excludeParents = [
+    ".sidebar",
+    ".detail-right",
+    ".right-sidebar",
+    ".recommend-box",
+    ".recommend-list",
+    ".recommend-jobs",
+    ".job-recommend",
+    ".rec-list",
+    ".rec-jobs",
+    ".right-box",
+    ".right-content",
+    ".recommend",
+    ".rec-job"
+  ]) {
+    const elements = document.querySelectorAll(selector);
+    for (const el of elements) {
+      let isExcluded = false;
+      for (const excludeSel of excludeParents) {
+        if (el.closest(excludeSel)) {
+          isExcluded = true;
+          break;
+        }
+      }
+      if (!isExcluded) {
+        return el;
+      }
+    }
+    return null;
+  }
+
   function extractJobData() {
     const url = window.location.href;
     let title = "";
@@ -545,11 +612,12 @@
         jd = detailContainer.innerText || detailContainer.textContent || "";
       }
     } else if (url.includes("nowcoder.com")) {
-      title = (document.querySelector(".job-name") || document.querySelector(".jobs-name") || document.querySelector(".detail-title") || document.querySelector("h1") || {textContent: ""}).textContent.trim();
-      company = (document.querySelector(".company-name") || document.querySelector(".company-title") || document.querySelector(".company-info") || {textContent: ""}).textContent.trim();
-      salary = (document.querySelector(".job-salary") || document.querySelector(".salary") || document.querySelector(".jobs-salary") || {textContent: ""}).textContent.trim();
-      location = (document.querySelector(".job-city") || document.querySelector(".city") || document.querySelector(".jobs-city") || {textContent: ""}).textContent.trim();
-      const detailContainer = document.querySelector(".job-detail-content") || document.querySelector(".detail-content") || document.querySelector(".job-desc") || document.querySelector(".post-item__description");
+      title = (querySelectorExclude(".job-name") || querySelectorExclude(".jobs-name") || querySelectorExclude(".detail-title") || querySelectorExclude("h1") || {textContent: ""}).textContent.trim();
+      company = (querySelectorExclude(".company-name") || querySelectorExclude(".company-title") || querySelectorExclude(".company-info") || {textContent: ""}).textContent.trim();
+      salary = (querySelectorExclude(".job-salary") || querySelectorExclude(".salary") || querySelectorExclude(".jobs-salary") || {textContent: ""}).textContent.trim();
+      location = (querySelectorExclude(".job-city") || querySelectorExclude(".city") || querySelectorExclude(".jobs-city") || {textContent: ""}).textContent.trim();
+
+      const detailContainer = querySelectorExclude(".job-detail-content") || querySelectorExclude(".detail-content") || querySelectorExclude(".job-desc") || querySelectorExclude(".post-item__description");
       if (detailContainer) {
         jd = detailContainer.innerText || detailContainer.textContent || "";
       }
@@ -650,6 +718,10 @@
 
   // 1. Autofill Button click handler
   autofillBtn.addEventListener("click", () => {
+    if (!isContextValid()) {
+      showToast("⚠️ 插件已在后台更新，请重新刷新网页使用", true);
+      return;
+    }
     autofillBtn.disabled = true;
     autofillBtn.style.opacity = "0.7";
     autofillBtn.innerHTML = `回填中...`;
@@ -675,6 +747,10 @@
 
   // 2. Direct Import Button click handler
   importBtn.addEventListener("click", () => {
+    if (!isContextValid()) {
+      showToast("⚠️ 插件已在后台更新，请重新刷新网页使用", true);
+      return;
+    }
     importBtn.disabled = true;
     importBtn.style.opacity = "0.7";
     importBtn.innerHTML = `导入中...`;
@@ -730,6 +806,13 @@
   let lastJobCompany = "";
 
   function checkAndAutoTrigger() {
+    if (!isContextValid()) {
+      if (typeof autoTriggerInterval !== "undefined") {
+        clearInterval(autoTriggerInterval);
+      }
+      return;
+    }
+    ensureUIElements();
     try {
       const jobData = extractJobData();
       if (jobData && jobData.title !== "未知职位" && jobData.jd_text !== "无详情") {
@@ -743,7 +826,7 @@
           updateJobActionsVisibility();
 
           console.log("[InternPath] 检测到职位发生改变或加载完成，自动发起静默回填:", jobData.title);
-          
+
           chrome.runtime.sendMessage({ action: "autofill", data: jobData, isAuto: true }, () => {
             if (chrome.runtime.lastError) {
               // Ignore background runtime disconnect warning on auto-trigger
@@ -756,5 +839,5 @@
     }
   }
 
-  setInterval(checkAndAutoTrigger, 1500);
+  const autoTriggerInterval = setInterval(checkAndAutoTrigger, 1500);
 })();

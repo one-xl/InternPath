@@ -32,7 +32,7 @@ def _service_with_tmp_storage(tmp_path: Path, monkeypatch) -> CareerPathAIServic
     return service
 
 
-def test_fastapi_auth_analyze_and_history_roundtrip(tmp_path, monkeypatch):
+def test_fastapi_auth_analyze_queue_and_history_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setattr(Config, "EMAIL_VERIFICATION_REQUIRED", False)
     service = _service_with_tmp_storage(tmp_path, monkeypatch)
     app = create_app(service=service, auth_db=Database(str(tmp_path / "auth.db")))
@@ -57,9 +57,31 @@ def test_fastapi_auth_analyze_and_history_roundtrip(tmp_path, monkeypatch):
     )
     assert analyze_response.status_code == 200
     body = analyze_response.json()
-    assert body["record"]["id"] == 1
-    assert body["personal_decision"]["recommendation"] in {"APPLY", "CONSIDER", "SKIP"}
-    assert body["expert_report"]["status"] == "failed"
+    assert "taskId" in body
+    assert body["status"] == "PENDING"
+    assert body["async"] is True
+
+    task_response = client.get(
+        f"/api/analysis/tasks/{body['taskId']}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert task_response.status_code == 200
+    assert task_response.json()["status"] == "PENDING"
+
+    save_history_response = client.post(
+        "/api/history",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "status": "watching",
+            "result": {
+                "draft": {"jdText": "Need Python FastAPI backend intern with API development experience."},
+                "matchScore": 80,
+                "decision": "yes",
+                "oneLineReason": "技能匹配。",
+            },
+        },
+    )
+    assert save_history_response.status_code == 200
 
     history_response = client.get("/api/history", headers={"Authorization": f"Bearer {token}"})
     assert history_response.status_code == 200
@@ -100,49 +122,12 @@ def test_register_requires_email_code_and_accepts_dev_code(tmp_path, monkeypatch
     assert register_response.json()["user"]["username"] == "verify@example.com"
 
 
-def test_star_api_payload_length_limits(tmp_path, monkeypatch):
-    monkeypatch.setattr(Config, "EMAIL_VERIFICATION_REQUIRED", False)
-    service = _service_with_tmp_storage(tmp_path, monkeypatch)
-    app = create_app(service=service, auth_db=Database(str(tmp_path / "auth.db")))
-    client = TestClient(app)
-
-    # 1. Register & Auth
-    register_response = client.post(
-        "/api/auth/register",
-        json={"username": "star_test@example.com", "password": "password123"},
-    )
-    assert register_response.status_code == 200
-    token = register_response.json()["token"]
-
-    # 2. Test Input text exceeding 4000 limit -> must be rejected with 422
-    too_long_text = "A" * 4001
-    bad_response = client.post(
-        "/api/star/generate-segment",
-        headers={"Authorization": f"Bearer {token}"},
-        json={
-            "segment_type": "S",
-            "input_text": too_long_text
-        }
-    )
-    assert bad_response.status_code == 422
-
-    # 3. Test Input text within 4000 limit -> must pass Pydantic validation (returns 500 because LLM_API_KEY is not configured in test env, but NOT 422)
-    normal_text = "A" * 4000
-    good_response = client.post(
-        "/api/star/generate-segment",
-        headers={"Authorization": f"Bearer {token}"},
-        json={
-            "segment_type": "S",
-            "input_text": normal_text
-        }
-    )
-    assert good_response.status_code != 422
 
 
 def test_fastapi_async_analyze_task_lifecycle(tmp_path, monkeypatch):
     monkeypatch.setattr(Config, "EMAIL_VERIFICATION_REQUIRED", False)
     service = _service_with_tmp_storage(tmp_path, monkeypatch)
-    
+
     class _SuccessAiServiceClient:
         def analyze_jd(self, **kwargs):
             return {
@@ -192,7 +177,7 @@ def test_fastapi_async_analyze_task_lifecycle(tmp_path, monkeypatch):
                 },
             }
     service.ai_service_client = _SuccessAiServiceClient()
-    
+
     app = create_app(service=service, auth_db=Database(str(tmp_path / "auth.db")))
     client = TestClient(app)
 
@@ -218,9 +203,9 @@ def test_fastapi_async_analyze_task_lifecycle(tmp_path, monkeypatch):
     assert "taskId" in body
     assert body["status"] == "PENDING"
     assert body["async"] is True
-    
+
     task_id = body["taskId"]
-    
+
     task_response = client.get(
         f"/api/analysis/tasks/{task_id}",
         headers={"Authorization": f"Bearer {token}"},
@@ -232,4 +217,3 @@ def test_fastapi_async_analyze_task_lifecycle(tmp_path, monkeypatch):
     if task_body["status"] == "SUCCESS":
         assert task_body["report"] is not None
         assert task_body["record"] is not None
-

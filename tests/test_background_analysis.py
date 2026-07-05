@@ -166,7 +166,7 @@ def test_env(local_tmp_dir, monkeypatch):
     test_db = Database(db_path)
 
     # Mock the module-level instances in background_analyzer
-    import background_analyzer
+    from backend import background_analyzer
     monkeypatch.setattr(background_analyzer, "db", test_db)
 
     mock_analyzer = MagicMock()
@@ -190,7 +190,7 @@ def test_background_analysis_success(test_env):
 
     # 1. Create a standard user with limit 5
     user_id = db.create_user(username="test_user", password="secure_password123")
-    
+
     # Update generation limit to 5 (create_user defaults to 5 anyway, but let's be explicit)
     conn = db.get_connection()
     cursor = conn.cursor()
@@ -291,7 +291,7 @@ def test_background_analysis_success(test_env):
     record = db.get_analysis_record(user_id, record_id)
     assert record is not None
     assert record.get("status") == "watching"
-    
+
     # Assert JSON result structures
     assert record.get("matchScore") == 88
     assert record.get("decision") == "strong_yes"
@@ -299,7 +299,7 @@ def test_background_analysis_success(test_env):
     assert len(record.get("resumeAdvice", [])) == 1
     assert record.get("resumeAdvice")[0]["target_requirement_id"] == "req_001"
     assert record.get("resumeAdvice")[0]["priority"] == "high"
-    
+
     # Assert step progression
     steps = record.get("steps", [])
     assert len(steps) == 6
@@ -319,7 +319,7 @@ def test_background_analysis_failure(test_env):
 
     # 1. Create a user
     user_id = db.create_user(username="test_user_fail", password="secure_password123")
-    
+
     # Set limit to 5
     conn = db.get_connection()
     cursor = conn.cursor()

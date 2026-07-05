@@ -1,9 +1,9 @@
 import json
 import os
-import sqlite3
-import sys
+import hashlib
 from datetime import datetime
 from typing import Any, List, Optional, Tuple
+from uuid import uuid4
 
 from auth import hash_password, normalize_username, verify_password_hash, parse_password_hash
 from config import Config
@@ -20,7 +20,6 @@ from models import (
     JobPosting,
     SalarySnapshot,
     User,
-    StarStory,
 )
 
 
@@ -52,45 +51,44 @@ def safe_json_load(value: Any, default: Any = None) -> Any:
 
 class DatabaseCursorWrapper:
     def __init__(self, cursor, is_postgres: bool):
+        if not is_postgres:
+            raise RuntimeError("DatabaseCursorWrapper supports PostgreSQL connections only.")
         self._cursor = cursor
-        self._is_postgres = is_postgres
         self._lastrowid = None
 
     def execute(self, query: str, params: tuple = ()):
-        if self._is_postgres:
-            query = query.replace("?", "%s")
-            # Also translate common SQLite-specific table creation keywords
-            if "CREATE TABLE" in query.upper():
-                query = query.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
-            is_insert = query.strip().upper().startswith("INSERT")
-            if is_insert and "RETURNING" not in query.upper():
-                # Avoid appending "RETURNING id" if the table does not have an "id" column
-                q_lower = query.lower()
-                has_no_id_col = (
-                    "into sessions" in q_lower or 
-                    "into user_settings" in q_lower or 
-                    "into model_config_assignments" in q_lower
-                )
-                if not has_no_id_col:
-                    q = query.strip()
-                    if q.endswith(";"):
-                        q = q[:-1]
-                    query = f"{q} RETURNING id"
-                    self._cursor.execute(query, params)
-                    res = self._cursor.fetchone()
-                    self._lastrowid = res[0] if res else None
-                    return self
-        
+        query = query.replace("?", "%s")
+        # Translate legacy table creation keywords used by older query helpers.
+        if "CREATE TABLE" in query.upper():
+            query = query.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+        is_insert = query.strip().upper().startswith("INSERT")
+        if is_insert and "RETURNING" not in query.upper():
+            # Avoid appending "RETURNING id" if the table does not have an "id" column
+            q_lower = query.lower()
+            has_no_id_col = (
+                "into sessions" in q_lower or
+                "into user_settings" in q_lower or
+                "into agent_resume_tasks" in q_lower or
+                "into agent_resume_conversation_state" in q_lower or
+                "into agent_cache_entries" in q_lower or
+                "into model_config_assignments" in q_lower
+            )
+            if not has_no_id_col:
+                q = query.strip()
+                if q.endswith(";"):
+                    q = q[:-1]
+                query = f"{q} RETURNING id"
+                self._cursor.execute(query, params)
+                res = self._cursor.fetchone()
+                self._lastrowid = res[0] if res else None
+                return self
+
         self._cursor.execute(query, params)
-        if not self._is_postgres:
-            self._lastrowid = self._cursor.lastrowid
         return self
 
     @property
     def lastrowid(self):
-        if self._is_postgres:
-            return self._lastrowid
-        return self._cursor.lastrowid
+        return self._lastrowid
 
     def fetchone(self):
         return self._cursor.fetchone()
@@ -110,11 +108,12 @@ class DatabaseCursorWrapper:
 
 class DatabaseConnectionWrapper:
     def __init__(self, conn, is_postgres: bool):
+        if not is_postgres:
+            raise RuntimeError("DatabaseConnectionWrapper supports PostgreSQL connections only.")
         self._conn = conn
-        self._is_postgres = is_postgres
 
     def cursor(self):
-        return DatabaseCursorWrapper(self._conn.cursor(), self._is_postgres)
+        return DatabaseCursorWrapper(self._conn.cursor(), True)
 
     def commit(self):
         return self._conn.commit()
@@ -140,121 +139,169 @@ class DatabaseConnectionWrapper:
 
 
 class Database:
-    def __init__(self, db_path: str = Config.DB_PATH):
-        self.db_path = db_path
-        db_url = os.getenv("DATABASE_URL")
-        
-        # Detect if we are running in a pytest session
-        is_testing = 'pytest' in sys.modules
-        
-        self.is_postgres = False
-        
-        # PostgreSQL detection and cleanup of SQLite if PostgreSQL is successfully connected
-        if db_url and (db_url.startswith("postgresql://") or db_url.startswith("postgres://")) and not is_testing:
-            try:
-                import psycopg2
-                conn = psycopg2.connect(db_url)
-                conn.close()
-                self.is_postgres = True
-                print("[DATABASE] PostgreSQL is available. Cleaning up SQLite DB files as PostgreSQL is the primary database.")
-                
-                # Cleanup SQLite file to prevent stale/unused SQLite storage
-                if os.path.exists(self.db_path):
-                    try:
-                        os.remove(self.db_path)
-                        print(f"[DATABASE] Local SQLite file at {self.db_path} has been deleted.")
-                    except Exception as e_del:
-                        # Fallback: drop all tables in SQLite if the file is locked
-                        try:
-                            import sqlite3
-                            sq_conn = sqlite3.connect(self.db_path)
-                            sq_cursor = sq_conn.cursor()
-                            sq_cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-                            tables = [row[0] for row in sq_cursor.fetchall() if not row[0].startswith("sqlite_")]
-                            for t in tables:
-                                sq_cursor.execute(f"DROP TABLE IF EXISTS {t}")
-                            sq_conn.commit()
-                            sq_conn.close()
-                            print(f"[DATABASE] SQLite file is locked. Cleaned up all tables instead: {e_del}")
-                        except Exception as e_drop:
-                            print(f"[DATABASE] Warning: Failed to drop SQLite tables during cleanup: {e_drop}")
-            except Exception as e:
-                print(f"[DATABASE] PostgreSQL configuration exists but is unavailable ({e}). Falling back to SQLite.")
-                self.is_postgres = False
-        else:
-            self.is_postgres = False
-            
+    _DEFAULT_DB_PATH = Config.DB_PATH
+
+    @property
+    def is_postgres(self) -> bool:
+        return True
+
+    @is_postgres.setter
+    def is_postgres(self, value: bool) -> None:
+        if value is not True:
+            raise RuntimeError("InternPath runtime supports PostgreSQL only.")
+
+    def __init__(self, db_path: Optional[str] = None):
+        self.db_path = db_path if db_path is not None else Config.DB_PATH
+        self.database_url = (Config.DATABASE_URL or os.getenv("DATABASE_URL") or "").strip()
+        self.schema_name = self._resolve_schema_name(self.db_path)
+        if not self.database_url:
+            raise RuntimeError("DATABASE_URL is required. InternPath now runs on PostgreSQL only.")
+        if not (self.database_url.startswith("postgresql://") or self.database_url.startswith("postgres://")):
+            raise RuntimeError("DATABASE_URL must be a PostgreSQL connection string.")
+        self.is_postgres = True
+        try:
+            import psycopg2
+            conn = psycopg2.connect(self.database_url)
+            self._prepare_connection(conn)
+            conn.close()
+        except Exception as exc:
+            raise RuntimeError(f"PostgreSQL is required but unavailable: {exc}") from exc
         self.init_db()
 
     def get_connection(self):
-        if self.is_postgres:
-            db_url = os.getenv("DATABASE_URL")
-            import psycopg2
-            conn = psycopg2.connect(db_url)
-            return DatabaseConnectionWrapper(conn, True)
-        else:
-            conn = sqlite3.connect(self.db_path, timeout=10.0)
-            try:
-                conn.execute("PRAGMA journal_mode=WAL;")
-            except Exception:
-                pass
-            return DatabaseConnectionWrapper(conn, False)
+        import psycopg2
+        conn = psycopg2.connect(self.database_url)
+        self._prepare_connection(conn)
+        return DatabaseConnectionWrapper(conn, True)
+
+    def _resolve_schema_name(self, db_path: str) -> str:
+        configured_schema = (Config.DATABASE_SCHEMA or os.getenv("DATABASE_SCHEMA") or "public").strip() or "public"
+        if self._is_custom_db_path(db_path):
+            path_key = os.path.abspath(str(db_path)).lower()
+            return f"internpath_test_{hashlib.sha1(path_key.encode('utf-8')).hexdigest()[:16]}"
+        return self._validate_schema_name(configured_schema)
+
+    def _is_custom_db_path(self, db_path: str) -> bool:
+        try:
+            return os.path.abspath(str(db_path)) != os.path.abspath(str(self._DEFAULT_DB_PATH))
+        except Exception:
+            return str(db_path) != str(self._DEFAULT_DB_PATH)
+
+    def _validate_schema_name(self, schema_name: str) -> str:
+        if not schema_name or not schema_name[0].isalpha() or not schema_name.replace("_", "").isalnum():
+            raise RuntimeError("DATABASE_SCHEMA must contain only letters, numbers, and underscores, and start with a letter.")
+        return schema_name
+
+    def _prepare_connection(self, conn) -> None:
+        schema_name = self._validate_schema_name(self.schema_name)
+        cursor = conn.cursor()
+        cursor.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema_name}"')
+        cursor.execute(f'SET search_path TO "{schema_name}", public')
+        conn.commit()
+        cursor.close()
 
     @classmethod
     def for_user(cls, user_id: int) -> "Database":
-        return cls(Config.DB_PATH)
+        db = cls()
+        db._ensure_user_id(user_id)
+        return db
+
+    def _ensure_user_id(self, user_id: int) -> None:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        username = f"system-user-{int(user_id)}@internpath.local"
+        cursor.execute(
+            """
+            INSERT INTO users (id, username, password_hash, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT (id) DO NOTHING
+            """,
+            (int(user_id), username, hash_password(f"system-user-{int(user_id)}"), datetime.now().isoformat()),
+        )
+        cursor.execute(
+            "SELECT setval(pg_get_serial_sequence('users', 'id'), COALESCE((SELECT MAX(id) FROM users), 1), true)"
+        )
+        conn.commit()
+        conn.close()
+
+    def _ensure_numeric_user_id(self, user_id: Any) -> None:
+        try:
+            numeric_user_id = int(user_id)
+        except (TypeError, ValueError):
+            return
+        self._ensure_user_id(numeric_user_id)
+
+    def _serialize_datetime_value(self, value: Any) -> Any:
+        if isinstance(value, datetime):
+            return value.isoformat()
+        return value
 
     def _column_exists(self, cursor, table_name: str, column_name: str) -> bool:
-        if self.is_postgres:
-            cursor.execute(
-                """
-                SELECT EXISTS (
-                    SELECT 1 
-                    FROM information_schema.columns 
-                    WHERE table_name = %s AND column_name = %s
-                )
-                """,
-                (table_name.lower(), column_name.lower()),
+        cursor.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = %s
+                  AND column_name = %s
             )
-            return bool(cursor.fetchone()[0])
-        else:
-            columns = {
-                row[1].lower()
-                for row in cursor.execute(f"PRAGMA table_info({table_name})").fetchall()
-            }
-            return column_name.lower() in columns
+            """,
+            (table_name.lower(), column_name.lower()),
+        )
+        return bool(cursor.fetchone()[0])
+
+    def _table_columns(self, cursor, table_name: str) -> set[str]:
+        cursor.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = %s
+            """,
+            (table_name.lower(),),
+        )
+        return {str(row[0]).lower() for row in cursor.fetchall()}
+
+    def _is_unique_constraint_error(self, exc: Exception) -> bool:
+        if getattr(exc, "pgcode", None) == "23505":
+            return True
+        message = str(exc).lower()
+        return "unique" in message or "duplicate" in message
 
     def init_db(self):
         conn = self.get_connection()
         cursor = conn.cursor()
 
         if self.is_postgres:
-            # 1. Enable extensions
+            # 1. Enable required PostgreSQL extensions.
             try:
-                cursor.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
+                cursor.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;")
                 conn.commit()
-            except Exception:
+            except Exception as exc:
                 try:
                     conn.rollback()
                 except Exception:
                     pass
-            
-            has_pgvector = False
+                raise RuntimeError(f"PostgreSQL extension pgcrypto is required: {exc}") from exc
+
             try:
-                cursor.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+                cursor.execute("CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public;")
                 conn.commit()
-                has_pgvector = True
-            except Exception:
+            except Exception as exc:
                 try:
                     conn.rollback()
                 except Exception:
                     pass
+                if Config.PGVECTOR_REQUIRED:
+                    raise RuntimeError(f"PostgreSQL extension vector is required: {exc}") from exc
+                raise
 
             # 2. Create users table
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS users (
-                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    id SERIAL PRIMARY KEY,
                     username VARCHAR(255) UNIQUE NOT NULL,
                     password_hash VARCHAR(255) NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -268,7 +315,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS registered_devices (
                     id SERIAL PRIMARY KEY,
                     device_signature VARCHAR(255) UNIQUE NOT NULL,
-                    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     username VARCHAR(255) NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
@@ -279,8 +326,8 @@ class Database:
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS analysis_records (
-                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    id VARCHAR(255) PRIMARY KEY DEFAULT gen_random_uuid()::text,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     status VARCHAR(50) NOT NULL,
                     input_json JSONB NOT NULL,
                     parsed_jd_json JSONB,
@@ -300,8 +347,8 @@ class Database:
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS drafts (
-                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    id VARCHAR(255) PRIMARY KEY DEFAULT gen_random_uuid()::text,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     status VARCHAR(50) NOT NULL,
                     input_json JSONB NOT NULL,
                     failed_step VARCHAR(255),
@@ -317,7 +364,7 @@ class Database:
                 """
                 CREATE TABLE IF NOT EXISTS resumes (
                     id VARCHAR(255) PRIMARY KEY,
-                    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    user_id VARCHAR(255) NOT NULL,
                     file_name VARCHAR(255) NOT NULL,
                     file_size INTEGER NOT NULL,
                     file_type VARCHAR(100),
@@ -333,7 +380,7 @@ class Database:
                 """
                 CREATE TABLE IF NOT EXISTS user_settings (
                     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     settings_json JSONB NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -346,7 +393,7 @@ class Database:
                 """
                 CREATE TABLE IF NOT EXISTS model_configs (
                     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+                    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
                     provider VARCHAR(50) NOT NULL,
                     model_id VARCHAR(255) NOT NULL,
                     display_name VARCHAR(255),
@@ -357,7 +404,7 @@ class Database:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     owner_type VARCHAR(50) NOT NULL DEFAULT 'user',
-                    created_by_admin_id UUID REFERENCES users(id) ON DELETE SET NULL
+                    created_by_admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL
                 );
                 """
             )
@@ -368,7 +415,7 @@ class Database:
             if not self._column_exists(cursor, "model_configs", "owner_type"):
                 cursor.execute("ALTER TABLE model_configs ADD COLUMN owner_type VARCHAR(50) DEFAULT 'user'")
             if not self._column_exists(cursor, "model_configs", "created_by_admin_id"):
-                cursor.execute("ALTER TABLE model_configs ADD COLUMN created_by_admin_id UUID REFERENCES users(id) ON DELETE SET NULL")
+                cursor.execute("ALTER TABLE model_configs ADD COLUMN created_by_admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL")
             if not self._column_exists(cursor, "users", "is_active"):
                 cursor.execute("ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT TRUE")
             if not self._column_exists(cursor, "users", "expires_at"):
@@ -384,8 +431,8 @@ class Database:
                 CREATE TABLE IF NOT EXISTS model_config_assignments (
                     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                     config_id UUID NOT NULL REFERENCES model_configs(id) ON DELETE CASCADE,
-                    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                    assigned_by_admin_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    assigned_by_admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
                     enabled BOOLEAN NOT NULL DEFAULT TRUE,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -399,10 +446,10 @@ class Database:
                 """
                 CREATE TABLE IF NOT EXISTS model_usage_logs (
                     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
                     config_id UUID REFERENCES model_configs(id) ON DELETE SET NULL,
                     assignment_id UUID REFERENCES model_config_assignments(id) ON DELETE SET NULL,
-                    analysis_id UUID,
+                    analysis_id VARCHAR(255),
                     provider VARCHAR(50) NOT NULL,
                     model_id VARCHAR(255) NOT NULL,
                     usage_type VARCHAR(50),
@@ -426,9 +473,9 @@ class Database:
                 """
                 CREATE TABLE IF NOT EXISTS admin_audit_logs (
                     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    admin_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                    admin_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
                     action VARCHAR(255) NOT NULL,
-                    target_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                    target_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
                     target_resource_type VARCHAR(255),
                     target_resource_id VARCHAR(255),
                     metadata_json JSONB,
@@ -438,17 +485,16 @@ class Database:
             )
 
             # 8. Create embeddings table
-            embedding_type = "vector" if has_pgvector else "JSONB"
             cursor.execute(
-                f"""
+                """
                 CREATE TABLE IF NOT EXISTS embeddings (
                     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                    analysis_id UUID REFERENCES analysis_records(id) ON DELETE CASCADE,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    analysis_id VARCHAR(255) REFERENCES analysis_records(id) ON DELETE CASCADE,
                     source_type VARCHAR(50) NOT NULL,
                     source_id VARCHAR(255),
                     content_hash VARCHAR(255),
-                    embedding {embedding_type},
+                    embedding vector,
                     metadata_json JSONB,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
@@ -460,7 +506,7 @@ class Database:
                 """
                 CREATE TABLE IF NOT EXISTS jd_records (
                     id SERIAL PRIMARY KEY,
-                    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+                    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
                     jd_text TEXT NOT NULL,
                     skills TEXT NOT NULL,
                     difficulty VARCHAR(50) NOT NULL,
@@ -496,7 +542,7 @@ class Database:
                 """
                 CREATE TABLE IF NOT EXISTS job_postings (
                     id SERIAL PRIMARY KEY,
-                    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+                    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
                     title VARCHAR(255) NOT NULL,
                     company VARCHAR(255) NOT NULL DEFAULT '',
                     region VARCHAR(255) NOT NULL DEFAULT '',
@@ -527,7 +573,7 @@ class Database:
                 """
                 CREATE TABLE IF NOT EXISTS fit_exam_attempts (
                     id SERIAL PRIMARY KEY,
-                    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+                    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
                     jd_record_id INTEGER REFERENCES jd_records(id) ON DELETE SET NULL,
                     major_profile VARCHAR(255) NOT NULL DEFAULT '',
                     paper_json TEXT NOT NULL,
@@ -542,7 +588,7 @@ class Database:
                 """
                 CREATE TABLE IF NOT EXISTS analysis_task (
                     id SERIAL PRIMARY KEY,
-                    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+                    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
                     task_id VARCHAR(255) UNIQUE NOT NULL,
                     jd_id INTEGER,
                     status VARCHAR(50),
@@ -561,7 +607,7 @@ class Database:
                 """
                 CREATE TABLE IF NOT EXISTS analysis_report (
                     id SERIAL PRIMARY KEY,
-                    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+                    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
                     task_id VARCHAR(255) NOT NULL,
                     jd_text TEXT,
                     resume_text TEXT,
@@ -584,7 +630,7 @@ class Database:
                 """
                 CREATE TABLE IF NOT EXISTS claim_check_result (
                     id SERIAL PRIMARY KEY,
-                    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+                    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
                     task_id VARCHAR(255) NOT NULL,
                     claim_id VARCHAR(255),
                     claim_text TEXT,
@@ -603,7 +649,7 @@ class Database:
                 """
                 CREATE TABLE IF NOT EXISTS knowledge_document (
                     id SERIAL PRIMARY KEY,
-                    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+                    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
                     title VARCHAR(255),
                     file_name VARCHAR(255),
                     file_type VARCHAR(50),
@@ -623,7 +669,7 @@ class Database:
                 """
                 CREATE TABLE IF NOT EXISTS knowledge_chunk (
                     id SERIAL PRIMARY KEY,
-                    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+                    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
                     document_id INTEGER REFERENCES knowledge_document(id) ON DELETE CASCADE,
                     chunk_index INTEGER,
                     chunk_text TEXT,
@@ -637,7 +683,8 @@ class Database:
                     semantic_type VARCHAR(255),
                     importance REAL,
                     keywords_json TEXT,
-                    embedding_text TEXT
+                    embedding_text TEXT,
+                    embedding vector
                 );
                 """
             )
@@ -646,7 +693,7 @@ class Database:
                 """
                 CREATE TABLE IF NOT EXISTS analysis_workflow_log (
                     id SERIAL PRIMARY KEY,
-                    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+                    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
                     task_id VARCHAR(255) NOT NULL,
                     node_name VARCHAR(255),
                     status VARCHAR(50),
@@ -663,7 +710,7 @@ class Database:
                 """
                 CREATE TABLE IF NOT EXISTS analysis_quality_evaluation (
                     id SERIAL PRIMARY KEY,
-                    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+                    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
                     task_id VARCHAR(255) NOT NULL,
                     final_quality_score REAL,
                     quality_grade VARCHAR(50),
@@ -712,7 +759,7 @@ class Database:
                 """
             )
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_email_codes_email_purpose ON email_verification_codes(email, purpose, created_at DESC);")
-            
+
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_jd_records_user_created ON jd_records(user_id, created_at);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_analysis_report_user_created ON analysis_report(user_id, created_at);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_analysis_task_user_updated ON analysis_task(user_id, updated_at);")
@@ -738,13 +785,15 @@ class Database:
                 cursor.execute("ALTER TABLE knowledge_chunk ADD COLUMN keywords_json TEXT")
             if not self._column_exists(cursor, "knowledge_chunk", "embedding_text"):
                 cursor.execute("ALTER TABLE knowledge_chunk ADD COLUMN embedding_text TEXT")
+            if not self._column_exists(cursor, "knowledge_chunk", "embedding"):
+                cursor.execute("ALTER TABLE knowledge_chunk ADD COLUMN embedding vector")
 
             # 11. Sessions table for persistent authentication
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS sessions (
                     token VARCHAR(64) PRIMARY KEY,
-                    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     expires_at TIMESTAMP NOT NULL
                 );
@@ -758,7 +807,7 @@ class Database:
                 """
                 CREATE TABLE IF NOT EXISTS star_stories (
                     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     title VARCHAR(255) NOT NULL,
                     situation TEXT,
                     task TEXT,
@@ -793,560 +842,6 @@ class Database:
             )
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_announcements_time ON announcements(start_time, end_time);")
 
-        else:
-            # SQLite setup (keep existing)
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT NOT NULL UNIQUE,
-                    password_hash TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS registered_devices (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    device_signature TEXT NOT NULL UNIQUE,
-                    user_id INTEGER NOT NULL,
-                    username TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (user_id) REFERENCES users(id)
-                )
-                """
-            )
-
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS jd_records (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    jd_text TEXT NOT NULL,
-                    skills TEXT NOT NULL,
-                    difficulty TEXT NOT NULL,
-                    job_summary TEXT NOT NULL,
-                    personal_decision_json TEXT,
-                    display_name TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (user_id) REFERENCES users(id)
-                )
-                """
-            )
-
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS course_records (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    skill TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    url TEXT NOT NULL,
-                    view_count INTEGER NOT NULL,
-                    favorite_count INTEGER NOT NULL,
-                    like_count INTEGER NOT NULL,
-                    coin_count INTEGER DEFAULT 0,
-                    publish_date TEXT NOT NULL,
-                    uploader TEXT NOT NULL,
-                    rank_score REAL NOT NULL,
-                    jd_record_id INTEGER NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (jd_record_id) REFERENCES jd_records(id)
-                )
-                """
-            )
-
-            if not self._column_exists(cursor, "jd_records", "display_name"):
-                cursor.execute("ALTER TABLE jd_records ADD COLUMN display_name TEXT")
-            if not self._column_exists(cursor, "jd_records", "user_id"):
-                cursor.execute("ALTER TABLE jd_records ADD COLUMN user_id INTEGER")
-            if not self._column_exists(cursor, "jd_records", "personal_decision_json"):
-                cursor.execute("ALTER TABLE jd_records ADD COLUMN personal_decision_json TEXT")
-
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS job_postings (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    title TEXT NOT NULL,
-                    company TEXT NOT NULL DEFAULT '',
-                    region TEXT NOT NULL DEFAULT '',
-                    latitude REAL,
-                    longitude REAL,
-                    transit_minutes INTEGER,
-                    salary_monthly_k REAL NOT NULL,
-                    jd_record_id INTEGER,
-                    source_url TEXT NOT NULL DEFAULT '',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (user_id) REFERENCES users(id)
-                )
-                """
-            )
-
-            if not self._column_exists(cursor, "job_postings", "user_id"):
-                cursor.execute("ALTER TABLE job_postings ADD COLUMN user_id INTEGER")
-
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS salary_snapshots (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    job_posting_id INTEGER NOT NULL,
-                    observed_at TIMESTAMP NOT NULL,
-                    salary_monthly_k REAL NOT NULL,
-                    note TEXT NOT NULL DEFAULT '',
-                    FOREIGN KEY (job_posting_id) REFERENCES job_postings(id)
-                )
-                """
-            )
-
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS fit_exam_attempts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    jd_record_id INTEGER,
-                    major_profile TEXT NOT NULL DEFAULT '',
-                    paper_json TEXT NOT NULL,
-                    answers_json TEXT NOT NULL,
-                    score REAL NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (jd_record_id) REFERENCES jd_records(id),
-                    FOREIGN KEY (user_id) REFERENCES users(id)
-                )
-                """
-            )
-
-            if not self._column_exists(cursor, "fit_exam_attempts", "user_id"):
-                cursor.execute("ALTER TABLE fit_exam_attempts ADD COLUMN user_id INTEGER")
-
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS analysis_task (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    task_id TEXT UNIQUE NOT NULL,
-                    jd_id INTEGER,
-                    status TEXT,
-                    enable_rag INTEGER,
-                    enable_verification INTEGER,
-                    enable_hallucination_check INTEGER,
-                    enable_rewrite INTEGER,
-                    error_message TEXT,
-                    created_at TEXT,
-                    updated_at TEXT
-                )
-                """
-            )
-
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS analysis_report (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    task_id TEXT NOT NULL,
-                    jd_text TEXT,
-                    resume_text TEXT,
-                    knowledge_texts TEXT,
-                    original_analysis_json TEXT,
-                    final_report_json TEXT,
-                    evidence_summary_json TEXT,
-                    hallucination_control_json TEXT,
-                    citations_json TEXT,
-                    credibility_score REAL,
-                    evidence_coverage REAL,
-                    hallucination_risk TEXT,
-                    created_at TEXT,
-                    updated_at TEXT
-                )
-                """
-            )
-
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS claim_check_result (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    task_id TEXT NOT NULL,
-                    claim_id TEXT,
-                    claim_text TEXT,
-                    claim_type TEXT,
-                    check_status TEXT,
-                    confidence_score REAL,
-                    evidence_count INTEGER,
-                    reason TEXT,
-                    evidence_json TEXT,
-                    created_at TEXT
-                )
-                """
-            )
-
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS knowledge_document (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    title TEXT,
-                    file_name TEXT,
-                    file_type TEXT,
-                    source_type TEXT,
-                    raw_text TEXT,
-                    summary TEXT,
-                    chunk_count INTEGER,
-                    status TEXT,
-                    error_message TEXT,
-                    created_at TEXT,
-                    updated_at TEXT
-                )
-                """
-            )
-
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS knowledge_chunk (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    document_id INTEGER,
-                    chunk_index INTEGER,
-                    chunk_text TEXT,
-                    token_count INTEGER,
-                    metadata_json TEXT,
-                    created_at TEXT,
-                    section_id TEXT,
-                    section_type TEXT,
-                    section_title TEXT,
-                    hierarchy_json TEXT,
-                    semantic_type TEXT,
-                    importance REAL,
-                    keywords_json TEXT,
-                    embedding_text TEXT,
-                    FOREIGN KEY (document_id) REFERENCES knowledge_document(id)
-                )
-                """
-            )
-
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS analysis_workflow_log (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    task_id TEXT NOT NULL,
-                    node_name TEXT,
-                    status TEXT,
-                    duration_ms INTEGER,
-                    input_summary TEXT,
-                    output_summary TEXT,
-                    error_message TEXT,
-                    created_at TEXT
-                )
-                """
-            )
-
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS analysis_quality_evaluation (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    task_id TEXT NOT NULL,
-                    final_quality_score REAL,
-                    quality_grade TEXT,
-                    quality_gate_status TEXT,
-                    evidence_coverage_score REAL,
-                    hallucination_risk_score REAL,
-                    citation_completeness_score REAL,
-                    resume_honesty_score REAL,
-                    match_score_reasonableness REAL,
-                    issues_json TEXT,
-                    summary TEXT,
-                    created_at TEXT
-                )
-                """
-            )
-
-            # Create indexes for performance and scoping
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_jd_records_user_created ON jd_records(user_id, created_at)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_analysis_report_user_created ON analysis_report(user_id, created_at)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_analysis_task_user_updated ON analysis_task(user_id, updated_at)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_document_user ON knowledge_document(user_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_chunk_user_doc ON knowledge_chunk(user_id, document_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_job_postings_user ON job_postings(user_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_fit_exam_attempts_user ON fit_exam_attempts(user_id)")
-
-            # SQLite columns migration for knowledge_chunk
-            if not self._column_exists(cursor, "knowledge_chunk", "section_id"):
-                cursor.execute("ALTER TABLE knowledge_chunk ADD COLUMN section_id TEXT")
-            if not self._column_exists(cursor, "knowledge_chunk", "section_type"):
-                cursor.execute("ALTER TABLE knowledge_chunk ADD COLUMN section_type TEXT")
-            if not self._column_exists(cursor, "knowledge_chunk", "section_title"):
-                cursor.execute("ALTER TABLE knowledge_chunk ADD COLUMN section_title TEXT")
-            if not self._column_exists(cursor, "knowledge_chunk", "hierarchy_json"):
-                cursor.execute("ALTER TABLE knowledge_chunk ADD COLUMN hierarchy_json TEXT")
-            if not self._column_exists(cursor, "knowledge_chunk", "semantic_type"):
-                cursor.execute("ALTER TABLE knowledge_chunk ADD COLUMN semantic_type TEXT")
-            if not self._column_exists(cursor, "knowledge_chunk", "importance"):
-                cursor.execute("ALTER TABLE knowledge_chunk ADD COLUMN importance REAL")
-            if not self._column_exists(cursor, "knowledge_chunk", "keywords_json"):
-                cursor.execute("ALTER TABLE knowledge_chunk ADD COLUMN keywords_json TEXT")
-            if not self._column_exists(cursor, "knowledge_chunk", "embedding_text"):
-                cursor.execute("ALTER TABLE knowledge_chunk ADD COLUMN embedding_text TEXT")
-
-            # Create standard table setup for SQLite new columns
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS drafts (
-                    id TEXT PRIMARY KEY,
-                    user_id INTEGER,
-                    status TEXT NOT NULL,
-                    input_json TEXT NOT NULL,
-                    failed_step TEXT,
-                    error_message TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-                )
-                """
-            )
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS user_settings (
-                    id TEXT PRIMARY KEY,
-                    user_id INTEGER NOT NULL UNIQUE,
-                    settings_json TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-                )
-                """
-            )
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS model_configs (
-                    id TEXT PRIMARY KEY,
-                    user_id INTEGER,
-                    provider TEXT NOT NULL,
-                    model_id TEXT NOT NULL,
-                    display_name TEXT,
-                    encrypted_api_key TEXT,
-                    is_server_managed INTEGER NOT NULL DEFAULT 0,
-                    enabled INTEGER NOT NULL DEFAULT 1,
-                    config_json TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    owner_type TEXT NOT NULL DEFAULT 'user',
-                    created_by_admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-                )
-                """
-            )
-            if not self._column_exists(cursor, "model_configs", "config_json"):
-                cursor.execute("ALTER TABLE model_configs ADD COLUMN config_json TEXT")
-            if not self._column_exists(cursor, "users", "role"):
-                cursor.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'")
-            if not self._column_exists(cursor, "model_configs", "owner_type"):
-                cursor.execute("ALTER TABLE model_configs ADD COLUMN owner_type TEXT DEFAULT 'user'")
-            if not self._column_exists(cursor, "model_configs", "created_by_admin_id"):
-                cursor.execute("ALTER TABLE model_configs ADD COLUMN created_by_admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL")
-            if not self._column_exists(cursor, "users", "is_active"):
-                cursor.execute("ALTER TABLE users ADD COLUMN is_active INTEGER DEFAULT 1")
-            if not self._column_exists(cursor, "users", "expires_at"):
-                cursor.execute("ALTER TABLE users ADD COLUMN expires_at TEXT")
-            if not self._column_exists(cursor, "users", "generation_limit"):
-                cursor.execute("ALTER TABLE users ADD COLUMN generation_limit INTEGER DEFAULT 5")
-            if not self._column_exists(cursor, "users", "remark"):
-                cursor.execute("ALTER TABLE users ADD COLUMN remark TEXT")
-
-            # Create model_config_assignments in SQLite
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS model_config_assignments (
-                    id TEXT PRIMARY KEY,
-                    config_id TEXT NOT NULL,
-                    user_id INTEGER NOT NULL,
-                    assigned_by_admin_id INTEGER,
-                    enabled INTEGER NOT NULL DEFAULT 1,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (config_id) REFERENCES model_configs(id) ON DELETE CASCADE,
-                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-                    FOREIGN KEY (assigned_by_admin_id) REFERENCES users(id) ON DELETE SET NULL,
-                    UNIQUE (config_id, user_id)
-                )
-                """
-            )
-
-            # Create model_usage_logs in SQLite
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS model_usage_logs (
-                    id TEXT PRIMARY KEY,
-                    user_id INTEGER,
-                    config_id TEXT,
-                    assignment_id TEXT,
-                    analysis_id TEXT,
-                    provider TEXT NOT NULL,
-                    model_id TEXT NOT NULL,
-                    usage_type TEXT,
-                    endpoint TEXT,
-                    success INTEGER NOT NULL,
-                    error_type TEXT,
-                    prompt_tokens INTEGER,
-                    completion_tokens INTEGER,
-                    total_tokens INTEGER,
-                    input_chars INTEGER,
-                    output_chars INTEGER,
-                    latency_ms INTEGER,
-                    cost_estimate REAL,
-                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
-                    FOREIGN KEY (config_id) REFERENCES model_configs(id) ON DELETE SET NULL,
-                    FOREIGN KEY (assignment_id) REFERENCES model_config_assignments(id) ON DELETE SET NULL
-                )
-                """
-            )
-
-            # Create admin_audit_logs in SQLite
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS admin_audit_logs (
-                    id TEXT PRIMARY KEY,
-                    admin_user_id INTEGER,
-                    action TEXT NOT NULL,
-                    target_user_id INTEGER,
-                    target_resource_type TEXT,
-                    target_resource_id TEXT,
-                    metadata_json TEXT,
-                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (admin_user_id) REFERENCES users(id) ON DELETE SET NULL,
-                    FOREIGN KEY (target_user_id) REFERENCES users(id) ON DELETE SET NULL
-                )
-                """
-            )
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS email_verification_codes (
-                    id TEXT PRIMARY KEY,
-                    email TEXT NOT NULL,
-                    code_hash TEXT NOT NULL,
-                    purpose TEXT NOT NULL DEFAULT 'register',
-                    attempts INTEGER NOT NULL DEFAULT 0,
-                    max_attempts INTEGER NOT NULL DEFAULT 5,
-                    expires_at TEXT NOT NULL,
-                    used_at TEXT,
-                    request_ip TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_email_codes_email_purpose ON email_verification_codes(email, purpose, created_at DESC)")
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS embeddings (
-                    id TEXT PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
-                    analysis_id TEXT,
-                    source_type TEXT NOT NULL,
-                    source_id TEXT,
-                    content_hash TEXT,
-                    embedding TEXT,
-                    metadata_json TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-                )
-                """
-            )
-
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS analysis_records (
-                    id TEXT PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
-                    status TEXT NOT NULL,
-                    input_json TEXT NOT NULL DEFAULT '{}',
-                    parsed_jd_json TEXT,
-                    parsed_resume_json TEXT,
-                    requirement_matches_json TEXT,
-                    hard_constraint_results_json TEXT,
-                    result_json TEXT,
-                    failed_step TEXT,
-                    error_message TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-                )
-                """
-            )
-
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS sessions (
-                    token TEXT PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    expires_at TIMESTAMP NOT NULL,
-                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-                )
-                """
-            )
-
-            # star_stories table
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS star_stories (
-                    id TEXT PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
-                    title TEXT NOT NULL,
-                    situation TEXT,
-                    task TEXT,
-                    action TEXT,
-                    result TEXT,
-                    full_text TEXT,
-                    style TEXT DEFAULT 'standard',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-                )
-                """
-            )
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_star_stories_user ON star_stories(user_id);")
-
-            # announcements table
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS announcements (
-                    id TEXT PRIMARY KEY,
-                    title TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    start_time TIMESTAMP NOT NULL,
-                    end_time TIMESTAMP NOT NULL,
-                    target_type TEXT NOT NULL DEFAULT 'all',
-                    target_users TEXT,
-                    announcement_type TEXT NOT NULL DEFAULT 'top',
-                    show_behavior TEXT NOT NULL DEFAULT 'once',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_announcements_time ON announcements(start_time, end_time);")
-
-            # resumes table
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS resumes (
-                    id TEXT PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
-                    file_name TEXT NOT NULL,
-                    file_size INTEGER NOT NULL,
-                    file_type TEXT,
-                    parsed_json TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-                )
-                """
-            )
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_resumes_user ON resumes(user_id);")
-
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_analysis_records_user ON analysis_records(user_id, created_at DESC);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);")
@@ -1360,300 +855,131 @@ class Database:
 
         # Check and alter announcements table to ensure compatibility with announcement_type column
         try:
-            if self.is_postgres:
-                cursor.execute(
-                    """
-                    SELECT column_name 
-                    FROM information_schema.columns 
-                    WHERE table_name='announcements' AND column_name='announcement_type'
-                    """
-                )
-                if not cursor.fetchone():
-                    cursor.execute("ALTER TABLE announcements ADD COLUMN announcement_type VARCHAR(50) DEFAULT 'top';")
-            else:
-                columns = [row[1] for row in cursor.execute("PRAGMA table_info(announcements)").fetchall()]
-                if 'announcement_type' not in columns:
-                    cursor.execute("ALTER TABLE announcements ADD COLUMN announcement_type TEXT DEFAULT 'top';")
+            if not self._column_exists(cursor, "announcements", "announcement_type"):
+                cursor.execute("ALTER TABLE announcements ADD COLUMN announcement_type VARCHAR(50) DEFAULT 'top';")
         except Exception as e:
             print(f"[DATABASE] Migration warning for announcements type column: {e}")
 
         # Check and alter announcements table to ensure compatibility with show_behavior column
         try:
-            if self.is_postgres:
-                cursor.execute(
-                    """
-                    SELECT column_name 
-                    FROM information_schema.columns 
-                    WHERE table_name='announcements' AND column_name='show_behavior'
-                    """
-                )
-                if not cursor.fetchone():
-                    cursor.execute("ALTER TABLE announcements ADD COLUMN show_behavior VARCHAR(50) DEFAULT 'once';")
-            else:
-                columns = [row[1] for row in cursor.execute("PRAGMA table_info(announcements)").fetchall()]
-                if 'show_behavior' not in columns:
-                    cursor.execute("ALTER TABLE announcements ADD COLUMN show_behavior TEXT DEFAULT 'once';")
+            if not self._column_exists(cursor, "announcements", "show_behavior"):
+                cursor.execute("ALTER TABLE announcements ADD COLUMN show_behavior VARCHAR(50) DEFAULT 'once';")
         except Exception as e:
             print(f"[DATABASE] Migration warning for announcements show_behavior column: {e}")
+
+        # 14. Create agent_resume_tasks table
+        try:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_resume_tasks (
+                    task_id VARCHAR(255) PRIMARY KEY,
+                    user_id VARCHAR(255) NOT NULL,
+                    trace_id VARCHAR(255),
+                    status VARCHAR(50) NOT NULL,
+                    resume_id VARCHAR(255),
+                    original_resume_name VARCHAR(255),
+                    jd_text TEXT,
+                    workspace_path VARCHAR(500),
+                    logs TEXT,
+                    optimized_resume_md TEXT,
+                    error_message TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_agent_resume_tasks_user ON agent_resume_tasks(user_id);")
+        except Exception as e:
+            print(f"[DATABASE] Error creating agent_resume_tasks table: {e}")
+
+        # 澧為噺杩佺Щ锛氫负 agent_resume_tasks 琛ㄨˉ鍏?pending_question, human_answer, execution_plan 瀛楁
+        # 缁熶竴浣跨敤鍚屼竴涓?cursor 杩涜澧為噺淇敼锛屼笉鍐嶅紑鍚柊杩炴帴锛岄槻姝?PostgreSQL 骞跺彂浜嬪姟姝婚攣瀵艰嚧杩炴帴琚己琛屾柇寮€
+        for col_name in ["pending_question", "human_answer", "execution_plan"]:
+            if not self._column_exists(cursor, "agent_resume_tasks", col_name):
+                cursor.execute(f"ALTER TABLE agent_resume_tasks ADD COLUMN {col_name} TEXT;")
+        if not self._column_exists(cursor, "agent_resume_tasks", "trace_id"):
+            cursor.execute("ALTER TABLE agent_resume_tasks ADD COLUMN trace_id VARCHAR(255);")
+        cursor.execute(
+            """
+            UPDATE agent_resume_tasks
+            SET trace_id = CONCAT('tr-', REPLACE(gen_random_uuid()::text, '-', ''))
+            WHERE trace_id IS NULL OR trace_id = ''
+            """
+        )
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agent_resume_turns (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                task_id VARCHAR(255) NOT NULL,
+                user_id VARCHAR(255) NOT NULL,
+                step_index INTEGER,
+                role VARCHAR(50) NOT NULL,
+                content TEXT NOT NULL,
+                answer_type VARCHAR(50) DEFAULT '',
+                remember BOOLEAN DEFAULT FALSE,
+                evidence_scope VARCHAR(50) DEFAULT '',
+                consumed_at TIMESTAMP NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (task_id) REFERENCES agent_resume_tasks(task_id) ON DELETE CASCADE
+            );
+            """
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_resume_turns_task_step ON agent_resume_turns(user_id, task_id, step_index, created_at);"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_resume_turns_unconsumed ON agent_resume_turns(user_id, task_id, step_index, role, consumed_at);"
+        )
+        if not self._column_exists(cursor, "agent_resume_turns", "summary"):
+            cursor.execute("ALTER TABLE agent_resume_turns ADD COLUMN summary TEXT DEFAULT '';")
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agent_resume_conversation_state (
+                task_id VARCHAR(255) PRIMARY KEY,
+                user_id VARCHAR(255) NOT NULL,
+                summary TEXT DEFAULT '',
+                global_preferences TEXT DEFAULT '[]',
+                fact_ledger TEXT DEFAULT '[]',
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (task_id) REFERENCES agent_resume_tasks(task_id) ON DELETE CASCADE
+            );
+            """
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_resume_conversation_state_user ON agent_resume_conversation_state(user_id, updated_at DESC);"
+        )
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agent_preferences (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id VARCHAR(255) NOT NULL,
+                section_name VARCHAR(255) NOT NULL,
+                preference_text TEXT NOT NULL,
+                source_task_id VARCHAR(255),
+                evidence_text TEXT,
+                tags TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (user_id, section_name, preference_text)
+            );
+            """
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_preferences_user_section ON agent_preferences(user_id, section_name, created_at DESC);"
+        )
+        for col_name, col_type in [
+            ("source_task_id", "VARCHAR(255)"),
+            ("evidence_text", "TEXT"),
+            ("tags", "TEXT"),
+        ]:
+            if not self._column_exists(cursor, "agent_preferences", col_name):
+                cursor.execute(f"ALTER TABLE agent_preferences ADD COLUMN {col_name} {col_type};")
 
         conn.commit()
         conn.close()
 
-
-    def backfill_user_databases(self):
-        """Scans for user_data/user_* databases and migrates them into the main database."""
-        import os
-        import sqlite3
-        import re
-        
-        user_db_dir = Config.USER_DB_DIR
-        if not os.path.isdir(user_db_dir):
-            return
-            
-        # Get all subdirectories matching user_(\d+)
-        for name in os.listdir(user_db_dir):
-            dir_path = os.path.join(user_db_dir, name)
-            if not os.path.isdir(dir_path):
-                continue
-            m = re.match(r"^user_(\d+)$", name)
-            if not m:
-                continue
-            
-            user_id = int(m.group(1))
-            old_db_path = os.path.join(dir_path, "career_path.db")
-            if not os.path.isfile(old_db_path):
-                continue
-                
-            # If already migrated (marked by career_path.db.migrated)
-            migrated_mark = old_db_path + ".migrated"
-            if os.path.isfile(migrated_mark):
-                continue
-                
-            print(f"[MIGRATION] Starting database migration for user_id={user_id} from {old_db_path}")
-            
-            try:
-                # Open connection to the source database
-                src_conn = sqlite3.connect(old_db_path)
-                src_cursor = src_conn.cursor()
-                
-                # Check if tables exist in the source database
-                def table_exists(tbl_name):
-                    res = src_cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (tbl_name,)).fetchone()
-                    return res is not None
-                
-                dest_conn = self.get_connection()
-                dest_cursor = dest_conn.cursor()
-                
-                dest_cursor.execute("BEGIN TRANSACTION")
-                
-                # 1. jd_records
-                jd_mapping = {}
-                if table_exists("jd_records"):
-                    rows = src_cursor.execute(
-                        "SELECT id, jd_text, skills, difficulty, job_summary, personal_decision_json, display_name, created_at FROM jd_records"
-                    ).fetchall()
-                    for r in rows:
-                        old_id, jd_text, skills, difficulty, job_summary, personal_decision_json, display_name, created_at = r
-                        dest_cursor.execute(
-                            """
-                            INSERT INTO jd_records (user_id, jd_text, skills, difficulty, job_summary, personal_decision_json, display_name, created_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            (user_id, jd_text, skills, difficulty, job_summary, personal_decision_json, display_name, created_at)
-                        )
-                        jd_mapping[old_id] = dest_cursor.lastrowid
-                
-                # 2. course_records
-                if table_exists("course_records") and jd_mapping:
-                    rows = src_cursor.execute(
-                        "SELECT skill, title, url, view_count, favorite_count, like_count, coin_count, publish_date, uploader, rank_score, jd_record_id, created_at FROM course_records"
-                    ).fetchall()
-                    for r in rows:
-                        skill, title, url, view_count, favorite_count, like_count, coin_count, publish_date, uploader, rank_score, old_jd_id, created_at = r
-                        new_jd_id = jd_mapping.get(old_jd_id)
-                        if new_jd_id:
-                            dest_cursor.execute(
-                                """
-                                INSERT INTO course_records (skill, title, url, view_count, favorite_count, like_count, coin_count, publish_date, uploader, rank_score, jd_record_id, created_at)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                """,
-                                (skill, title, url, view_count, favorite_count, like_count, coin_count, publish_date, uploader, rank_score, new_jd_id, created_at)
-                            )
-                
-                # 3. job_postings
-                job_mapping = {}
-                if table_exists("job_postings"):
-                    rows = src_cursor.execute(
-                        "SELECT id, title, company, region, latitude, longitude, transit_minutes, salary_monthly_k, jd_record_id, source_url, created_at FROM job_postings"
-                    ).fetchall()
-                    for r in rows:
-                        old_id, title, company, region, latitude, longitude, transit_minutes, salary_monthly_k, old_jd_id, source_url, created_at = r
-                        new_jd_id = jd_mapping.get(old_jd_id) if old_jd_id else None
-                        dest_cursor.execute(
-                            """
-                            INSERT INTO job_postings (user_id, title, company, region, latitude, longitude, transit_minutes, salary_monthly_k, jd_record_id, source_url, created_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            (user_id, title, company, region, latitude, longitude, transit_minutes, salary_monthly_k, new_jd_id, source_url, created_at)
-                        )
-                        job_mapping[old_id] = dest_cursor.lastrowid
-                        
-                # 4. salary_snapshots
-                if table_exists("salary_snapshots") and job_mapping:
-                    rows = src_cursor.execute(
-                        "SELECT job_posting_id, observed_at, salary_monthly_k, note FROM salary_snapshots"
-                    ).fetchall()
-                    for r in rows:
-                        old_job_id, observed_at, salary_monthly_k, note = r
-                        new_job_id = job_mapping.get(old_job_id)
-                        if new_job_id:
-                            dest_cursor.execute(
-                                """
-                                INSERT INTO salary_snapshots (job_posting_id, observed_at, salary_monthly_k, note)
-                                VALUES (?, ?, ?, ?)
-                                """,
-                                (new_job_id, observed_at, salary_monthly_k, note)
-                            )
-                            
-                # 5. fit_exam_attempts
-                if table_exists("fit_exam_attempts"):
-                    rows = src_cursor.execute(
-                        "SELECT jd_record_id, major_profile, paper_json, answers_json, score, created_at FROM fit_exam_attempts"
-                    ).fetchall()
-                    for r in rows:
-                        old_jd_id, major_profile, paper_json, answers_json, score, created_at = r
-                        new_jd_id = jd_mapping.get(old_jd_id) if old_jd_id else None
-                        dest_cursor.execute(
-                            """
-                            INSERT INTO fit_exam_attempts (user_id, jd_record_id, major_profile, paper_json, answers_json, score, created_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            (user_id, new_jd_id, major_profile, paper_json, answers_json, score, created_at)
-                        )
-                        
-                # 6. analysis_task
-                if table_exists("analysis_task"):
-                    rows = src_cursor.execute(
-                        "SELECT task_id, jd_id, status, enable_rag, enable_verification, enable_hallucination_check, enable_rewrite, error_message, created_at, updated_at FROM analysis_task"
-                    ).fetchall()
-                    for r in rows:
-                        task_id, old_jd_id, status, enable_rag, enable_verification, enable_hallucination_check, enable_rewrite, error_message, created_at, updated_at = r
-                        new_jd_id = jd_mapping.get(old_jd_id) if old_jd_id else None
-                        exists = dest_cursor.execute("SELECT 1 FROM analysis_task WHERE task_id = ?", (task_id,)).fetchone()
-                        if not exists:
-                            dest_cursor.execute(
-                                """
-                                INSERT INTO analysis_task (user_id, task_id, jd_id, status, enable_rag, enable_verification, enable_hallucination_check, enable_rewrite, error_message, created_at, updated_at)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                """,
-                                (user_id, task_id, new_jd_id, status, enable_rag, enable_verification, enable_hallucination_check, enable_rewrite, error_message, created_at, updated_at)
-                            )
-                            
-                # 7. analysis_report
-                if table_exists("analysis_report"):
-                    rows = src_cursor.execute(
-                        "SELECT task_id, jd_text, resume_text, knowledge_texts, original_analysis_json, final_report_json, evidence_summary_json, hallucination_control_json, citations_json, credibility_score, evidence_coverage, hallucination_risk, created_at, updated_at FROM analysis_report"
-                    ).fetchall()
-                    for r in rows:
-                        task_id, jd_text, resume_text, knowledge_texts, original_analysis_json, final_report_json, evidence_summary_json, hallucination_control_json, citations_json, credibility_score, evidence_coverage, hallucination_risk, created_at, updated_at = r
-                        dest_cursor.execute(
-                            """
-                            INSERT INTO analysis_report (user_id, task_id, jd_text, resume_text, knowledge_texts, original_analysis_json, final_report_json, evidence_summary_json, hallucination_control_json, citations_json, credibility_score, evidence_coverage, hallucination_risk, created_at, updated_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            (user_id, task_id, jd_text, resume_text, knowledge_texts, original_analysis_json, final_report_json, evidence_summary_json, hallucination_control_json, citations_json, credibility_score, evidence_coverage, hallucination_risk, created_at, updated_at)
-                        )
-                        
-                # 8. claim_check_result
-                if table_exists("claim_check_result"):
-                    rows = src_cursor.execute(
-                        "SELECT task_id, claim_id, claim_text, claim_type, check_status, confidence_score, evidence_count, reason, evidence_json, created_at FROM claim_check_result"
-                    ).fetchall()
-                    for r in rows:
-                        task_id, claim_id, claim_text, claim_type, check_status, confidence_score, evidence_count, reason, evidence_json, created_at = r
-                        dest_cursor.execute(
-                            """
-                            INSERT INTO claim_check_result (user_id, task_id, claim_id, claim_text, claim_type, check_status, confidence_score, evidence_count, reason, evidence_json, created_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            (user_id, task_id, claim_id, claim_text, claim_type, check_status, confidence_score, evidence_count, reason, evidence_json, created_at)
-                        )
-                        
-                # 9. knowledge_document
-                doc_mapping = {}
-                if table_exists("knowledge_document"):
-                    rows = src_cursor.execute(
-                        "SELECT id, title, file_name, file_type, source_type, raw_text, summary, chunk_count, status, error_message, created_at, updated_at FROM knowledge_document"
-                    ).fetchall()
-                    for r in rows:
-                        old_id, title, file_name, file_type, source_type, raw_text, summary, chunk_count, status, error_message, created_at, updated_at = r
-                        dest_cursor.execute(
-                            """
-                            INSERT INTO knowledge_document (user_id, title, file_name, file_type, source_type, raw_text, summary, chunk_count, status, error_message, created_at, updated_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            (user_id, title, file_name, file_type, source_type, raw_text, summary, chunk_count, status, error_message, created_at, updated_at)
-                        )
-                        doc_mapping[old_id] = dest_cursor.lastrowid
-                        
-                # 10. knowledge_chunk
-                if table_exists("knowledge_chunk") and doc_mapping:
-                    rows = src_cursor.execute(
-                        "SELECT document_id, chunk_index, chunk_text, token_count, metadata_json, created_at FROM knowledge_chunk"
-                    ).fetchall()
-                    for r in rows:
-                        old_doc_id, chunk_index, chunk_text, token_count, metadata_json, created_at = r
-                        new_doc_id = doc_mapping.get(old_doc_id)
-                        if new_doc_id:
-                            dest_cursor.execute(
-                                """
-                                INSERT INTO knowledge_chunk (user_id, document_id, chunk_index, chunk_text, token_count, metadata_json, created_at)
-                                VALUES (?, ?, ?, ?, ?, ?, ?)
-                                """,
-                                (user_id, new_doc_id, chunk_index, chunk_text, token_count, metadata_json, created_at)
-                            )
-                            
-                # 11. analysis_workflow_log
-                if table_exists("analysis_workflow_log"):
-                    rows = src_cursor.execute(
-                        "SELECT task_id, node_name, status, duration_ms, input_summary, output_summary, error_message, created_at FROM analysis_workflow_log"
-                    ).fetchall()
-                    for r in rows:
-                        task_id, node_name, status, duration_ms, input_summary, output_summary, error_message, created_at = r
-                        dest_cursor.execute(
-                            """
-                            INSERT INTO analysis_workflow_log (user_id, task_id, node_name, status, duration_ms, input_summary, output_summary, error_message, created_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            (user_id, task_id, node_name, status, duration_ms, input_summary, output_summary, error_message, created_at)
-                        )
-                        
-                # 12. analysis_quality_evaluation
-                if table_exists("analysis_quality_evaluation"):
-                    rows = src_cursor.execute(
-                        "SELECT task_id, final_quality_score, quality_grade, quality_gate_status, evidence_coverage_score, hallucination_risk_score, citation_completeness_score, resume_honesty_score, match_score_reasonableness, issues_json, summary, created_at FROM analysis_quality_evaluation"
-                    ).fetchall()
-                    for r in rows:
-                        task_id, final_quality_score, quality_grade, quality_gate_status, evidence_coverage_score, hallucination_risk_score, citation_completeness_score, resume_honesty_score, match_score_reasonableness, issues_json, summary, created_at = r
-                        dest_cursor.execute(
-                            """
-                            INSERT INTO analysis_quality_evaluation (user_id, task_id, final_quality_score, quality_grade, quality_gate_status, evidence_coverage_score, hallucination_risk_score, citation_completeness_score, resume_honesty_score, match_score_reasonableness, issues_json, summary, created_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            (user_id, task_id, final_quality_score, quality_grade, quality_gate_status, evidence_coverage_score, hallucination_risk_score, citation_completeness_score, resume_honesty_score, match_score_reasonableness, issues_json, summary, created_at)
-                        )
-                
-                dest_cursor.execute("COMMIT")
-                dest_conn.close()
-                src_conn.close()
-                
-                # Mark as successfully migrated by creating .migrated file
-                with open(migrated_mark, "w") as f:
-                    f.write(f"Migrated at {datetime.now().isoformat()}\n")
-                
-                print(f"[MIGRATION] Successfully migrated user_id={user_id}")
-            except Exception as exc:
-                print(f"[MIGRATION] ERROR migrating user_id={user_id}: {exc}")
 
     def create_user(self, username: str, password: str, device_signature: Optional[str] = None) -> int:
         normalized = normalize_username(username)
@@ -1691,8 +1017,10 @@ class Database:
                 )
             conn.commit()
             return user_id
-        except sqlite3.IntegrityError as exc:
-            raise ValueError("username_taken") from exc
+        except Exception as exc:
+            if self._is_unique_constraint_error(exc):
+                raise ValueError("username_taken") from exc
+            raise
         finally:
             conn.close()
 
@@ -1872,154 +1200,8 @@ class Database:
         conn.close()
         return count
 
-    def save_star_story(self, user_id: Any, story: StarStory) -> Any:
-        from uuid import uuid4
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            now_str = datetime.now().isoformat()
-            if self.is_postgres:
-                cursor.execute(
-                    """
-                    INSERT INTO star_stories (
-                        user_id, title, situation, task, action, result, full_text, style, created_at, updated_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        user_id,
-                        story.title,
-                        story.situation,
-                        story.task,
-                        story.action,
-                        story.result,
-                        story.full_text,
-                        story.style,
-                        now_str,
-                        now_str,
-                    ),
-                )
-                story_id = cursor.lastrowid
-            else:
-                story_id = uuid4().hex
-                cursor.execute(
-                    """
-                    INSERT INTO star_stories (
-                        id, user_id, title, situation, task, action, result, full_text, style, created_at, updated_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        story_id,
-                        user_id,
-                        story.title,
-                        story.situation,
-                        story.task,
-                        story.action,
-                        story.result,
-                        story.full_text,
-                        story.style,
-                        now_str,
-                        now_str,
-                    ),
-                )
-            return story_id
-
-    def list_star_stories(self, user_id: Any) -> List[dict]:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                SELECT id, user_id, title, situation, task, action, result, full_text, style, created_at, updated_at
-                FROM star_stories
-                WHERE user_id = ?
-                ORDER BY updated_at DESC
-                """,
-                (user_id,),
-            )
-            rows = cursor.fetchall()
-        
-        stories = []
-        for r in rows:
-            stories.append({
-                "id": str(r[0]),
-                "user_id": str(r[1]),
-                "title": r[2],
-                "situation": r[3] or "",
-                "task": r[4] or "",
-                "action": r[5] or "",
-                "result": r[6] or "",
-                "full_text": r[7] or "",
-                "style": r[8] or "standard",
-                "created_at": r[9],
-                "updated_at": r[10]
-            })
-        return stories
-
-    def get_star_story(self, user_id: Any, story_id: Any) -> Optional[dict]:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                SELECT id, user_id, title, situation, task, action, result, full_text, style, created_at, updated_at
-                FROM star_stories
-                WHERE user_id = ? AND id = ?
-                """,
-                (user_id, story_id),
-            )
-            r = cursor.fetchone()
-        if not r:
-            return None
-        return {
-            "id": str(r[0]),
-            "user_id": str(r[1]),
-            "title": r[2],
-            "situation": r[3] or "",
-            "task": r[4] or "",
-            "action": r[5] or "",
-            "result": r[6] or "",
-            "full_text": r[7] or "",
-            "style": r[8] or "standard",
-            "created_at": r[9],
-            "updated_at": r[10]
-        }
-
-    def update_star_story(self, user_id: Any, story_id: Any, story: StarStory) -> bool:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            now_str = datetime.now().isoformat()
-            cursor.execute(
-                """
-                UPDATE star_stories
-                SET title = ?, situation = ?, task = ?, action = ?, result = ?, full_text = ?, style = ?, updated_at = ?
-                WHERE user_id = ? AND id = ?
-                """,
-                (
-                    story.title,
-                    story.situation,
-                    story.task,
-                    story.action,
-                    story.result,
-                    story.full_text,
-                    story.style,
-                    now_str,
-                    user_id,
-                    story_id,
-                ),
-            )
-            rowcount = cursor.rowcount
-        return rowcount > 0
-
-    def delete_star_story(self, user_id: Any, story_id: Any) -> bool:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "DELETE FROM star_stories WHERE user_id = ? AND id = ?",
-                (user_id, story_id),
-            )
-            rowcount = cursor.rowcount
-        return rowcount > 0
-
     def save_jd_record(self, user_id: Any, jd_text: str, analysis: JobAnalysis) -> Any:
+        self._ensure_numeric_user_id(user_id)
         conn = self.get_connection()
         cursor = conn.cursor()
         if self.is_postgres:
@@ -2313,6 +1495,7 @@ class Database:
         enable_rewrite: bool = True,
         error_message: str = "",
     ) -> int:
+        self._ensure_numeric_user_id(user_id)
         conn = self.get_connection()
         cursor = conn.cursor()
         now = datetime.now().isoformat()
@@ -2361,6 +1544,436 @@ class Database:
         )
         conn.commit()
         conn.close()
+
+    def create_agent_resume_task(
+        self,
+        *,
+        task_id: str,
+        user_id: Any,
+        resume_id: Optional[str] = None,
+        original_resume_name: Optional[str] = None,
+        jd_text: Optional[str] = None,
+        workspace_path: Optional[str] = None,
+    ) -> None:
+        conn = self.get_connection()
+        cursor = DatabaseCursorWrapper(conn.cursor(), self.is_postgres)
+        now = datetime.now().isoformat()
+        user_key = str(user_id)
+        trace_id = f"tr-{uuid4().hex}"
+        cursor.execute(
+            """
+            INSERT INTO agent_resume_tasks (
+                task_id, user_id, trace_id, status, resume_id, original_resume_name,
+                jd_text, workspace_path, logs, optimized_resume_md, error_message,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                task_id,
+                user_key,
+                trace_id,
+                "PENDING",
+                resume_id,
+                original_resume_name,
+                jd_text,
+                workspace_path,
+                "[]",
+                "",
+                "",
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+    def update_agent_resume_task_status(
+        self,
+        task_id: str,
+        user_id: Any,
+        status: str,
+        error_message: Optional[str] = None,
+        logs: Optional[str] = None,
+        optimized_resume_md: Optional[str] = None,
+        pending_question: Optional[str] = None,
+        human_answer: Optional[str] = None,
+        execution_plan: Optional[str] = None,
+    ) -> None:
+        conn = self.get_connection()
+        cursor = DatabaseCursorWrapper(conn.cursor(), self.is_postgres)
+        now = datetime.now().isoformat()
+        user_key = str(user_id)
+
+        # Build dynamic updates
+        updates = ["status = ?", "updated_at = ?"]
+        params = [status, now]
+
+        if error_message is not None:
+            updates.append("error_message = ?")
+            params.append(error_message)
+        if logs is not None:
+            updates.append("logs = ?")
+            params.append(logs)
+        if optimized_resume_md is not None:
+            updates.append("optimized_resume_md = ?")
+            params.append(optimized_resume_md)
+        if pending_question is not None:
+            updates.append("pending_question = ?")
+            params.append(pending_question)
+        if human_answer is not None:
+            updates.append("human_answer = ?")
+            params.append(human_answer)
+        if execution_plan is not None:
+            updates.append("execution_plan = ?")
+            params.append(execution_plan)
+
+        params.extend([task_id, user_key])
+        sql = f"UPDATE agent_resume_tasks SET {', '.join(updates)} WHERE task_id = ? AND user_id = ?"
+
+        cursor.execute(sql, tuple(params))
+        conn.commit()
+        conn.close()
+
+    def get_agent_resume_task(self, user_id: Any, task_id: str) -> Optional[dict]:
+        conn = self.get_connection()
+        cursor = DatabaseCursorWrapper(conn.cursor(), self.is_postgres)
+        cursor.execute(
+            """
+            SELECT task_id, user_id, trace_id, status, resume_id, original_resume_name,
+                   jd_text, workspace_path, logs, optimized_resume_md, error_message,
+                   created_at, updated_at, pending_question, human_answer, execution_plan
+            FROM agent_resume_tasks
+            WHERE task_id = ? AND user_id = ?
+            """,
+            (task_id, str(user_id)),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        if not row:
+            return None
+        return {
+            "task_id": row[0],
+            "user_id": row[1],
+            "trace_id": row[2],
+            "status": row[3],
+            "resume_id": row[4],
+            "original_resume_name": row[5],
+            "jd_text": row[6],
+            "workspace_path": row[7],
+            "logs": row[8],
+            "optimized_resume_md": row[9],
+            "error_message": row[10],
+            "created_at": row[11],
+            "updated_at": row[12],
+            "pending_question": row[13],
+            "human_answer": row[14],
+            "execution_plan": row[15],
+        }
+
+    def list_user_agent_resume_tasks(self, user_id: Any) -> list[dict]:
+        conn = self.get_connection()
+        cursor = DatabaseCursorWrapper(conn.cursor(), self.is_postgres)
+        cursor.execute(
+            """
+            SELECT task_id, user_id, trace_id, status, resume_id, original_resume_name,
+                   jd_text, workspace_path, logs, optimized_resume_md, error_message,
+                   created_at, updated_at
+            FROM agent_resume_tasks
+            WHERE user_id = ?
+            ORDER BY created_at DESC
+            """,
+            (str(user_id),),
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        tasks = []
+        for row in rows:
+            tasks.append({
+                "task_id": row[0],
+                "user_id": row[1],
+                "trace_id": row[2],
+                "status": row[3],
+                "resume_id": row[4],
+                "original_resume_name": row[5],
+                "jd_text": row[6],
+                "workspace_path": row[7],
+                "logs": row[8],
+                "optimized_resume_md": row[9],
+                "error_message": row[10],
+                "created_at": row[11],
+                "updated_at": row[12],
+            })
+        return tasks
+
+    def delete_agent_resume_task(self, user_id: Any, task_id: str) -> bool:
+        conn = self.get_connection()
+        cursor = DatabaseCursorWrapper(conn.cursor(), self.is_postgres)
+        cursor.execute(
+            "DELETE FROM agent_resume_tasks WHERE task_id = ? AND user_id = ?",
+            (task_id, str(user_id)),
+        )
+        affected = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return affected > 0
+
+    def add_agent_resume_turn(
+        self,
+        *,
+        task_id: str,
+        user_id: Any,
+        role: str,
+        content: str,
+        step_index: Optional[int] = None,
+        answer_type: str = "",
+        remember: bool = False,
+        evidence_scope: str = "",
+        summary: str = "",
+    ) -> str:
+        text = str(content or "").strip()
+        if not text:
+            raise ValueError("turn content cannot be empty")
+        conn = self.get_connection()
+        cursor = DatabaseCursorWrapper(conn.cursor(), self.is_postgres)
+        cursor.execute(
+            """
+            INSERT INTO agent_resume_turns (
+                task_id, user_id, step_index, role, content,
+                answer_type, remember, evidence_scope, summary, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                task_id,
+                str(user_id),
+                step_index,
+                str(role),
+                text,
+                str(answer_type or ""),
+                bool(remember),
+                str(evidence_scope or ""),
+                str(summary or ""),
+                datetime.now().isoformat(),
+            ),
+        )
+        turn_id = str(cursor.lastrowid or "")
+        conn.commit()
+        conn.close()
+        return turn_id
+
+    def list_agent_resume_turns(self, user_id: Any, task_id: str) -> list[dict]:
+        conn = self.get_connection()
+        cursor = DatabaseCursorWrapper(conn.cursor(), self.is_postgres)
+        cursor.execute(
+            """
+            SELECT id, task_id, user_id, step_index, role, content,
+                   answer_type, remember, evidence_scope, consumed_at, created_at, summary
+            FROM agent_resume_turns
+            WHERE user_id = ? AND task_id = ?
+            ORDER BY created_at ASC
+            """,
+            (str(user_id), task_id),
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [
+            {
+                "id": str(row[0]),
+                "task_id": row[1],
+                "user_id": row[2],
+                "step_index": row[3],
+                "role": row[4],
+                "content": row[5],
+                "answer_type": row[6] or "",
+                "remember": bool(row[7]),
+                "evidence_scope": row[8] or "",
+                "consumed_at": row[9],
+                "created_at": row[10],
+                "summary": row[11] or "",
+            }
+            for row in rows
+        ]
+
+    def list_unconsumed_agent_answer_turns(self, user_id: Any, task_id: str, step_index: int) -> list[dict]:
+        conn = self.get_connection()
+        cursor = DatabaseCursorWrapper(conn.cursor(), self.is_postgres)
+        cursor.execute(
+            """
+            SELECT id, task_id, user_id, step_index, role, content,
+                   answer_type, remember, evidence_scope, consumed_at, created_at, summary
+            FROM agent_resume_turns
+            WHERE user_id = ?
+              AND task_id = ?
+              AND step_index = ?
+              AND role = 'user'
+              AND consumed_at IS NULL
+            ORDER BY created_at ASC
+            """,
+            (str(user_id), task_id, int(step_index)),
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [
+            {
+                "id": str(row[0]),
+                "task_id": row[1],
+                "user_id": row[2],
+                "step_index": row[3],
+                "role": row[4],
+                "content": row[5],
+                "answer_type": row[6] or "",
+                "remember": bool(row[7]),
+                "evidence_scope": row[8] or "",
+                "consumed_at": row[9],
+                "created_at": row[10],
+                "summary": row[11] or "",
+            }
+            for row in rows
+        ]
+
+    def mark_agent_resume_turns_consumed(self, turn_ids: list[str]) -> None:
+        clean_ids = [str(item) for item in turn_ids if str(item or "").strip()]
+        if not clean_ids:
+            return
+        conn = self.get_connection()
+        cursor = DatabaseCursorWrapper(conn.cursor(), self.is_postgres)
+        cursor.execute(
+            "UPDATE agent_resume_turns SET consumed_at = ? WHERE id = ANY(?::uuid[])",
+            (datetime.now().isoformat(), clean_ids),
+        )
+        conn.commit()
+        conn.close()
+
+    def get_agent_resume_conversation_state(self, user_id: Any, task_id: str) -> dict[str, Any]:
+        conn = self.get_connection()
+        cursor = DatabaseCursorWrapper(conn.cursor(), self.is_postgres)
+        cursor.execute(
+            """
+            SELECT task_id, user_id, summary, global_preferences, fact_ledger, updated_at
+            FROM agent_resume_conversation_state
+            WHERE user_id = ? AND task_id = ?
+            """,
+            (str(user_id), task_id),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        if not row:
+            return {
+                "task_id": task_id,
+                "user_id": str(user_id),
+                "summary": "",
+                "global_preferences": [],
+                "fact_ledger": [],
+                "updated_at": "",
+            }
+        return {
+            "task_id": row[0],
+            "user_id": row[1],
+            "summary": row[2] or "",
+            "global_preferences": safe_json_load(row[3], []),
+            "fact_ledger": safe_json_load(row[4], []),
+            "updated_at": row[5],
+        }
+
+    def upsert_agent_resume_conversation_state(
+        self,
+        *,
+        task_id: str,
+        user_id: Any,
+        summary: str = "",
+        global_preferences: Optional[list[str]] = None,
+        fact_ledger: Optional[list[str]] = None,
+    ) -> None:
+        now = datetime.now().isoformat()
+        conn = self.get_connection()
+        cursor = DatabaseCursorWrapper(conn.cursor(), self.is_postgres)
+        cursor.execute(
+            """
+            INSERT INTO agent_resume_conversation_state (
+                task_id, user_id, summary, global_preferences, fact_ledger, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (task_id) DO UPDATE SET
+                user_id = EXCLUDED.user_id,
+                summary = EXCLUDED.summary,
+                global_preferences = EXCLUDED.global_preferences,
+                fact_ledger = EXCLUDED.fact_ledger,
+                updated_at = EXCLUDED.updated_at
+            """,
+            (
+                task_id,
+                str(user_id),
+                str(summary or ""),
+                json.dumps(global_preferences or [], ensure_ascii=False),
+                json.dumps(fact_ledger or [], ensure_ascii=False),
+                now,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+    def save_agent_preference(
+        self,
+        user_id: Any,
+        section_name: str,
+        preference_text: str,
+        source_task_id: Optional[str] = None,
+        evidence_text: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+    ) -> None:
+        text = str(preference_text or "").strip()
+        if not text:
+            return
+
+        conn = self.get_connection()
+        cursor = DatabaseCursorWrapper(conn.cursor(), self.is_postgres)
+        cursor.execute(
+            """
+            INSERT INTO agent_preferences (
+                user_id, section_name, preference_text, source_task_id, evidence_text, tags
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (user_id, section_name, preference_text) DO NOTHING
+            """,
+            (
+                str(user_id),
+                str(section_name),
+                text,
+                source_task_id,
+                evidence_text,
+                json.dumps(tags or [], ensure_ascii=False),
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+    def get_agent_preferences(self, user_id: Any, section_name: str, limit: int = 30) -> list[str]:
+        section_aliases = [str(section_name)]
+        try:
+            from backend.resume_rag import SECTION_ALIASES
+            normalized = str(section_name).strip().lower()
+            for canonical, aliases in SECTION_ALIASES.items():
+                values = [canonical, *(aliases or [])]
+                if normalized in {str(value).strip().lower() for value in values}:
+                    section_aliases = list(dict.fromkeys([str(value) for value in values]))
+                    break
+        except Exception:
+            pass
+
+        conn = self.get_connection()
+        cursor = DatabaseCursorWrapper(conn.cursor(), self.is_postgres)
+        cursor.execute(
+            """
+            SELECT preference_text
+            FROM agent_preferences
+            WHERE user_id = ? AND section_name = ANY(?::text[])
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (str(user_id), section_aliases, int(limit)),
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [str(row[0]) for row in reversed(rows)]
 
     def save_analysis_report(
         self,
@@ -2555,6 +2168,7 @@ class Database:
         task_id: str,
         workflow_logs: List[dict],
     ) -> None:
+        self._ensure_numeric_user_id(user_id)
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute("DELETE FROM analysis_workflow_log WHERE task_id = ? AND user_id = ?", (task_id, user_id))
@@ -2619,6 +2233,7 @@ class Database:
         task_id: str,
         quality_evaluation: dict,
     ) -> None:
+        self._ensure_numeric_user_id(user_id)
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute("DELETE FROM analysis_quality_evaluation WHERE task_id = ? AND user_id = ?", (task_id, user_id))
@@ -2711,6 +2326,7 @@ class Database:
         status: str = "PENDING",
         error_message: str = "",
     ) -> int:
+        self._ensure_numeric_user_id(user_id)
         conn = self.get_connection()
         cursor = conn.cursor()
         now = datetime.now().isoformat()
@@ -2780,29 +2396,33 @@ class Database:
             text = str(chunk.get("text") or chunk.get("chunk_text") or "")
             chunk_index = int(chunk.get("chunkIndex", chunk.get("chunk_index", index)))
             token_count = int(chunk.get("tokenCount", chunk.get("token_count", len(text))))
-            
+
             section_id = chunk.get("sectionId") or metadata.get("sectionId")
             section_type = chunk.get("sectionType") or metadata.get("sectionType") or "generic_section"
             section_title = chunk.get("sectionTitle") or metadata.get("sectionTitle") or "Document Content"
-            
+
             hierarchy = chunk.get("hierarchy") or metadata.get("hierarchy") or [section_title]
             hierarchy_json = self._dump_json(hierarchy)
-            
+
             semantic_type = chunk.get("semanticType") or metadata.get("semanticType") or "general"
             importance = float(chunk.get("importance", metadata.get("importance", 0.60)))
-            
+
             keywords = chunk.get("keywords") or metadata.get("keywords") or []
             keywords_json = self._dump_json(keywords)
-            
+
             embedding_text = chunk.get("embeddingText") or chunk.get("embedding_text") or text
+            embedding = chunk.get("embedding") or metadata.get("embedding")
+            embedding_value = None
+            if isinstance(embedding, list) and embedding:
+                embedding_value = "[" + ",".join(str(float(x)) for x in embedding) + "]"
 
             cursor.execute(
                 """
                 INSERT INTO knowledge_chunk (
                     user_id, document_id, chunk_index, chunk_text, token_count, metadata_json, created_at,
                     section_id, section_type, section_title, hierarchy_json, semantic_type, importance,
-                    keywords_json, embedding_text
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    keywords_json, embedding_text, embedding
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     user_id,
@@ -2820,6 +2440,7 @@ class Database:
                     importance,
                     keywords_json,
                     embedding_text,
+                    embedding_value,
                 ),
             )
         conn.commit()
@@ -2893,19 +2514,18 @@ class Database:
         params.append(user_id)
         conn = self.get_connection()
         cursor = conn.cursor()
-        
-        # Check available columns to stay backwards-compatible with old DBs during transitional phase
-        available_cols = [
-            row[1].lower() for row in cursor.execute("PRAGMA table_info(knowledge_chunk)").fetchall()
-        ]
-        
+
+        available_cols = self._table_columns(cursor, "knowledge_chunk")
+
         extra_selects = ""
         if "section_id" in available_cols:
             extra_selects = (
                 ", c.section_id, c.section_type, c.section_title, c.hierarchy_json, "
                 "c.semantic_type, c.importance, c.keywords_json, c.embedding_text"
             )
-            
+            if "embedding" in available_cols:
+                extra_selects += ", c.embedding"
+
         cursor.execute(
             f"""
             SELECT c.id, c.user_id, c.document_id, c.chunk_index, c.chunk_text, c.token_count,
@@ -2919,7 +2539,7 @@ class Database:
         )
         rows = cursor.fetchall()
         conn.close()
-        
+
         results = []
         for row in rows:
             chunk_dict = {
@@ -2935,7 +2555,7 @@ class Database:
                 "file_name": row[9] or "",
                 "source_type": row[10] or "other",
             }
-            
+
             # Populate backward-compatible defaults or read from query
             if extra_selects:
                 chunk_dict["sectionId"] = row[11]
@@ -2946,6 +2566,8 @@ class Database:
                 chunk_dict["importance"] = float(row[16] or 0.60)
                 chunk_dict["keywords"] = self._load_json(row[17], [])
                 chunk_dict["embeddingText"] = row[18] or chunk_dict["chunk_text"]
+                if "embedding" in available_cols and len(row) > 19 and row[19] is not None:
+                    chunk_dict["embedding"] = self._parse_embedding_value(row[19])
             else:
                 chunk_dict["sectionId"] = f"sec-{chunk_dict['source_type']}-pre"
                 chunk_dict["sectionType"] = "generic_section"
@@ -2955,9 +2577,9 @@ class Database:
                 chunk_dict["importance"] = 0.60;
                 chunk_dict["keywords"] = []
                 chunk_dict["embeddingText"] = chunk_dict["chunk_text"]
-                
+
             results.append(chunk_dict)
-            
+
         return results
 
     def delete_knowledge_document(
@@ -3042,6 +2664,18 @@ class Database:
 
     def _load_json(self, value: Any, default: Any) -> Any:
         return safe_json_load(value, default)
+
+    def _parse_embedding_value(self, value: Any) -> List[float]:
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple)):
+            return [float(item) for item in value]
+        text = str(value).strip()
+        if not text:
+            return []
+        if text.startswith("[") and text.endswith("]"):
+            text = text[1:-1]
+        return [float(item) for item in text.split(",") if item.strip()]
 
     def _jsonable(self, value: Any) -> Any:
         if hasattr(value, "model_dump"):
@@ -3227,7 +2861,7 @@ class Database:
         return row_id
 
     def get_latest_fit_score_by_jd(self, user_id: int) -> dict[int, Tuple[float, datetime]]:
-        """jd_record_id -> (score, time) 取该 JD 下最近一次测验得分。"""
+        """Return latest fit-exam score by JD id."""
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute(
@@ -3351,10 +2985,10 @@ class Database:
         conn = self.get_connection()
         cursor = conn.cursor()
         now = datetime.now().isoformat()
-        
+
         from uuid import uuid4
         new_id = draft_id or str(uuid4())
-        
+
         if draft_id:
             if self.is_postgres:
                 cursor.execute("SELECT 1 FROM drafts WHERE id = %s AND user_id = %s", (draft_id, user_id))
@@ -3368,7 +3002,7 @@ class Database:
             if self.is_postgres:
                 cursor.execute(
                     """
-                    UPDATE drafts 
+                    UPDATE drafts
                     SET status = %s, input_json = %s, failed_step = %s, error_message = %s, updated_at = %s
                     WHERE id = %s AND user_id = %s
                     """,
@@ -3377,7 +3011,7 @@ class Database:
             else:
                 cursor.execute(
                     """
-                    UPDATE drafts 
+                    UPDATE drafts
                     SET status = ?, input_json = ?, failed_step = ?, error_message = ?, updated_at = ?
                     WHERE id = ? AND user_id = ?
                     """,
@@ -3478,13 +3112,13 @@ class Database:
         conn = self.get_connection()
         cursor = conn.cursor()
         now = datetime.now().isoformat()
-        
+
         if self.is_postgres:
             cursor.execute("SELECT 1 FROM user_settings WHERE user_id = %s", (user_id,))
         else:
             cursor.execute("SELECT 1 FROM user_settings WHERE user_id = ?", (user_id,))
         exists = cursor.fetchone() is not None
-        
+
         settings_str = json.dumps(settings_json, ensure_ascii=False)
         if exists:
             if self.is_postgres:
@@ -3609,7 +3243,7 @@ class Database:
             return True
         return api_key.strip() in {
             "",
-            "••••••••",
+            "********",
             "SERVER_SECRET_MANAGED",
             "your_api_key_here",
             "your_model_secret_encryption_key_here",
@@ -3619,11 +3253,11 @@ class Database:
         conn = self.get_connection()
         cursor = conn.cursor()
         now = datetime.now().isoformat()
-        
+
         encrypted_key = None
         if not self._is_api_key_placeholder(api_key):
             encrypted_key = self.encrypt_api_key(api_key)
-            
+
         cfg_dict = {}
         if config_json:
             if isinstance(config_json, str):
@@ -3633,7 +3267,7 @@ class Database:
                     cfg_dict = {}
             elif isinstance(config_json, dict):
                 cfg_dict = dict(config_json)
-        
+
         cfg_dict["modelId"] = model_id
         cfg_dict["model_id"] = model_id
         cfg_dict["provider"] = provider
@@ -3641,34 +3275,31 @@ class Database:
             cfg_dict["name"] = display_name
             cfg_dict["display_name"] = display_name
         cfg_json_str = json.dumps(cfg_dict, ensure_ascii=False)
-        
+
         row = None
         if config_id:
             cursor.execute("SELECT id FROM model_configs WHERE id = ?", (config_id,))
             row = cursor.fetchone()
-            
+
         if not row:
             if user_id:
                 cursor.execute("SELECT id FROM model_configs WHERE user_id = ? AND provider = ? AND model_id = ?", (user_id, provider, model_id))
             else:
                 cursor.execute("SELECT id FROM model_configs WHERE user_id IS NULL AND provider = ? AND model_id = ?", (provider, model_id))
             row = cursor.fetchone()
-            
+
         from uuid import uuid4
         new_id = config_id or str(uuid4())
-        
-        # For PostgreSQL, BOOLEAN columns must receive Python bool, not 0/1 integers.
-        # For SQLite, use 0/1 integers as SQLite has no native bool type.
-        pg_bool = self.is_postgres
-        sm_val = bool(is_server_managed) if pg_bool else (1 if is_server_managed else 0)
-        en_val = bool(enabled) if pg_bool else (1 if enabled else 0)
+
+        sm_val = bool(is_server_managed)
+        en_val = bool(enabled)
 
         if row:
             existing_id = row[0]
             if encrypted_key:
                 cursor.execute(
                     """
-                    UPDATE model_configs 
+                    UPDATE model_configs
                     SET provider = ?, model_id = ?, display_name = ?, encrypted_api_key = ?, is_server_managed = ?, enabled = ?, config_json = ?, updated_at = ?
                     WHERE id = ?
                     """,
@@ -3677,7 +3308,7 @@ class Database:
             else:
                 cursor.execute(
                     """
-                    UPDATE model_configs 
+                    UPDATE model_configs
                     SET provider = ?, model_id = ?, display_name = ?, is_server_managed = ?, enabled = ?, config_json = ?, updated_at = ?
                     WHERE id = ?
                     """,
@@ -3722,7 +3353,7 @@ class Database:
             )
         rows = cursor.fetchall()
         conn.close()
-        
+
         configs = []
         for r in rows:
             extra = safe_json_load(r[8], {})
@@ -3866,7 +3497,7 @@ class Database:
             if self.is_postgres:
                 cursor.execute(
                     """
-                    UPDATE analysis_records 
+                    UPDATE analysis_records
                     SET status = %s, input_json = %s, result_json = %s, updated_at = %s
                     WHERE id = %s AND user_id = %s
                     """,
@@ -3875,7 +3506,7 @@ class Database:
             else:
                 cursor.execute(
                     """
-                    UPDATE analysis_records 
+                    UPDATE analysis_records
                     SET status = ?, input_json = ?, result_json = ?, updated_at = ?
                     WHERE id = ? AND user_id = ?
                     """,
@@ -4050,7 +3681,7 @@ class Database:
                         ("admin@example.com", hashed, "admin", now)
                     )
                 conn.commit()
-                print("【安全提示】本地默认账号仅用于开发，请在生产环境中修改密码。")
+                print("[SECURITY] Default local admin account is for development only. Change the password in production.")
             else:
                 stored_hash = row[0]
                 if parse_password_hash(stored_hash) is None:
@@ -4061,12 +3692,12 @@ class Database:
                         (hashed, "admin@example.com")
                     )
                     conn.commit()
-                    print("【安全修复】检测到默认管理员哈希已损坏，已自动修复并重置为 ChangeMe123!")
+                    print("銆愬畨鍏ㄤ慨澶嶃€戞娴嬪埌榛樿绠＄悊鍛樺搱甯屽凡鎹熷潖锛屽凡鑷姩淇骞堕噸缃负 ChangeMe123!")
                 else:
                     cursor.execute("UPDATE users SET role = 'admin' WHERE username = ?", ("admin@example.com",))
                     conn.commit()
 
-            # ── Repair test@example.com with test1234 ──
+            # 鈹€鈹€ Repair test@example.com with test1234 鈹€鈹€
             cursor.execute("SELECT password_hash FROM users WHERE username = ?", ("test@example.com",))
             row_test = cursor.fetchone()
             if row_test is None:
@@ -4077,7 +3708,7 @@ class Database:
                     ("test@example.com", hashed_test, "user", now)
                 )
                 conn.commit()
-                print("【自动创建】测试账号 test@example.com 创建成功，默认密码为 test1234。")
+                print("[SEED] Created test@example.com with default password test1234.")
             else:
                 stored_hash_test = row_test[0]
                 if parse_password_hash(stored_hash_test) is None or not verify_password_hash("test1234", stored_hash_test):
@@ -4087,9 +3718,9 @@ class Database:
                         (hashed_test, "test@example.com")
                     )
                     conn.commit()
-                    print("【自动修复】检测到 test@example.com 密码不匹配或哈希损坏，已重置为 test1234。")
+                    print("[SEED] Reset test@example.com to default password test1234.")
 
-            # ── Repair testuser@example.com with test1234 ──
+            # 鈹€鈹€ Repair testuser@example.com with test1234 鈹€鈹€
             cursor.execute("SELECT password_hash FROM users WHERE username = ?", ("testuser@example.com",))
             row_testuser = cursor.fetchone()
             if row_testuser is None:
@@ -4110,7 +3741,7 @@ class Database:
                     )
                     conn.commit()
 
-            # ── Repair 'test' user with test1234 and ensure active ──
+            # 鈹€鈹€ Repair 'test' user with test1234 and ensure active 鈹€鈹€
             cursor.execute("SELECT password_hash FROM users WHERE username = ?", ("test",))
             row_t = cursor.fetchone()
             if row_t is not None:
@@ -4130,7 +3761,7 @@ class Database:
     def list_user_available_configs(self, user_id: Any) -> List[dict]:
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         # 1. Fetch user-owned configs (owner_type = 'user' or null)
         cursor.execute(
             """
@@ -4142,7 +3773,7 @@ class Database:
             (user_id,)
         )
         owned_rows = cursor.fetchall()
-        
+
         # 2. Fetch assigned admin-managed configs
         cursor.execute(
             """
@@ -4152,11 +3783,11 @@ class Database:
             WHERE a.user_id = ? AND a.enabled = ? AND c.enabled = ? AND c.owner_type IN ('admin', 'system')
             ORDER BY c.created_at ASC
             """,
-            (user_id, 1 if not self.is_postgres else True, 1 if not self.is_postgres else True)
+            (user_id, True, True)
         )
         assigned_rows = cursor.fetchall()
         conn.close()
-        
+
         configs = []
         # Process user-owned configs
         for r in owned_rows:
@@ -4187,7 +3818,7 @@ class Database:
             item["apiKey"] = "••••••••" if r[5] else ""
             item["enabled"] = bool(r[7])
             configs.append(item)
-            
+
         # Process admin-assigned configs
         for r in assigned_rows:
             extra = safe_json_load(r[8], {})
@@ -4216,13 +3847,13 @@ class Database:
             item["apiKey"] = "服务器托管"
             item["enabled"] = bool(r[7])
             configs.append(item)
-            
+
         return configs
 
     def get_model_api_key_v2(self, user_id: Any, provider: str, model_id: str, config_id: Optional[str] = None) -> Tuple[Optional[str], Optional[str], Optional[str]]:
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         # Validate UUIDs for PostgreSQL to prevent DataError crashes
         is_valid_config_uuid = False
         if config_id:
@@ -4234,12 +3865,6 @@ class Database:
                 pass
 
         is_valid_user_uuid = True
-        if self.is_postgres and user_id:
-            try:
-                from uuid import UUID
-                UUID(str(user_id))
-            except ValueError:
-                is_valid_user_uuid = False
 
         # 1. Try resolving by config_id if provided and valid
         if is_valid_config_uuid and is_valid_user_uuid:
@@ -4257,7 +3882,7 @@ class Database:
                 conn.close()
                 key = self.decrypt_api_key(row[0]).strip() if row[0] else ""
                 return key, row[1], None
-                
+
             # Check admin-assigned
             cursor.execute(
                 """
@@ -4266,14 +3891,14 @@ class Database:
                 JOIN model_config_assignments a ON c.id = a.config_id
                 WHERE c.id = ? AND a.user_id = ? AND a.enabled = ? AND c.enabled = ? AND c.owner_type IN ('admin', 'system')
                 """,
-                (config_id, user_id, 1 if not self.is_postgres else True, 1 if not self.is_postgres else True)
+                (config_id, user_id, True, True)
             )
             row = cursor.fetchone()
             if row:
                 conn.close()
                 key = self.decrypt_api_key(row[0]).strip() if row[0] else ""
                 return key, row[1], row[2]
-                
+
         # 2. Resolve by provider and model_id
         if is_valid_user_uuid:
             # First try user-owned configs
@@ -4285,14 +3910,14 @@ class Database:
                 ORDER BY updated_at DESC
                 LIMIT 1
                 """,
-                (user_id, provider, model_id, 1 if not self.is_postgres else True)
+                (user_id, provider, model_id, True)
             )
             row = cursor.fetchone()
             if row:
                 conn.close()
                 key = self.decrypt_api_key(row[0]).strip() if row[0] else ""
                 return key, row[1], None
-                
+
             # Then try admin-assigned configs
             cursor.execute(
                 """
@@ -4303,14 +3928,14 @@ class Database:
                 ORDER BY c.updated_at DESC
                 LIMIT 1
                 """,
-                (user_id, provider, model_id, 1 if not self.is_postgres else True, 1 if not self.is_postgres else True)
+                (user_id, provider, model_id, True, True)
             )
             row = cursor.fetchone()
             if row:
                 conn.close()
                 key = self.decrypt_api_key(row[0]).strip() if row[0] else ""
                 return key, row[1], row[2]
-            
+
         conn.close()
         return None, None, None
 
@@ -4339,11 +3964,11 @@ class Database:
         from uuid import uuid4
         log_id = str(uuid4())
         now = datetime.now().isoformat()
-        
+
         db_success = 1 if success else 0
         if self.is_postgres:
             db_success = success
-            
+
         cursor.execute(
             """
             INSERT INTO model_usage_logs (
@@ -4379,7 +4004,7 @@ class Database:
         audit_id = str(uuid4())
         now = datetime.now().isoformat()
         meta_str = json.dumps(metadata_json or {}, ensure_ascii=False)
-        
+
         cursor.execute(
             """
             INSERT INTO admin_audit_logs (
@@ -4412,12 +4037,12 @@ class Database:
             # Get usage count
             cursor.execute("SELECT COUNT(*) FROM model_usage_logs WHERE user_id = ?", (u_id,))
             usage_count = cursor.fetchone()[0]
-            
+
             # Find last login / last active time if available (from sessions table)
             cursor.execute("SELECT MAX(created_at) FROM sessions WHERE user_id = ?", (u_id,))
             last_login_row = cursor.fetchone()
-            last_login = last_login_row[0] if last_login_row and last_login_row[0] else None
-            
+            last_login = self._serialize_datetime_value(last_login_row[0]) if last_login_row and last_login_row[0] else None
+
             # Find assigned model configurations displays
             cursor.execute(
                 """
@@ -4426,12 +4051,12 @@ class Database:
                 JOIN model_config_assignments a ON c.id = a.config_id
                 WHERE a.user_id = ? AND a.enabled = ?
                 """,
-                (u_id, 1 if not self.is_postgres else True)
+                (u_id, True)
             )
-            assigned_models = [r[0] or "未命名" for r in cursor.fetchall()]
-            
+            assigned_models = [r[0] or "Unnamed model" for r in cursor.fetchall()]
+
             is_active_val = bool(row[4]) if row[4] is not None else True
-            expires_at_val = row[5] if row[5] else None
+            expires_at_val = self._serialize_datetime_value(row[5]) if row[5] else None
             generation_limit_val = int(row[6]) if row[6] is not None else 5
             remark_val = row[7] if row[7] else ""
 
@@ -4439,7 +4064,7 @@ class Database:
                 "id": u_id,
                 "username": row[1],
                 "role": row[2],
-                "created_at": row[3],
+                "created_at": self._serialize_datetime_value(row[3]),
                 "is_active": is_active_val,
                 "expires_at": expires_at_val,
                 "generation_limit": generation_limit_val,
@@ -4468,7 +4093,7 @@ class Database:
                     normalized,
                     password_hash,
                     datetime.now().isoformat(),
-                    1 if not self.is_postgres else True,
+                    True,
                     expires_at,
                 ),
             )
@@ -4483,7 +4108,7 @@ class Database:
     def admin_update_user_status(self, user_id: Any, is_active: bool) -> None:
         conn = self.get_connection()
         cursor = conn.cursor()
-        val = (1 if is_active else 0) if not self.is_postgres else is_active
+        val = is_active
         cursor.execute("UPDATE users SET is_active = ? WHERE id = ?", (val, user_id))
         conn.commit()
         conn.close()
@@ -4511,10 +4136,8 @@ class Database:
         try:
             cursor.execute("UPDATE users SET username = ? WHERE id = ?", (normalized, user_id))
             conn.commit()
-        except sqlite3.IntegrityError as exc:
-            raise ValueError("username_taken") from exc
         except Exception as exc:
-            if "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
+            if self._is_unique_constraint_error(exc):
                 raise ValueError("username_taken") from exc
             raise exc
         finally:
@@ -4550,7 +4173,7 @@ class Database:
             cfg_id = r[0]
             cursor.execute("SELECT COUNT(*) FROM model_config_assignments WHERE config_id = ?", (cfg_id,))
             assign_count = cursor.fetchone()[0]
-            
+
             extra = safe_json_load(r[8], {})
             item = {
                 "id": cfg_id,
@@ -4593,7 +4216,7 @@ class Database:
         from uuid import uuid4
         new_id = str(uuid4())
         now = datetime.now().isoformat()
-        
+
         encrypted_key = self.encrypt_api_key(api_key) if api_key else None
         cfg_dict = dict(config_json) if config_json else {}
         cfg_dict["modelId"] = model_id
@@ -4603,7 +4226,7 @@ class Database:
             cfg_dict["name"] = display_name
             cfg_dict["display_name"] = display_name
         cfg_json_str = json.dumps(cfg_dict, ensure_ascii=False)
-        
+
         if self.is_postgres:
             cursor.execute(
                 """
@@ -4648,26 +4271,26 @@ class Database:
     ) -> bool:
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         cursor.execute("SELECT owner_type FROM model_configs WHERE id = ?", (config_id,))
         row = cursor.fetchone()
         if not row or row[0] not in ('admin', 'system'):
             conn.close()
             return False
-            
+
         now = datetime.now().isoformat()
-        
+
         updates = ["provider = ?", "model_id = ?", "display_name = ?", "updated_at = ?"]
         params = [provider, model_id, display_name, now]
-        
+
         if api_key and not self._is_api_key_placeholder(api_key):
             updates.append("encrypted_api_key = ?")
             params.append(self.encrypt_api_key(api_key))
-            
+
         if enabled is not None:
             updates.append("enabled = ?")
-            params.append((1 if enabled else 0) if not self.is_postgres else enabled)
-            
+            params.append(enabled)
+
         if config_json is not None:
             config_json["modelId"] = model_id
             config_json["model_id"] = model_id
@@ -4677,9 +4300,9 @@ class Database:
                 config_json["display_name"] = display_name
             updates.append("config_json = ?")
             params.append(json.dumps(config_json, ensure_ascii=False))
-            
+
         params.append(config_id)
-        
+
         query = f"UPDATE model_configs SET {', '.join(updates)} WHERE id = ?"
         cursor.execute(query, tuple(params))
         conn.commit()
@@ -4694,16 +4317,16 @@ class Database:
     ) -> None:
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         cursor.execute("SELECT owner_type FROM model_configs WHERE id = ?", (config_id,))
         row = cursor.fetchone()
         if not row or row[0] not in ('admin', 'system'):
             conn.close()
             raise ValueError("not_admin_managed_config")
-            
+
         now = datetime.now().isoformat()
         from uuid import uuid4
-        
+
         for user_id in target_user_ids:
             cursor.execute("SELECT id FROM model_config_assignments WHERE config_id = ? AND user_id = ?", (config_id, user_id))
             exist_row = cursor.fetchone()
@@ -4786,10 +4409,10 @@ class Database:
     ) -> dict:
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         filters = []
         params = []
-        
+
         if start_date:
             filters.append("created_at >= ?")
             params.append(start_date)
@@ -4805,17 +4428,17 @@ class Database:
         if user_id:
             filters.append("user_id = ?")
             params.append(user_id)
-            
+
         where_clause = ""
         if filters:
             where_clause = "WHERE " + " AND ".join(filters)
-            
-        success_check = "success = TRUE" if self.is_postgres else "success = 1"
-        fail_check = "success = FALSE" if self.is_postgres else "success = 0"
-        
+
+        success_check = "success = TRUE"
+        fail_check = "success = FALSE"
+
         cursor.execute(
             f"""
-            SELECT 
+            SELECT
                 COUNT(*) as total_calls,
                 SUM(CASE WHEN {success_check} THEN 1 ELSE 0 END) as success_calls,
                 SUM(CASE WHEN {fail_check} THEN 1 ELSE 0 END) as failed_calls,
@@ -4829,7 +4452,7 @@ class Database:
             tuple(params)
         )
         row = cursor.fetchone()
-        
+
         summary = {
             "totalCalls": row[0] or 0,
             "successCalls": row[1] or 0,
@@ -4839,7 +4462,7 @@ class Database:
             "totalCompletionTokens": row[5] or 0,
             "totalTokens": row[6] or 0
         }
-        
+
         # Group by User
         cursor.execute(
             f"""
@@ -4852,8 +4475,8 @@ class Database:
             """,
             tuple(params)
         )
-        summary["byUser"] = [{"username": r[0] or "未知用户", "count": r[1]} for r in cursor.fetchall()]
-        
+        summary["byUser"] = [{"username": r[0] or "鏈煡鐢ㄦ埛", "count": r[1]} for r in cursor.fetchall()]
+
         # Group by Model
         cursor.execute(
             f"""
@@ -4866,7 +4489,7 @@ class Database:
             tuple(params)
         )
         summary["byModel"] = [{"modelId": r[0], "count": r[1]} for r in cursor.fetchall()]
-        
+
         # Group by Provider
         cursor.execute(
             f"""
@@ -4879,9 +4502,9 @@ class Database:
             tuple(params)
         )
         summary["byProvider"] = [{"provider": r[0], "count": r[1]} for r in cursor.fetchall()]
-        
+
         # Group by Day
-        date_expr = "DATE(created_at)" if not self.is_postgres else "TO_CHAR(created_at, 'YYYY-MM-DD')"
+        date_expr = "TO_CHAR(created_at, 'YYYY-MM-DD')"
         cursor.execute(
             f"""
             SELECT {date_expr} as day, COUNT(*) as count
@@ -4893,7 +4516,7 @@ class Database:
             tuple(params)
         )
         summary["byDay"] = [{"day": r[0], "count": r[1]} for r in cursor.fetchall()]
-        
+
         conn.close()
         return summary
 
@@ -4910,10 +4533,10 @@ class Database:
     ) -> dict:
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         filters = []
         params = []
-        
+
         if start_date:
             filters.append("l.created_at >= ?")
             params.append(start_date)
@@ -4936,25 +4559,25 @@ class Database:
             else:
                 filters.append("l.success = ?")
                 params.append(1 if success else 0)
-                
+
         where_clause = ""
         if filters:
             where_clause = "WHERE " + " AND ".join(filters)
-            
+
         cursor.execute(f"SELECT COUNT(*) FROM model_usage_logs l {where_clause}", tuple(params))
         total_count = cursor.fetchone()[0]
-        
+
         offset = (page - 1) * page_size
-        
-        # In SQLite/Postgres we append limit and offset. In psycopg2 or sqlite3 standard SQL we can do LIMIT ? OFFSET ?
+
+        # DatabaseCursorWrapper translates placeholders before psycopg2 execution.
         limit_offset_clause = "LIMIT ? OFFSET ?"
         # We need to copy params list so we don't pollute the counting query
         log_params = list(params)
         log_params.extend([page_size, offset])
-        
+
         cursor.execute(
             f"""
-            SELECT 
+            SELECT
                 l.id, l.user_id, u.username, l.config_id, c.display_name as config_name,
                 l.provider, l.model_id, l.usage_type, l.endpoint, l.success, l.error_type,
                 l.prompt_tokens, l.completion_tokens, l.total_tokens, l.input_chars, l.output_chars,
@@ -4968,15 +4591,15 @@ class Database:
             """,
             tuple(log_params)
         )
-        
+
         logs = []
         for r in cursor.fetchall():
             logs.append({
                 "id": r[0],
                 "userId": r[1],
-                "username": r[2] or "未知用户",
+                "username": r[2] or "鏈煡鐢ㄦ埛",
                 "configId": r[3],
-                "configName": r[4] or "默认/未知",
+                "configName": r[4] or "榛樿/鏈煡",
                 "provider": r[5],
                 "modelId": r[6],
                 "usageType": r[7],
@@ -4991,7 +4614,7 @@ class Database:
                 "latencyMs": r[16],
                 "createdAt": r[17]
             })
-            
+
         conn.close()
         return {
             "logs": logs,
@@ -5008,8 +4631,8 @@ class Database:
             if self.is_postgres:
                 cursor.execute(
                     """
-                    SELECT embedding 
-                    FROM embeddings 
+                    SELECT embedding
+                    FROM embeddings
                     WHERE user_id = %s AND content_hash = %s
                     LIMIT 1
                     """,
@@ -5018,8 +4641,8 @@ class Database:
             else:
                 cursor.execute(
                     """
-                    SELECT embedding 
-                    FROM embeddings 
+                    SELECT embedding
+                    FROM embeddings
                     WHERE user_id = ? AND content_hash = ?
                     LIMIT 1
                     """,
@@ -5065,8 +4688,8 @@ class Database:
             if self.is_postgres:
                 cursor.execute(
                     """
-                    SELECT embedding, metadata_json 
-                    FROM embeddings 
+                    SELECT embedding, metadata_json
+                    FROM embeddings
                     WHERE user_id = %s AND content_hash = %s
                     """,
                     (user_id, content_hash)
@@ -5074,8 +4697,8 @@ class Database:
             else:
                 cursor.execute(
                     """
-                    SELECT embedding, metadata_json 
-                    FROM embeddings 
+                    SELECT embedding, metadata_json
+                    FROM embeddings
                     WHERE user_id = ? AND content_hash = ?
                     """,
                     (user_id, content_hash)
@@ -5116,14 +4739,14 @@ class Database:
             conn.close()
 
     def save_embedding(
-        self, 
-        user_id: Any, 
-        content_hash: str, 
-        embedding: List[float], 
-        provider: str, 
-        model_id: str, 
-        source_type: str = "chunk", 
-        source_id: Optional[str] = None, 
+        self,
+        user_id: Any,
+        content_hash: str,
+        embedding: List[float],
+        provider: str,
+        model_id: str,
+        source_type: str = "chunk",
+        source_id: Optional[str] = None,
         analysis_id: Optional[str] = None
     ) -> None:
         conn = self.get_connection()
@@ -5137,7 +4760,7 @@ class Database:
                 "dimensions": len(embedding)
             }
             meta_str = json.dumps(meta)
-            
+
             if self.is_postgres:
                 has_pgvector = False
                 try:
@@ -5145,12 +4768,12 @@ class Database:
                     has_pgvector = cursor.fetchone() is not None
                 except:
                     pass
-                
+
                 if has_pgvector:
                     emb_val = "[" + ",".join(str(x) for x in embedding) + "]"
                 else:
                     emb_val = json.dumps(embedding)
-                    
+
                 cursor.execute(
                     """
                     INSERT INTO embeddings (id, user_id, analysis_id, source_type, source_id, content_hash, embedding, metadata_json)
@@ -5270,25 +4893,25 @@ class Database:
             rows = cursor.fetchall()
             active_announcements = []
             now = datetime.now()
-            
+
             for r in rows:
                 start_dt = safe_datetime(r[3])
                 end_dt = safe_datetime(r[4])
-                
+
                 # Check time
                 if start_dt and end_dt:
                     if not (start_dt <= now <= end_dt):
                         continue
-                
+
                 target_type = r[5]
                 target_users_str = r[6] or ""
-                
+
                 # Check user targeting
                 if target_type == 'specific':
                      user_list = [u.strip().lower() for u in target_users_str.split(",") if u.strip()]
                      if username.lower() not in user_list:
                          continue
-                         
+
                 active_announcements.append({
                      "id": str(r[0]),
                      "title": r[1],
@@ -5311,19 +4934,20 @@ class Database:
         conn = self.get_connection()
         cursor = conn.cursor()
         try:
+            user_key = str(user_id)
             parsed_json_str = json.dumps(parsed_resume)
             if self.is_postgres:
-                cursor.execute("SELECT 1 FROM resumes WHERE id = %s AND user_id = %s", (resume_id, user_id))
+                cursor.execute("SELECT 1 FROM resumes WHERE id = %s AND user_id = %s", (resume_id, user_key))
                 row = cursor.fetchone()
                 if row is not None:
                     cursor.execute(
                         "UPDATE resumes SET file_name = %s, file_size = %s, file_type = %s, parsed_json = %s::jsonb, updated_at = CURRENT_TIMESTAMP WHERE id = %s AND user_id = %s",
-                        (file_name, file_size, file_type, parsed_json_str, resume_id, user_id)
+                        (file_name, file_size, file_type, parsed_json_str, resume_id, user_key)
                     )
                 else:
                     cursor.execute(
                         "INSERT INTO resumes (id, user_id, file_name, file_size, file_type, parsed_json) VALUES (%s, %s, %s, %s, %s, %s::jsonb)",
-                        (resume_id, user_id, file_name, file_size, file_type, parsed_json_str)
+                        (resume_id, user_key, file_name, file_size, file_type, parsed_json_str)
                     )
             else:
                 cursor.execute("SELECT 1 FROM resumes WHERE id = ? AND user_id = ?", (resume_id, user_id))
@@ -5352,7 +4976,7 @@ class Database:
             if self.is_postgres:
                 cursor.execute(
                     "SELECT id, file_name, file_size, file_type, created_at, updated_at FROM resumes WHERE user_id = %s ORDER BY created_at DESC",
-                    (user_id,)
+                    (str(user_id),)
                 )
             else:
                 cursor.execute(
@@ -5384,7 +5008,7 @@ class Database:
             if self.is_postgres:
                 cursor.execute(
                     "SELECT parsed_json FROM resumes WHERE id = %s AND user_id = %s",
-                    (resume_id, user_id)
+                    (resume_id, str(user_id))
                 )
             else:
                 cursor.execute(
@@ -5408,7 +5032,7 @@ class Database:
             if self.is_postgres:
                 cursor.execute(
                     "DELETE FROM resumes WHERE id = %s AND user_id = %s",
-                    (resume_id, user_id)
+                    (resume_id, str(user_id))
                 )
             else:
                 cursor.execute(

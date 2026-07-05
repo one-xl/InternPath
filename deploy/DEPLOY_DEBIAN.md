@@ -1,12 +1,14 @@
 # Debian Deployment
 
-InternPath now runs as a FastAPI service that also serves the built React/Vite frontend from `frontend/dist`.
+InternPath runs as a FastAPI backend, a separate AI service, and an RQ worker backed by PostgreSQL/pgvector and Redis.
 
 ## 1. Prepare the target host
 
 - Linux distribution: Debian or compatible
 - Python 3.9+
 - Node.js and npm
+- PostgreSQL + pgvector
+- Redis
 - Open inbound TCP for the app port you choose, for example `8502`
 
 ## 2. Upload the project
@@ -44,13 +46,16 @@ chmod +x deploy/server_install.sh
 APP_DIR=/opt/internpath APP_PORT=8502 SERVICE_NAME=internpath REQUIREMENTS_FILE=/opt/internpath/requirements.server.txt ./deploy/server_install.sh
 ```
 
-The installer creates a Python virtualenv, installs backend dependencies, runs `npm install && npm run build` in `frontend`, and starts `uvicorn backend.main:app`.
+The installer creates a Python virtualenv, installs backend dependencies, installs/starts PostgreSQL + pgvector and Redis, runs `npm install && npm run build` in `frontend`, and starts three systemd services: `internpath`, `internpath-ai`, and `internpath-worker`.
 
 ## 4. Configure `.env`
 
 Create or edit `/opt/internpath/.env`:
 
 ```env
+DATABASE_URL=postgresql://postgres@localhost:5432/job_dashboard
+REDIS_URL=redis://127.0.0.1:6379/0
+RQ_QUEUE_NAME=internpath-default
 LLM_API_KEY=your_api_key
 LLM_BASE_URL=https://api.deepseek.com
 LLM_MODEL=deepseek-chat
@@ -62,7 +67,9 @@ PRACTICE_APP_PATH=
 
 ```bash
 systemctl status internpath
-journalctl -u internpath -n 100 --no-pager
+systemctl status internpath-ai
+systemctl status internpath-worker
+journalctl -u internpath -u internpath-ai -u internpath-worker -n 100 --no-pager
 ss -ltnp | grep 8502
 ```
 

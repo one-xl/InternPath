@@ -16,7 +16,6 @@ from models import (
     PersonalDecision,
     SalarySnapshot,
     SalaryTrendPrediction,
-    StarStory,
 )
 from practice_app import PracticeAppInvoker
 
@@ -55,16 +54,16 @@ def build_knowledge_chunks(
     ai_service_path = str(Path(__file__).resolve().parent / "ai-service")
     if ai_service_path not in sys.path:
         sys.path.insert(0, ai_service_path)
-        
+
     from app.rag.chunker import chunk_document_with_sections
-    
+
     chunks = chunk_document_with_sections(
         content=raw_text,
         document_id=str(document_id),
         file_name=file_name,
         source_type=source_type
     )
-    
+
     # Map properties to keep save_knowledge_chunks compatibility
     mapped_chunks = []
     for c in chunks:
@@ -82,7 +81,7 @@ def build_knowledge_chunks(
             "embeddingText": c.get("embeddingText"),
             "metadata": c.get("metadata")
         })
-        
+
     return mapped_chunks
 
 
@@ -128,7 +127,7 @@ class CareerPathAIService:
 
         import json
         db = self.user_db(user_id)
-        
+
         provider = "doubao-multimodal"
         model_id = "doubao-embedding-vision-250615"
         api_key = ""
@@ -139,7 +138,7 @@ class CareerPathAIService:
         try:
             conn = db.get_connection()
             cursor = conn.cursor()
-            placeholder = "%s" if db.is_postgres else "?"
+            placeholder = "%s"
             cursor.execute(
                 f"""
                 SELECT provider, model_id, encrypted_api_key, config_json
@@ -160,7 +159,7 @@ class CareerPathAIService:
                     (user_id,)
                 )
                 rows = cursor.fetchall()
-            
+
             found_config = None
             if rows:
                 for r in rows:
@@ -168,7 +167,7 @@ class CareerPathAIService:
                     if p == "doubao-multimodal" or "embedding" in (m or "").lower() or "embedding" in (p or "").lower():
                         found_config = r
                         break
-            
+
             if found_config:
                 p, m, enc_key, cfg_json = found_config
                 provider = p
@@ -185,7 +184,7 @@ class CareerPathAIService:
         finally:
             if conn:
                 conn.close()
-        
+
         if not api_key:
             from config import Config
             api_key = (Config.LLM_API_KEY or "").strip()
@@ -196,7 +195,7 @@ class CareerPathAIService:
             else:
                 provider = "openai"
                 model_id = "text-embedding-3-small"
-                
+
         return provider, model_id, api_key, base_url
 
     def get_embedding_for_text(self, user_id: int, text: str) -> Optional[List[float]]:
@@ -206,7 +205,7 @@ class CareerPathAIService:
         # 1. Compute hash of the text to check cache first
         import hashlib
         content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
-        
+
         db = self.user_db(user_id)
         cached = db.get_cached_embedding_simple(user_id, content_hash)
         if cached:
@@ -261,7 +260,7 @@ class CareerPathAIService:
                             embedding_vector = d.get("embedding")
                         elif isinstance(d, list) and len(d) > 0:
                             embedding_vector = d[0].get("embedding")
-                        
+
                         if embedding_vector:
                             # Cache it
                             db.save_embedding(
@@ -302,61 +301,7 @@ class CareerPathAIService:
             err_msg = str(e)
             print(f"[SERVICE] build_personal_decision failed: {err_msg}")
             traceback.print_exc()
-            return self._fallback_personal_decision(
-                analysis=analysis,
-                resume_text=resume_text,
-                knowledge_texts=knowledge_texts or [],
-                error_msg=err_msg,
-            )
-
-    def _fallback_personal_decision(
-        self,
-        *,
-        analysis: JobAnalysis,
-        resume_text: str,
-        knowledge_texts: List[str],
-        error_msg: Optional[str] = None,
-    ) -> PersonalDecision:
-        material_text = "\n".join([resume_text, *knowledge_texts]).lower()
-        skills = analysis.skills or []
-        matched = [skill for skill in skills if skill.lower() in material_text]
-        missing = [skill for skill in skills if skill not in matched]
-        ratio = len(matched) / len(skills) if skills else 0.0
-        score = int(round(35 + ratio * 55)) if skills else 45
-        if ratio >= 0.7:
-            recommendation = "APPLY"
-        elif ratio >= 0.35:
-            recommendation = "CONSIDER"
-        else:
-            recommendation = "SKIP"
-
-        decision_reasons = [
-            f"JD 难度为 {analysis.difficulty}，核心要求集中在 {', '.join(skills[:4]) or '岗位能力'}。",
-            f"当前材料能直接覆盖 {len(matched)} 个核心技能。",
-        ]
-        if error_msg:
-            short_err = error_msg[:120] + "..." if len(error_msg) > 120 else error_msg
-            decision_reasons.append(f"⚠️ 大模型决策生成失败（错误: {short_err}），已自动切换为本地启发式兜底匹配计算。")
-        else:
-            decision_reasons.append("该判断来自本地兜底规则，建议补充更完整的简历或项目材料后重新分析。")
-
-        return PersonalDecision(
-            recommendation=recommendation,
-            match_score=max(0, min(100, score)),
-            decision_reasons=decision_reasons,
-            critical_gaps=[f"缺少 {skill} 的明确项目或经历证据" for skill in missing[:5]],
-            resume_rewrites=[
-                f"围绕 {skill} 补写一条项目经历：说明场景、动作、技术栈和量化结果。"
-                for skill in matched[:5]
-            ] or ["先补充一段最能代表你能力的项目经历，再重新生成简历改造建议。"],
-            evidence_needed=[f"补充能证明 {skill} 的项目、课程作业或实习片段" for skill in missing[:5]],
-            action_plan=[
-                "先把 JD 中最核心的 3 个技能映射到自己的项目经历。",
-                "把简历中泛泛的职责描述改成可验证的结果描述。",
-                "对缺口技能补一个小项目或刷题记录，再决定是否投递。",
-            ],
-            learning_plan=[f"优先补齐 {skill} 的基础和一个可展示练习" for skill in missing[:5]],
-        )
+            raise RuntimeError(f"大模型决策生成失败: {err_msg}") from e
 
     def analyze_jd_with_guardrails(
         self,
@@ -380,15 +325,15 @@ class CareerPathAIService:
             **(options or {}),
         }
         db = self.user_db(user_id)
-        
+
         # Check if task already exists
         conn = db.get_connection()
         cursor = conn.cursor()
-        placeholder = "%s" if db.is_postgres else "?"
+        placeholder = "%s"
         cursor.execute(f"SELECT 1 FROM analysis_task WHERE task_id = {placeholder} AND user_id = {placeholder}", (task_id, user_id))
         exists = cursor.fetchone()
         conn.close()
-        
+
         if not exists:
             db.create_analysis_task(
                 user_id=user_id,
@@ -469,30 +414,7 @@ class CareerPathAIService:
             return response
         except Exception as exc:  # noqa: BLE001
             db.update_analysis_task_status(user_id, task_id, "FAILED", str(exc))
-            return {
-                "taskId": task_id,
-                "status": "failed",
-                "saved": False,
-                "warning": "增强校验服务暂不可用",
-                "error": str(exc),
-                "originalAnalysis": analysis.model_dump(mode="json"),
-                "selectedDocumentIds": selected_document_ids or [],
-                "data": {
-                    "draftReport": {},
-                    "finalReport": {},
-                    "evidenceSummary": {},
-                    "hallucinationControl": {
-                        "riskLevel": "NOT_AVAILABLE",
-                        "detectedItems": [],
-                        "rewrittenItems": [],
-                    },
-                    "citations": [],
-                    "claims": [],
-                    "verificationResults": [],
-                    "workflowLogs": ["ai-service unavailable; original JD analysis preserved"],
-                    "qualityEvaluation": {},
-                },
-            }
+            raise RuntimeError(f"增强校验服务调用失败: {exc}") from exc
 
     def create_analysis_task(self, user_id: int, task_id: str, **kwargs) -> int:
         return self.user_db(user_id).create_analysis_task(user_id=user_id, task_id=task_id, **kwargs)
@@ -576,6 +498,11 @@ class CareerPathAIService:
                 source_type=source_type,
                 file_name=file_name,
             )
+            for chunk in chunks:
+                embedding_input = chunk.get("embeddingText") or chunk.get("text") or ""
+                embedding = self.get_embedding_for_text(user_id, embedding_input)
+                if embedding:
+                    chunk["embedding"] = embedding
             db.save_knowledge_chunks(user_id, document_id, chunks)
             db.update_knowledge_document_status(
                 user_id,
@@ -616,6 +543,14 @@ class CareerPathAIService:
                     "sourceType": chunk.get("source_type", "other"),
                     "chunkIndex": chunk.get("chunk_index", 0),
                     "documentTitle": chunk.get("title", ""),
+                    "sectionId": chunk.get("sectionId"),
+                    "sectionType": chunk.get("sectionType"),
+                    "sectionTitle": chunk.get("sectionTitle"),
+                    "hierarchy": chunk.get("hierarchy"),
+                    "semanticType": chunk.get("semanticType"),
+                    "importance": chunk.get("importance"),
+                    "keywords": chunk.get("keywords"),
+                    "embeddingText": chunk.get("embeddingText"),
                 }
             )
             out.append(
@@ -623,6 +558,15 @@ class CareerPathAIService:
                     "documentId": str(chunk["document_id"]),
                     "chunkId": f"{chunk['document_id']}-{chunk['chunk_index']}",
                     "content": chunk.get("chunk_text", ""),
+                    "sectionId": chunk.get("sectionId"),
+                    "sectionType": chunk.get("sectionType"),
+                    "sectionTitle": chunk.get("sectionTitle"),
+                    "hierarchy": chunk.get("hierarchy"),
+                    "semanticType": chunk.get("semanticType"),
+                    "importance": chunk.get("importance"),
+                    "keywords": chunk.get("keywords"),
+                    "embeddingText": chunk.get("embeddingText"),
+                    "embedding": chunk.get("embedding"),
                     "metadata": metadata,
                 }
             )
@@ -631,8 +575,12 @@ class CareerPathAIService:
             return out
 
         def fetch_and_set_embedding(item: dict):
+            if item.get("embedding"):
+                item["metadata"]["embedding"] = item["embedding"]
+                return
             emb = self.get_embedding_for_text(user_id, item["content"])
             if emb:
+                item["embedding"] = emb
                 item["metadata"]["embedding"] = emb
 
         import sys
@@ -783,81 +731,7 @@ class CareerPathAIService:
     def latest_fit_scores(self, user_id: int) -> dict[int, Tuple[float, datetime]]:
         return self.user_db(user_id).get_latest_fit_score_by_jd(user_id)
 
-    def generate_star_segment_suggestion(
-        self,
-        *,
-        segment_type: str,
-        input_text: str,
-        jd_text: Optional[str] = None,
-        resume_text: Optional[str] = None,
-        current_star: Optional[dict] = None,
-        user_id: Optional[Any] = None,
-        config_id: Optional[str] = None,
-    ) -> str:
-        return self.ai_analyzer.generate_star_segment_suggestion(
-            segment_type=segment_type,
-            input_text=input_text,
-            jd_text=jd_text,
-            resume_text=resume_text,
-            current_star=current_star,
-            user_id=user_id,
-            config_id=config_id,
-        )
 
-    def polish_star_story(
-        self,
-        *,
-        situation: str,
-        task: str,
-        action: str,
-        result: str,
-        style: str = "standard",
-        jd_text: Optional[str] = None,
-        user_id: Optional[Any] = None,
-        config_id: Optional[str] = None,
-    ) -> str:
-        return self.ai_analyzer.polish_star_story(
-            situation=situation,
-            task=task,
-            action=action,
-            result=result,
-            style=style,
-            jd_text=jd_text,
-            user_id=user_id,
-            config_id=config_id,
-        )
-
-    def smart_rewrite_star(
-        self,
-        *,
-        original_text: str,
-        style: str = "standard",
-        jd_text: Optional[str] = None,
-        user_id: Optional[Any] = None,
-        config_id: Optional[str] = None,
-    ) -> dict:
-        return self.ai_analyzer.smart_rewrite_star(
-            original_text=original_text,
-            style=style,
-            jd_text=jd_text,
-            user_id=user_id,
-            config_id=config_id,
-        )
-
-    def save_star_story(self, user_id: Any, story: StarStory) -> Any:
-        return self.user_db(user_id).save_star_story(user_id, story)
-
-    def list_star_stories(self, user_id: Any) -> List[dict]:
-        return self.user_db(user_id).list_star_stories(user_id)
-
-    def get_star_story(self, user_id: Any, story_id: Any) -> Optional[dict]:
-        return self.user_db(user_id).get_star_story(user_id, story_id)
-
-    def update_star_story(self, user_id: Any, story_id: Any, story: StarStory) -> bool:
-        return self.user_db(user_id).update_star_story(user_id, story_id, story)
-
-    def delete_star_story(self, user_id: Any, story_id: Any) -> bool:
-        return self.user_db(user_id).delete_star_story(user_id, story_id)
 
     def calculate_tfidf_overlap(self, resume_text: str, jd_text: str, resume_chunks: List[str] = None) -> float:
         import math
@@ -894,7 +768,7 @@ class CareerPathAIService:
             return 0.0
 
         doc_tokens = [set(tokenize(chunk)) for chunk in resume_chunks]
-        
+
         n_docs = len(resume_chunks)
         if n_docs < 5:
             # Fallback to simple overlap coefficient
@@ -970,4 +844,3 @@ class CareerPathAIService:
             "stage2_passed": True,
             "reason": f"筛选通过！关键词重合度 {stage1_score:.1%}。"
         }
-

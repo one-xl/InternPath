@@ -9,7 +9,10 @@ InternPath runs as a FastAPI backend, a separate AI service, and an RQ worker ba
 - Node.js and npm
 - PostgreSQL + pgvector
 - Redis
+- LibreOffice Writer and Poppler for DOCX visual audit: `libreoffice-writer poppler-utils fontconfig fonts-noto-cjk`
 - Open inbound TCP for the app port you choose, for example `8502`
+
+DOCX template structure protection is implemented in Python and does not depend on LibreOffice or Poppler. If LibreOffice/Poppler are missing, InternPath must skip only the visual layout audit and must not mark the DOCX as layout-verified.
 
 ## 2. Upload the project
 
@@ -48,6 +51,13 @@ APP_DIR=/opt/internpath APP_PORT=8502 SERVICE_NAME=internpath REQUIREMENTS_FILE=
 
 The installer creates a Python virtualenv, installs backend dependencies, installs/starts PostgreSQL + pgvector and Redis, runs `npm install && npm run build` in `frontend`, and starts three systemd services: `internpath`, `internpath-ai`, and `internpath-worker`.
 
+The installer also installs and checks the DOCX visual audit tools:
+
+```bash
+command -v soffice || command -v libreoffice
+command -v pdftoppm
+```
+
 ## 4. Configure `.env`
 
 Create or edit `/opt/internpath/.env`:
@@ -71,6 +81,8 @@ systemctl status internpath-ai
 systemctl status internpath-worker
 journalctl -u internpath -u internpath-ai -u internpath-worker -n 100 --no-pager
 ss -ltnp | grep 8502
+command -v soffice || command -v libreoffice
+command -v pdftoppm
 ```
 
 Open:

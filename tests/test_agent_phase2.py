@@ -7,6 +7,7 @@ from pathlib import Path
 from config import Config
 from database import Database
 from backend.agent_planner import AgentPlanner
+from backend.agents.base import BaseAgent
 from backend.agents.job_decoder import JobDecoder
 from backend.agents.resume_copywriter import ResumeCopywriter
 from backend.agents.hr_critic import HRCritic
@@ -62,6 +63,8 @@ def test_agent_planner_generate_plan():
           "section_name": "{target_sec_name}",
           "original_content": "负责实现核心数据传输模块...",
           "improvement_goal": "突出微服务以及高并发调优经验",
+          "requires_human_input": false,
+          "human_question": "",
           "status": "PENDING"
         }}
       ]
@@ -85,7 +88,56 @@ def test_agent_planner_generate_plan():
     assert "steps" in plan
     assert len(plan["steps"]) == 1
     assert plan["steps"][0]["section_name"] == target_sec_name
+    assert plan["steps"][0]["requires_human_input"] is False
+    assert plan["steps"][0]["human_question"] == ""
     assert plan["steps"][0]["status"] == "PENDING"
+
+
+def test_agent_planner_uses_responses_api_when_configured():
+    planner = AgentPlanner()
+    sections = json.loads(tool_extract_resume_sections(MOCK_RESUME))
+    target_sec_name = next(s["section_name"] for s in sections if s["section_name"] != "其他")
+    target_sec_index = next(s["index"] for s in sections if s["section_name"] == target_sec_name)
+    mock_json_response = f"""
+    {{
+      "steps": [
+        {{
+          "step_index": 1,
+          "section_index": {target_sec_index},
+          "section_name": "{target_sec_name}",
+          "original_content": "负责实现核心数据传输模块...",
+          "improvement_goal": "突出微服务以及高并发调优经验",
+          "requires_human_input": false,
+          "human_question": "",
+          "status": "PENDING"
+        }}
+      ]
+    }}
+    """
+
+    mock_client = MagicMock()
+    mock_client._internpath_stream_api_mode = "responses"
+    mock_client._internpath_prompt_cache_key = "planner-cache-key"
+    mock_client._internpath_prompt_cache_retention = "24h"
+    mock_client.responses.create.return_value = {"output_text": mock_json_response}
+
+    loop = asyncio.get_event_loop()
+    plan = loop.run_until_complete(
+        planner.generate_plan(
+            resume_text=MOCK_RESUME,
+            jd_text=MOCK_JD,
+            openai_client=mock_client,
+            model_id="mock-model"
+        )
+    )
+
+    assert len(plan["steps"]) == 1
+    assert plan["steps"][0]["section_name"] == target_sec_name
+    assert "input" in mock_client.responses.create.call_args.kwargs
+    assert mock_client.responses.create.call_args.kwargs["stream"] is True
+    assert mock_client.responses.create.call_args.kwargs["prompt_cache_key"] == "planner-cache-key"
+    assert mock_client.responses.create.call_args.kwargs["prompt_cache_retention"] == "24h"
+    mock_client.chat.completions.create.assert_not_called()
 
 
 def test_agent_planner_fails_when_model_call_fails():
@@ -263,6 +315,125 @@ def test_resume_copywriter_rewrite_section():
         )
     )
     assert res2 == "针对HR反馈重试修改后的完美段落"
+
+
+def test_resume_copywriter_streams_rewrite_deltas():
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = [
+        {"choices": [{"delta": {"content": "流式"}}]},
+        {"choices": [{"delta": {"content": "段落"}}]},
+    ]
+    copywriter = ResumeCopywriter(model="mock-model", openai_client=mock_client)
+    deltas: list[str] = []
+
+    loop = asyncio.get_event_loop()
+    result = loop.run_until_complete(
+        copywriter.rewrite_section(
+            section_name="工作经历",
+            original_content="原始工作经历文本",
+            decoded_job={"hard_requirements": {"technical_stack": ["Python"]}},
+            goal="突出高并发经验",
+            on_delta=deltas.append,
+        )
+    )
+
+    assert deltas == ["流式", "段落"]
+    assert result == "流式段落"
+    assert mock_client.chat.completions.create.call_args.kwargs["stream"] is True
+
+
+def test_resume_copywriter_streams_rewrite_deltas_with_responses_api():
+    mock_client = MagicMock()
+    mock_client._internpath_stream_api_mode = "responses"
+    mock_client._internpath_prompt_cache_key = "copywriter-cache-key"
+    mock_client._internpath_prompt_cache_retention = "24h"
+    mock_client.responses.create.return_value = [
+        {"type": "response.output_text.delta", "delta": "streamed"},
+        {"type": "response.output_text.delta", "delta": " text"},
+        {
+            "type": "response.completed",
+            "response": {
+                "usage": {
+                    "input_tokens": 1200,
+                    "output_tokens": 10,
+                    "input_tokens_details": {"cached_tokens": 1024},
+                }
+            },
+        },
+    ]
+    copywriter = ResumeCopywriter(model="mock-model", openai_client=mock_client)
+    deltas: list[str] = []
+    fake_pref_db = MagicMock()
+    fake_pref_db.get_preferences.return_value = []
+
+    loop = asyncio.get_event_loop()
+    with patch("backend.memory.preference_db.PreferenceDB", return_value=fake_pref_db):
+        result = loop.run_until_complete(
+            copywriter.rewrite_section(
+                section_name="work",
+                original_content="original",
+                decoded_job={"hard_requirements": {"technical_stack": ["Python"]}},
+                goal="improve",
+                on_delta=deltas.append,
+            )
+        )
+
+    assert deltas == ["streamed", " text"]
+    assert result == "streamed text"
+    assert mock_client.responses.create.call_args.kwargs["stream"] is True
+    assert "input" in mock_client.responses.create.call_args.kwargs
+    assert mock_client.responses.create.call_args.kwargs["prompt_cache_key"] == "copywriter-cache-key"
+    assert mock_client.responses.create.call_args.kwargs["prompt_cache_retention"] == "24h"
+    stats = BaseAgent.pop_provider_cache_usage(mock_client)
+    assert stats["providerCacheHit"] is True
+    assert stats["providerCachedTokens"] == 1024
+    mock_client.chat.completions.create.assert_not_called()
+
+
+def test_resume_copywriter_responses_completed_event_can_carry_full_text():
+    mock_client = MagicMock()
+    mock_client._internpath_stream_api_mode = "responses"
+    mock_client.responses.create.return_value = [
+        {"type": "response.completed", "response": {"output_text": "completed text"}},
+    ]
+    copywriter = ResumeCopywriter(model="mock-model", openai_client=mock_client)
+    deltas: list[str] = []
+
+    loop = asyncio.get_event_loop()
+    result = loop.run_until_complete(
+        copywriter.rewrite_section(
+            section_name="work",
+            original_content="original",
+            decoded_job={"hard_requirements": {"technical_stack": ["Python"]}},
+            goal="improve",
+            on_delta=deltas.append,
+        )
+    )
+
+    assert deltas == ["completed text"]
+    assert result == "completed text"
+    assert mock_client.responses.create.call_count == 1
+    assert mock_client.responses.create.call_args.kwargs["stream"] is True
+    mock_client.chat.completions.create.assert_not_called()
+
+
+def test_base_agent_non_stream_uses_responses_api_when_configured():
+    mock_client = MagicMock()
+    mock_client._internpath_stream_api_mode = "responses"
+    mock_client._internpath_prompt_cache_key = "base-cache-key"
+    mock_client._internpath_prompt_cache_retention = "24h"
+    mock_client.responses.create.return_value = {"output_text": "review text"}
+    copywriter = ResumeCopywriter(model="mock-model", openai_client=mock_client)
+
+    loop = asyncio.get_event_loop()
+    result = loop.run_until_complete(copywriter._call_llm("system", "user"))
+
+    assert result == "review text"
+    assert "input" in mock_client.responses.create.call_args.kwargs
+    assert mock_client.responses.create.call_args.kwargs["stream"] is True
+    assert mock_client.responses.create.call_args.kwargs["prompt_cache_key"] == "base-cache-key"
+    assert mock_client.responses.create.call_args.kwargs["prompt_cache_retention"] == "24h"
+    mock_client.chat.completions.create.assert_not_called()
 
 
 def test_hitl_tool_ask_human_question(tmp_path, monkeypatch):
@@ -571,6 +742,8 @@ def test_orchestrator_full_workflow(tmp_path, monkeypatch):
                     "section_name": target_sec_name,
                     "original_content": "负责实现核心数据传输模块...",
                     "improvement_goal": "突出微服务经验",
+                    "requires_human_input": True,
+                    "human_question": f"请补充「{target_sec_name}」中可量化的项目细节。",
                     "status": "PENDING"
                 }
             ]

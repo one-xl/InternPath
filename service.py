@@ -119,7 +119,7 @@ class CareerPathAIService:
     def user_db(self, user_id: int) -> Database:
         return Database.for_user(user_id)
 
-    def _resolve_embedding_config(self, user_id: int) -> Tuple[str, str, str, str]:
+    def _resolve_embedding_config(self, user_id: int, config_id: Optional[str] = None) -> Tuple[str, str, str, str]:
         """Resolves (provider, model_id, api_key, base_url) for active embedding model."""
         import sys
         if "pytest" in sys.modules:
@@ -139,32 +139,70 @@ class CareerPathAIService:
             conn = db.get_connection()
             cursor = conn.cursor()
             placeholder = "%s"
-            cursor.execute(
-                f"""
-                SELECT provider, model_id, encrypted_api_key, config_json
-                FROM model_configs
-                WHERE user_id = {placeholder} AND enabled
-                """,
-                (user_id,)
-            )
-            rows = cursor.fetchall()
-            if not rows:
+            if config_id and str(config_id).strip():
                 cursor.execute(
                     f"""
-                    SELECT c.provider, c.model_id, c.encrypted_api_key, c.config_json
-                    FROM model_configs c
-                    JOIN model_config_assignments a ON c.id = a.config_id
-                    WHERE a.user_id = {placeholder} AND a.enabled AND c.enabled
+                    SELECT provider, model_id, encrypted_api_key, config_json
+                    FROM model_configs
+                    WHERE id = {placeholder} AND user_id = {placeholder} AND enabled
+                    """,
+                    (config_id, user_id)
+                )
+                rows = cursor.fetchall()
+                if not rows:
+                    cursor.execute(
+                        f"""
+                        SELECT c.provider, c.model_id, c.encrypted_api_key, c.config_json
+                        FROM model_configs c
+                        JOIN model_config_assignments a ON c.id = a.config_id
+                        WHERE c.id = {placeholder} AND a.user_id = {placeholder} AND a.enabled AND c.enabled
+                        """,
+                        (config_id, user_id)
+                    )
+                    rows = cursor.fetchall()
+            else:
+                cursor.execute(
+                    f"""
+                    SELECT provider, model_id, encrypted_api_key, config_json
+                    FROM model_configs
+                    WHERE user_id = {placeholder} AND enabled
                     """,
                     (user_id,)
                 )
                 rows = cursor.fetchall()
+                if not rows:
+                    cursor.execute(
+                        f"""
+                        SELECT c.provider, c.model_id, c.encrypted_api_key, c.config_json
+                        FROM model_configs c
+                        JOIN model_config_assignments a ON c.id = a.config_id
+                        WHERE a.user_id = {placeholder} AND a.enabled AND c.enabled
+                        """,
+                        (user_id,)
+                    )
+                    rows = cursor.fetchall()
 
             found_config = None
             if rows:
                 for r in rows:
                     p, m, enc_key, cfg_json = r
-                    if p == "doubao-multimodal" or "embedding" in (m or "").lower() or "embedding" in (p or "").lower():
+                    extra = {}
+                    if cfg_json:
+                        try:
+                            extra = json.loads(cfg_json)
+                        except:
+                            extra = {}
+                    endpoint = str(extra.get("endpoint") or "").lower()
+                    input_type = str(extra.get("inputType") or extra.get("input_type") or "").lower()
+                    is_embedding_config = (
+                        p in {"doubao", "doubao-multimodal", "doubao-text"}
+                        or "embedding" in (m or "").lower()
+                        or "embedding" in (p or "").lower()
+                        or "embeddings" in endpoint
+                        or input_type in {"text", "multimodal"}
+                        or bool(extra.get("dimensions"))
+                    )
+                    if is_embedding_config:
                         found_config = r
                         break
 
@@ -185,6 +223,9 @@ class CareerPathAIService:
             if conn:
                 conn.close()
 
+        if config_id and str(config_id).strip() and not api_key:
+            raise ValueError("未找到可用的向量模型配置，请在设置中重新选择。")
+
         if not api_key:
             from config import Config
             api_key = (Config.LLM_API_KEY or "").strip()
@@ -198,7 +239,7 @@ class CareerPathAIService:
 
         return provider, model_id, api_key, base_url
 
-    def get_embedding_for_text(self, user_id: int, text: str) -> Optional[List[float]]:
+    def get_embedding_for_text(self, user_id: int, text: str, config_id: Optional[str] = None) -> Optional[List[float]]:
         if not text or not text.strip():
             return None
 
@@ -206,13 +247,11 @@ class CareerPathAIService:
         import hashlib
         content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
 
+        provider, model_id, api_key, base_url = self._resolve_embedding_config(user_id, config_id)
         db = self.user_db(user_id)
-        cached = db.get_cached_embedding_simple(user_id, content_hash)
+        cached = db.get_cached_embedding(user_id, content_hash, provider, model_id)
         if cached:
             return cached
-
-        # 2. Resolve embedding configuration
-        provider, model_id, api_key, base_url = self._resolve_embedding_config(user_id)
 
         import sys
         if "pytest" in sys.modules:

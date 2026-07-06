@@ -21,6 +21,7 @@ AGENT_TOOL_VERSION = "2026-07-05.agent-tools-v1"
 
 CACHE_NAMESPACE_VERSIONS: dict[str, str] = {
     "resume_plan_v2": "plan-v3",
+    "resume_plan_v3": "plan-v4",
     "job_decode_v2": "job-decode-v3",
     "resume_section_rewrite_v2": "section-rewrite-v3",
     "resume_hr_critic_v2": "hr-critic-v3",

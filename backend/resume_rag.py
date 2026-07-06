@@ -35,12 +35,172 @@ SKILL_KEYWORDS = [
     "RAG",
 ]
 SECTION_ALIASES = {
-    "基本信息": ["基本信息", "个人信息", "联系方式"],
-    "教育经历": ["教育经历", "教育背景", "Education"],
-    "技能": ["技能", "专业技能", "技能栈", "Skills"],
-    "项目经历": ["项目经历", "项目经验", "Projects"],
-    "实习 / 工作经历": ["实习经历", "工作经历", "Work Experience", "Experience"],
-    "获奖 / 证书": ["获奖", "证书", "荣誉", "Awards"],
+    "基本信息": [
+        "基本信息",
+        "个人信息",
+        "个人资料",
+        "联系方式",
+        "联系信息",
+        "Contact",
+        "Contact Information",
+        "Personal Info",
+        "Personal Details",
+    ],
+    "教育经历": [
+        "教育经历",
+        "教育背景",
+        "教育经验",
+        "学习经历",
+        "学历背景",
+        "Education",
+        "Academic Background",
+    ],
+    "技能": [
+        "技能",
+        "专业技能",
+        "个人技能",
+        "技能栈",
+        "技术栈",
+        "技术能力",
+        "技能证书",
+        "技能特长",
+        "语言能力",
+        "外语能力",
+        "英语能力",
+        "核心技能",
+        "职业技能",
+        "Skills",
+        "Technical Skills",
+        "Core Skills",
+        "Language Skills",
+    ],
+    "项目经历": [
+        "项目经历",
+        "项目经验",
+        "项目实践",
+        "研发项目",
+        "个人项目",
+        "Projects",
+        "Project Experience",
+        "Personal Projects",
+    ],
+    "实习 / 工作经历": [
+        "实习经历",
+        "工作经历",
+        "工作经验",
+        "实习经验",
+        "职业经历",
+        "相关经历",
+        "实践经历",
+        "实践经验",
+        "社会实践",
+        "校园经历",
+        "校内经历",
+        "学生工作",
+        "社团经历",
+        "活动经历",
+        "志愿经历",
+        "志愿者经历",
+        "实训经历",
+        "专业实践",
+        "Experience",
+        "Work Experience",
+        "Professional Experience",
+        "Employment",
+        "Internship",
+        "Internship Experience",
+        "Campus Experience",
+        "Leadership Experience",
+        "Volunteer Experience",
+        "Extracurricular Experience",
+    ],
+    "获奖 / 证书": [
+        "获奖",
+        "获奖经历",
+        "获奖证书",
+        "荣誉奖项",
+        "荣誉奖励",
+        "荣誉",
+        "证书",
+        "资格证书",
+        "竞赛经历",
+        "竞赛获奖",
+        "比赛经历",
+        "比赛获奖",
+        "Awards",
+        "Honors",
+        "Certifications",
+        "Certificates",
+    ],
+    "科研经历": [
+        "科研经历",
+        "科研项目",
+        "研究经历",
+        "研究项目",
+        "论文发表",
+        "学术成果",
+        "Research",
+        "Research Experience",
+        "Publications",
+    ],
+    "自我评价": [
+        "自我评价",
+        "自我介绍",
+        "个人总结",
+        "个人简介",
+        "个人优势",
+        "个人陈述",
+        "求职意向",
+        "Summary",
+        "Objective",
+        "Profile",
+        "About Me",
+    ],
+}
+
+SECTION_TYPES = {
+    "基本信息": "contact",
+    "教育经历": "education",
+    "技能": "skills",
+    "项目经历": "project_experience",
+    "实习 / 工作经历": "work_experience",
+    "获奖 / 证书": "awards",
+    "科研经历": "research",
+    "自我评价": "self_introduction",
+    "其他": "generic_section",
+    "简历内容": "generic_section",
+}
+
+SECTION_IMPORTANCE = {
+    "contact": 0.60,
+    "education": 0.80,
+    "skills": 0.85,
+    "project_experience": 0.95,
+    "work_experience": 0.90,
+    "awards": 0.70,
+    "research": 0.85,
+    "self_introduction": 0.50,
+    "generic_section": 0.60,
+}
+
+_INLINE_HEADING_SEPARATORS = set(" \t:：|｜-—–/、)")
+_HEADING_DECORATION_RE = re.compile(r"^[#>\-\s*•·●○◆◇■□▶▷\d.、()（）\[\]【】]+|[\s:：|｜\-—–/、()（）\[\]【】]+$")
+_LEADING_HEADING_DECORATION_RE = re.compile(r"^[#>\-\s*•·●○◆◇■□▶▷\d.、()（）\[\]【】]+")
+_NORMALIZED_HEADING_SEPARATORS = set(" \t:：|｜-—–_/、()（）[]【】")
+_FALSE_INLINE_HEADING_TAIL_RE = re.compile(r"^\s*(包括|包含|有|是|为|主要|相关|如下|体现|来自|来自于)")
+_EMBEDDED_HEADING_BOUNDARY_CHARS = set(" \t;；。.!！?？|｜/、,，")
+_GENERIC_SECTION_VALUES = {
+    "",
+    "其他",
+    "简历内容",
+    "generic",
+    "generic_section",
+    "general",
+    "other",
+    "document content",
+    "general info",
+    "introduction",
+    "未命名 section",
 }
 
 
@@ -91,29 +251,212 @@ def parse_resume(file_name: str, content_type: str, data: bytes) -> dict[str, An
     }
 
 
+def _section_aliases_by_length() -> list[tuple[str, str]]:
+    aliases = [
+        (section, alias.strip())
+        for section, values in SECTION_ALIASES.items()
+        for alias in values
+        if alias and alias.strip()
+    ]
+    aliases.sort(key=lambda item: len(_normalized_heading_key(item[1])), reverse=True)
+    return aliases
+
+
+def _consume_alias_prefix(value: str, alias: str) -> int | None:
+    """Return consumed length if value starts with alias, allowing heading spacing."""
+    i = 0
+    j = 0
+    while i < len(value) and j < len(alias):
+        current = value[i]
+        expected = alias[j]
+        if current in _NORMALIZED_HEADING_SEPARATORS:
+            i += 1
+            continue
+        if expected in _NORMALIZED_HEADING_SEPARATORS:
+            j += 1
+            continue
+        if current.lower() != expected.lower():
+            return None
+        i += 1
+        j += 1
+
+    while j < len(alias) and alias[j] in _NORMALIZED_HEADING_SEPARATORS:
+        j += 1
+    if j != len(alias):
+        return None
+    return i
+
+
+def _match_heading_prefix(line: str) -> tuple[str, int] | None:
+    stripped = line.strip()
+    if not stripped:
+        return None
+
+    leading_match = _LEADING_HEADING_DECORATION_RE.match(stripped)
+    leading_offset = leading_match.end() if leading_match else 0
+    candidate = stripped[leading_offset:].lstrip()
+    leading_offset += len(stripped[leading_offset:]) - len(candidate)
+    if not candidate:
+        return None
+
+    normalized_candidate = _normalized_heading_key(candidate)
+    for section, alias in _section_aliases_by_length():
+        alias_key = _normalized_heading_key(alias)
+        if normalized_candidate == alias_key:
+            return section, len(stripped)
+
+        consumed = _consume_alias_prefix(candidate, alias)
+        if consumed is None:
+            continue
+
+        tail = candidate[consumed:]
+        if not tail:
+            return section, leading_offset + consumed
+        if tail[0] in _INLINE_HEADING_SEPARATORS and not _FALSE_INLINE_HEADING_TAIL_RE.match(tail):
+            return section, leading_offset + consumed
+    return None
+
+
+def _can_start_embedded_heading(line: str, index: int) -> bool:
+    if index <= 0:
+        return True
+    previous = line[index - 1]
+    return previous.isspace() or previous in _EMBEDDED_HEADING_BOUNDARY_CHARS
+
+
+def _split_line_at_inline_headings(line: str) -> list[str]:
+    stripped = line.strip()
+    if not stripped:
+        return []
+
+    starts: list[int] = []
+    for idx, char in enumerate(stripped):
+        if idx > 0 and not _can_start_embedded_heading(stripped, idx):
+            continue
+        if not char.isalnum() and not ("\u4e00" <= char <= "\u9fff") and char not in "#>*•·●○◆◇■□▶▷0123456789":
+            continue
+        if _match_heading_prefix(stripped[idx:]):
+            starts.append(idx)
+
+    if not starts or starts == [0]:
+        return [stripped]
+
+    parts: list[str] = []
+    previous = 0
+    for start in starts:
+        if start > previous:
+            part = stripped[previous:start].strip()
+            if part:
+                parts.append(part)
+        previous = start
+    tail = stripped[previous:].strip()
+    if tail:
+        parts.append(tail)
+    return parts or [stripped]
+
+
+def _section_candidate_lines(text: str) -> list[str]:
+    lines: list[str] = []
+    for raw_line in text.split("\n"):
+        stripped = raw_line.strip()
+        if not stripped:
+            lines.append("")
+            continue
+        lines.extend(_split_line_at_inline_headings(stripped))
+    return lines
+
+
 def clean_resume_text(text: str) -> str:
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
     normalized = re.sub(r"[ \t]+", " ", normalized)
     normalized = re.sub(r"\n{3,}", "\n\n", normalized)
-    normalized = re.sub(r"(?<![。；;:：])\n(?!\n|[-•])", " ", normalized)
-    return normalized.strip()
+    lines = _section_candidate_lines(normalized)
+
+    merged_lines: list[str] = []
+    buffer = ""
+    for line in lines:
+        if not line:
+            if buffer:
+                merged_lines.append(buffer)
+                buffer = ""
+            if merged_lines and merged_lines[-1] != "":
+                merged_lines.append("")
+            continue
+
+        if section_for_line(line):
+            if buffer:
+                merged_lines.append(buffer)
+                buffer = ""
+            merged_lines.append(line)
+            continue
+
+        if not buffer:
+            buffer = line
+            continue
+
+        if _should_preserve_line_break(buffer, line):
+            merged_lines.append(buffer)
+            buffer = line
+        else:
+            buffer = f"{buffer} {line}"
+
+    if buffer:
+        merged_lines.append(buffer)
+
+    cleaned = "\n".join(merged_lines)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def _should_preserve_line_break(previous: str, current: str) -> bool:
+    if section_for_line(current):
+        return True
+    if re.match(r"^([-•·*]|\d+[.、)])\s*", current):
+        return True
+    if re.match(r"^([-•·*]|\d+[.、)])\s*", previous):
+        return True
+    if previous.endswith(("。", "；", ";", ":", "：", "！", "？", ".", "!", "?")):
+        return True
+    return False
+
+
+def _compact_heading(line: str) -> str:
+    compact = re.sub(r"\s+", " ", line.strip())
+    compact = _HEADING_DECORATION_RE.sub("", compact).strip()
+    return compact
+
+
+def _normalized_heading_key(value: str) -> str:
+    return re.sub(r"[\s:：|｜\-—–_/、()（）\[\]【】]+", "", value).lower()
 
 
 def section_for_line(line: str) -> str | None:
-    compact = line.strip().strip(":：")
-    if len(compact) > 28:
+    compact = _compact_heading(line)
+    if not compact:
         return None
-    for section, aliases in SECTION_ALIASES.items():
-        if any(alias.lower() == compact.lower() for alias in aliases):
-            return section
-    return None
+    match = _match_heading_prefix(compact)
+    return match[0] if match else None
+
+
+def section_type_for_label(section: str) -> str:
+    return SECTION_TYPES.get(section, "generic_section")
+
+
+def semantic_type_for_section_type(section_type: str) -> str:
+    if section_type in {"project_experience", "work_experience", "research"}:
+        return "experience"
+    if section_type == "skills":
+        return "skills"
+    if section_type == "education":
+        return "education"
+    return "general"
 
 
 def chunk_resume(cleaned_text: str, file_id: str, file_name: str) -> list[dict[str, Any]]:
     sections: list[tuple[str, list[str]]] = []
     current_section = "其他"
     current_lines: list[str] = []
-    for line in cleaned_text.splitlines():
+    for line in _section_candidate_lines(cleaned_text):
         heading = section_for_line(line)
         if heading:
             if current_lines:
@@ -143,18 +486,91 @@ def chunk_resume(cleaned_text: str, file_id: str, file_name: str) -> list[dict[s
 
 
 def build_chunk(file_id: str, file_name: str, section: str, chunks: list[dict[str, Any]], content: str) -> dict[str, Any]:
+    section_type = section_type_for_label(section)
+    semantic_type = semantic_type_for_section_type(section_type)
+    importance = SECTION_IMPORTANCE.get(section_type, 0.60)
     return {
         "id": f"{file_id}-{len(chunks)}",
         "resumeFileId": file_id,
         "index": len(chunks),
         "content": content.strip(),
         "section": section,
+        "sectionTitle": section,
+        "sectionType": section_type,
+        "semanticType": semantic_type,
+        "importance": importance,
+        "hierarchy": [section],
         "keywords": detect_keywords(content),
         "metadata": {
             "heading": section,
             "source": file_name,
+            "sectionTitle": section,
+            "sectionType": section_type,
+            "semanticType": semantic_type,
+            "importance": importance,
+            "hierarchy": [section],
         },
     }
+
+
+def _chunk_generic_section_value(chunk: dict[str, Any], key: str) -> str:
+    metadata = chunk.get("metadata") if isinstance(chunk.get("metadata"), dict) else {}
+    value = chunk.get(key) or metadata.get(key) or ""
+    return str(value).strip().lower()
+
+
+def _is_generic_chunk_section(chunk: dict[str, Any]) -> bool:
+    section = _chunk_generic_section_value(chunk, "section")
+    section_title = _chunk_generic_section_value(chunk, "sectionTitle")
+    section_type = _chunk_generic_section_value(chunk, "sectionType")
+    semantic_type = _chunk_generic_section_value(chunk, "semanticType")
+    section_values = [section, section_title]
+    type_values = [section_type, semantic_type]
+    has_specific_section = any(value and value not in _GENERIC_SECTION_VALUES for value in section_values)
+    has_specific_type = any(value and value not in _GENERIC_SECTION_VALUES for value in type_values)
+    return not has_specific_section and not has_specific_type
+
+
+def resume_chunks_need_section_repair(chunks: list[dict[str, Any]]) -> bool:
+    valid_chunks = [chunk for chunk in chunks if isinstance(chunk, dict)]
+    return bool(valid_chunks) and all(_is_generic_chunk_section(chunk) for chunk in valid_chunks)
+
+
+def repair_resume_chunk_sections(parsed_resume: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    chunks = parsed_resume.get("chunks") or []
+    if not isinstance(chunks, list) or not resume_chunks_need_section_repair(chunks):
+        return parsed_resume, False
+
+    text = str(parsed_resume.get("cleanedText") or parsed_resume.get("rawText") or "").strip()
+    if not text:
+        text = "\n".join(str(chunk.get("content") or chunk.get("text") or "") for chunk in chunks if isinstance(chunk, dict))
+    if not text.strip():
+        return parsed_resume, False
+
+    cleaned_text = clean_resume_text(text)
+    file_info = parsed_resume.get("file") if isinstance(parsed_resume.get("file"), dict) else {}
+    first_chunk = next((chunk for chunk in chunks if isinstance(chunk, dict)), {})
+    file_id = str(file_info.get("id") or first_chunk.get("resumeFileId") or "resume")
+    file_name = str(file_info.get("name") or first_chunk.get("fileName") or "resume")
+    rebuilt_chunks = chunk_resume(cleaned_text, file_id, file_name)
+    if not rebuilt_chunks or resume_chunks_need_section_repair(rebuilt_chunks):
+        return parsed_resume, False
+
+    old_by_content = {
+        str(chunk.get("content") or chunk.get("text") or "").strip(): chunk
+        for chunk in chunks
+        if isinstance(chunk, dict)
+    }
+    for chunk in rebuilt_chunks:
+        previous = old_by_content.get(str(chunk.get("content") or "").strip())
+        if previous and previous.get("embedding") is not None:
+            chunk["embedding"] = previous.get("embedding")
+            chunk.setdefault("metadata", {})["embedding"] = previous.get("embedding")
+
+    repaired = dict(parsed_resume)
+    repaired["cleanedText"] = cleaned_text
+    repaired["chunks"] = rebuilt_chunks
+    return repaired, True
 
 
 def detect_keywords(text: str) -> list[str]:

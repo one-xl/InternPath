@@ -150,13 +150,25 @@ function Stop-PidFileProcess {
     }
     try {
         $processId = [int](Get-Content $PidFile -ErrorAction Stop | Select-Object -First 1)
-        Stop-Process -Id $processId -Force -ErrorAction Stop
+        Stop-ProcessTree -ProcessId $processId
         Remove-Item -Force -ErrorAction SilentlyContinue $PidFile
         Write-Host "Stopped $Name process $processId."
     } catch {
         Remove-Item -Force -ErrorAction SilentlyContinue $PidFile
         Write-Warning "Failed to stop $Name from PID file: $($_.Exception.Message)"
     }
+}
+
+function Stop-ProcessTree {
+    param(
+        [int]$ProcessId
+    )
+
+    $children = Get-CimInstance Win32_Process -Filter "ParentProcessId = $ProcessId" -ErrorAction SilentlyContinue
+    foreach ($child in $children) {
+        Stop-ProcessTree -ProcessId ([int]$child.ProcessId)
+    }
+    Stop-Process -Id $ProcessId -Force -ErrorAction Stop
 }
 
 function Start-BackgroundPythonModule {

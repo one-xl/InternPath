@@ -213,9 +213,12 @@ def test_agent_answer_duplicate_running_task_is_idempotent(tmp_path, monkeypatch
     )
 
     assert resp.status_code == 200
-    assert resp.json()["duplicateIgnored"] is True
+    assert resp.json()["recordedOnly"] is True
+    assert resp.json()["status"] == "RUNNING"
     assert enqueue_calls == []
-    assert db.list_agent_resume_turns(user_id, task_id) == []
+    turns = db.list_agent_resume_turns(user_id, task_id)
+    assert len(turns) == 1
+    assert turns[0]["content"] == "Duplicate click"
 
 
 def test_agent_question_answer_explains_without_resuming(tmp_path, monkeypatch):
@@ -278,6 +281,67 @@ def test_agent_question_answer_explains_without_resuming(tmp_path, monkeypatch):
     assert "当前停在" in turns[-1]["content"]
 
 
+def test_agent_completed_task_accepts_followup_question(tmp_path, monkeypatch):
+    monkeypatch.setattr(Config, "EMAIL_VERIFICATION_REQUIRED", False)
+    monkeypatch.setattr(Config, "USER_DB_DIR", str(tmp_path / "user_data"))
+    monkeypatch.setattr(Config, "DB_PATH", str(tmp_path / "career_path.db"))
+
+    service = object.__new__(CareerPathAIService)
+    db = Database(str(tmp_path / "auth.db"))
+    app = create_app(service=service, auth_db=db)
+    client = TestClient(app)
+
+    reg = client.post("/api/auth/register", json={"username": "completed-followup@example.com", "password": "password123"})
+    token = reg.json()["token"]
+    user_id = reg.json()["user"]["id"]
+    task_id = "agent-resume-completed-followup"
+
+    db.create_agent_resume_task(
+        task_id=task_id,
+        user_id=user_id,
+        resume_id="resume_completed",
+        original_resume_name="resume.docx",
+        jd_text="Backend intern role.",
+    )
+    db.update_agent_resume_task_status(
+        task_id=task_id,
+        user_id=user_id,
+        status="COMPLETED",
+        optimized_resume_md="### Optimized Resume",
+        execution_plan=json.dumps({
+            "config_id": "cfg-llm",
+            "is_co_pilot": True,
+            "steps": [
+                {
+                    "step_index": 1,
+                    "section_name": "Projects",
+                    "original_content": "Built an internal matching service.",
+                    "improvement_goal": "Explain backend impact",
+                    "status": "COMPLETED",
+                }
+            ],
+        }),
+    )
+
+    enqueue_calls = []
+    monkeypatch.setattr("backend.main.enqueue_job", lambda *args, **kwargs: enqueue_calls.append(kwargs))
+
+    resp = client.post(
+        f"/api/agent/resume/tasks/{task_id}/answer",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"answer": "为什么这样改？", "answer_type": "question"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["answeredQuestion"] is True
+    assert resp.json()["recordedOnly"] is True
+    assert resp.json()["status"] == "COMPLETED"
+    assert enqueue_calls == []
+    turns = db.list_agent_resume_turns(user_id, task_id)
+    assert [turn["role"] for turn in turns] == ["user", "assistant"]
+    assert "为什么这样改" in turns[0]["content"]
+
+
 def test_agent_instruction_updates_conversation_state(tmp_path, monkeypatch):
     monkeypatch.setattr(Config, "EMAIL_VERIFICATION_REQUIRED", False)
     monkeypatch.setattr(Config, "USER_DB_DIR", str(tmp_path / "user_data"))
@@ -338,6 +402,7 @@ def test_agent_instruction_updates_conversation_state(tmp_path, monkeypatch):
     assert state["global_preferences"] == ["后续都用更简洁的风格，不要改教育经历。"]
     assert state["fact_ledger"] == ["后续都用更简洁的风格，不要改教育经历。"]
     assert enqueue_calls
+    assert enqueue_calls[0]["config_id"] is None
 
 
 def test_check_layout_dependencies():

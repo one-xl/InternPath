@@ -317,8 +317,8 @@ export function buildActionPackMarkdown(input: ActionPackInput): string {
   const reviewFacts = input.factLedger.length - verifiedFacts;
   const cache = input.cacheSummary;
   const cacheLine = cache
-    ? `- 缓存复用：${cache.hitRate}% 命中，节省 ${cache.savedModelCalls} 次模型调用（命中 ${cache.hits} / 未命中 ${cache.misses}）`
-    : "- 缓存复用：未记录";
+    ? `- 本地复用：${cache.hitRate}% 复用，节省 ${cache.savedModelCalls} 次模型调用（复用 ${cache.hits} / 新算 ${cache.misses}）`
+    : "- 本地复用：未记录";
   const reviewNote = input.review?.note?.trim() || "暂无复盘备注";
   const jdSummary = firstUsefulLines(input.jdText, 8) || "未提供 JD 摘要";
   const resumeSummary = firstUsefulLines(input.optimizedResumeMd, 10) || "暂无优化简历内容";

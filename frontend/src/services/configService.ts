@@ -31,6 +31,11 @@ export async function fetchConfigs(): Promise<ModelConfigState> {
         maxOutputTokens: c.maxOutputTokens,
         timeoutMs: c.timeoutMs,
         responseMimeType: c.responseMimeType,
+        streamApiMode: c.streamApiMode || c.stream_api_mode,
+        promptCacheEnabled: c.promptCacheEnabled ?? c.prompt_cache_enabled,
+        promptCacheKey: c.promptCacheKey || c.prompt_cache_key,
+        promptCacheKeyPrefix: c.promptCacheKeyPrefix || c.prompt_cache_key_prefix,
+        promptCacheRetention: c.promptCacheRetention || c.prompt_cache_retention,
         fallbackModelId: c.fallbackModelId,
         testModelId: c.testModelId,
       };

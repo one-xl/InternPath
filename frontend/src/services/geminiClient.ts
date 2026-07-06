@@ -145,6 +145,7 @@ export async function callGeminiWithConfig(input: {
       body: JSON.stringify({
         provider: config.provider,
         modelId: config.modelId.trim(),
+        configId: config.id,
         requestBody: requestBodyObj,
       }),
     });
@@ -183,6 +184,7 @@ export async function callGeminiWithConfig(input: {
           body: JSON.stringify({
             provider: config.provider,
             modelId: config.modelId.trim(),
+            configId: config.id,
             requestBody: fallbackRequestBodyObj,
           }),
         });

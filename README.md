@@ -80,6 +80,11 @@ npm run dev -- --port 5173
 ## 测试
 
 ```powershell
+npm run doctor
+npm run agent:compile
+npm run frontend:build
+npm run agent:test
+
 .\.venv\Scripts\python.exe -m pytest -q
 
 cd ai-service
@@ -90,6 +95,8 @@ npm run build
 ```
 
 后端测试需要可用的 `DATABASE_URL` 与 `REDIS_URL`。本地 CI 如需跑集成测试，应准备 PostgreSQL/pgvector 与 Redis。
+
+`npm run doctor` 会输出 JSON 格式的本地工具链检查结果，覆盖 Python/Node/npm、关键目录、环境变量、PostgreSQL/Redis 连通性、端口占用和源码扫描计数，便于人和 Agent 快速定位缺失依赖。
 
 ## 部署
 

@@ -6,6 +6,7 @@ export type EmbeddingProvider =
   | "custom";
 export type ChatProvider = "gemini" | "openai-compatible" | "custom";
 export type ModelTestStatus = "untested" | "testing" | "success" | "failed";
+export type StreamApiMode = "chat_completions" | "responses";
 
 export function isDoubaoTextEmbeddingProvider(provider: EmbeddingProvider, modelId?: string): boolean {
   if (provider === "doubao-text") return true;
@@ -91,6 +92,11 @@ export interface ChatModelConfig extends BaseModelConfig {
   maxOutputTokens?: number;
   timeoutMs?: number;
   responseMimeType?: "application/json" | "text/plain";
+  streamApiMode?: StreamApiMode;
+  promptCacheEnabled?: boolean;
+  promptCacheKey?: string;
+  promptCacheKeyPrefix?: string;
+  promptCacheRetention?: string;
   fallbackModelId?: string;
   testModelId?: string;
 }

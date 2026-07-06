@@ -282,7 +282,7 @@ def test_background_analysis_success(test_env):
         record_id=record_id,
         draft_data=draft_data,
         resume_file_id=resume_file_id,
-        embedding_config_id=None,
+        embedding_config_id="emb-cfg-1",
         chat_config_id=None
     )
 
@@ -299,6 +299,9 @@ def test_background_analysis_success(test_env):
     assert len(record.get("resumeAdvice", [])) == 1
     assert record.get("resumeAdvice")[0]["target_requirement_id"] == "req_001"
     assert record.get("resumeAdvice")[0]["priority"] == "high"
+    mock_service._resolve_embedding_config.assert_called_with(user_id, "emb-cfg-1")
+    assert mock_service.get_embedding_for_text.call_args_list
+    assert all(call.args[2] == "emb-cfg-1" for call in mock_service.get_embedding_for_text.call_args_list)
 
     # Assert step progression
     steps = record.get("steps", [])
@@ -309,6 +312,117 @@ def test_background_analysis_success(test_env):
     # Verify user generation limit was decremented
     updated_user = db.get_user_by_id(user_id)
     assert updated_user.generation_limit == 4
+
+
+def test_background_analysis_repairs_legacy_generic_resume_chunks(test_env):
+    db = test_env["db"]
+    mock_analyzer = test_env["analyzer"]
+    mock_service = test_env["service"]
+    bg_analyzer_module = test_env["background_analyzer"]
+
+    user_id = db.create_user(username="test_user_resume_repair", password="secure_password123")
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET generation_limit = 5, role = 'user' WHERE id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+    resume_file_id = "legacy-generic-resume"
+    parsed_resume = {
+        "file": {
+            "id": resume_file_id,
+            "name": "resume.pdf",
+            "size": 1234,
+            "type": "application/pdf",
+            "uploadedAt": "2026-06-07T12:00:00",
+        },
+        "cleanedText": (
+            "赵六 13800000000 zhaoliu@example.com "
+            "教育背景 复旦大学 软件工程 本科 "
+            "专业技能 Python FastAPI Redis Docker "
+            "项目经历 InternPath 分析平台 负责简历 RAG 召回与证据校验。 "
+            "实习经历 后端开发实习 负责接口性能优化。"
+        ),
+        "extractedProfile": {},
+        "chunks": [
+            {
+                "id": "legacy-chunk-0",
+                "resumeFileId": resume_file_id,
+                "index": 0,
+                "content": "赵六 13800000000 zhaoliu@example.com 教育背景 复旦大学 软件工程 本科 专业技能 Python FastAPI Redis Docker 项目经历 InternPath 分析平台 负责简历 RAG 召回与证据校验。 实习经历 后端开发实习 负责接口性能优化。",
+                "section": "其他",
+                "sectionType": "generic_section",
+                "semanticType": "general",
+            }
+        ],
+    }
+    db.save_user_resume(
+        user_id=user_id,
+        resume_id=resume_file_id,
+        file_name="resume.pdf",
+        file_size=1234,
+        file_type="application/pdf",
+        parsed_resume=parsed_resume,
+    )
+
+    mock_chat_client = MagicMock()
+    mock_chat_client.chat = MagicMock()
+    mock_chat_client.chat.completions = MockChatCompletions()
+    mock_analyzer._client.return_value = (
+        mock_chat_client,
+        "resolved-chat-config-id",
+        "mock-provider",
+        "mock-model",
+    )
+    mock_service._resolve_embedding_config.return_value = (
+        "mock-emb-provider",
+        "mock-emb-model",
+        None,
+        None,
+    )
+    mock_service.get_embedding_for_text.return_value = [0.1] * 128
+
+    record_id = "test-record-repair-generic-chunks"
+    draft_data = {
+        "jdText": "Python backend software engineer. Must have 3+ years of Python experience. FastAPI Redis Docker RAG platform experience required.",
+        "candidateMaterial": "None",
+    }
+    db.save_analysis_record(
+        user_id=user_id,
+        status="pending",
+        result_json={
+            "id": record_id,
+            "createdAt": "2026-06-07T16:00:00",
+            "draft": draft_data,
+            "status": "pending",
+            "progressStep": 0,
+        },
+        input_json=draft_data,
+        record_id=record_id,
+    )
+
+    bg_analyzer_module.run_background_resume_analysis(
+        user_id=user_id,
+        record_id=record_id,
+        draft_data=draft_data,
+        resume_file_id=resume_file_id,
+        embedding_config_id="emb-cfg-legacy",
+        chat_config_id=None,
+    )
+
+    record = db.get_analysis_record(user_id, record_id)
+    assert record is not None
+    assert record.get("status") == "watching"
+
+    parsed_chunks = record["parsedResume"]["chunks"]
+    parsed_sections = [chunk["section"] for chunk in parsed_chunks]
+    assert parsed_sections == ["其他", "教育经历", "技能", "项目经历", "实习 / 工作经历"]
+    assert {chunk["sectionType"] for chunk in record["retrievedResumeChunks"]} != {"generic_section"}
+    assert {chunk["sectionType"] for chunk in parsed_chunks} != {"generic_section"}
+
+    saved_resume = db.get_user_resume(user_id, resume_file_id)
+    assert saved_resume is not None
+    assert [chunk["section"] for chunk in saved_resume["chunks"]] == parsed_sections
 
 
 def test_background_analysis_failure(test_env):

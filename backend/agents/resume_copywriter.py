@@ -1,5 +1,5 @@
 import os
-from typing import Any, Optional, Dict
+from typing import Any, Callable, Optional, Dict
 from backend.agents.base import BaseAgent
 
 class ResumeCopywriter(BaseAgent):
@@ -51,7 +51,8 @@ class ResumeCopywriter(BaseAgent):
         original_content: str,
         decoded_job: dict,
         goal: str,
-        user_id: str = "default"
+        user_id: str = "default",
+        on_delta: Optional[Callable[[str], None]] = None,
     ) -> str:
         """
         深度重构指定的简历段落。
@@ -96,11 +97,19 @@ class ResumeCopywriter(BaseAgent):
 请严格遵守系统提示词中的改写规范并参考用户历史偏好，直接返回优化重构后的简历段落文本。
 """
 
-        llm_response = await self._call_llm(
-            system_prompt=self.system_prompt,
-            user_prompt=user_prompt,
-            temperature=0.3
-        )
+        if on_delta:
+            llm_response = await self._call_llm_stream(
+                system_prompt=self.system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.3,
+                on_delta=on_delta,
+            )
+        else:
+            llm_response = await self._call_llm(
+                system_prompt=self.system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.3
+            )
 
         return llm_response.strip()
 
@@ -112,7 +121,8 @@ class ResumeCopywriter(BaseAgent):
         critique: str,
         suggestions: str,
         decoded_job: dict,
-        goal: str
+        goal: str,
+        on_delta: Optional[Callable[[str], None]] = None,
     ) -> str:
         """
         当审计打分未达标时，结合上一次的改写稿、审计意见和具体建议进行针对性修改。
@@ -157,9 +167,17 @@ class ResumeCopywriter(BaseAgent):
 
 请严格针对审计官指出的不足和修改建议进行更正，并遵守所有的改写规范。直接返回再次优化后的段落文本。
 """
-        llm_response = await self._call_llm(
-            system_prompt=self.system_prompt,
-            user_prompt=user_prompt,
-            temperature=0.3
-        )
+        if on_delta:
+            llm_response = await self._call_llm_stream(
+                system_prompt=self.system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.3,
+                on_delta=on_delta,
+            )
+        else:
+            llm_response = await self._call_llm(
+                system_prompt=self.system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.3
+            )
         return llm_response.strip()

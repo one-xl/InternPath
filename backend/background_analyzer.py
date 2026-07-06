@@ -8,12 +8,43 @@ from typing import Any, Optional, Tuple
 
 from database import Database
 from service import CareerPathAIService
-from ai_analyzer import AIAnalyzer, _strip_json_fence
+from ai_analyzer import AIAnalyzer, _call_openai_text, _strip_json_fence
+from backend.resume_rag import repair_resume_chunk_sections
 
 # Module-level instances
 db = Database()
 service = CareerPathAIService()
 analyzer = AIAnalyzer()
+
+
+def ensure_resume_sections_for_analysis(user_id: Any, resume_file_id: str, parsed_resume: dict[str, Any]) -> dict[str, Any]:
+    repaired, changed = repair_resume_chunk_sections(parsed_resume)
+    if not changed:
+        return parsed_resume
+
+    file_info = repaired.get("file") if isinstance(repaired.get("file"), dict) else {}
+    file_name = file_info.get("name") or "resume"
+    file_size = int(file_info.get("size") or 0)
+    file_type = file_info.get("type") or "application/octet-stream"
+    db_targets = [db]
+    try:
+        db_targets.append(service.user_db(user_id))
+    except Exception as exc:
+        print(f"[RESUME] Failed to open service DB for repaired chunks {resume_file_id}: {exc}")
+    for db_target in db_targets:
+        try:
+            db_target.save_user_resume(
+                user_id=user_id,
+                resume_id=resume_file_id,
+                file_name=file_name,
+                file_size=file_size,
+                file_type=file_type,
+                parsed_resume=repaired,
+            )
+        except Exception as exc:
+            print(f"[RESUME] Failed to persist repaired chunks for {resume_file_id}: {exc}")
+    return repaired
+
 
 def cosine_similarity_py(a: list[float], b: list[float]) -> float:
     if not a or not b or len(a) != len(b):
@@ -124,25 +155,25 @@ Requirements:
 
 JD Text to parse:
 {jd_text}
-"""
+    """
     try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
+        content, _usage = _call_openai_text(
+            client,
+            model,
+            [{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
-            temperature=0.1
+            temperature=0.1,
         )
-        content = response.choices[0].message.content
         parsed = json.loads(_strip_json_fence(content))
     except Exception as e:
         print(f"[BG_ANALYSIS] parseJobDescription JSON mode failed: {e}, retrying standard mode")
         try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.1
+            content, _usage = _call_openai_text(
+                client,
+                model,
+                [{"role": "user", "content": prompt}],
+                temperature=0.1,
             )
-            content = response.choices[0].message.content
             parsed = json.loads(_strip_json_fence(content))
         except Exception as e2:
             print(f"[BG_ANALYSIS] parseJobDescription failed: {e2}")
@@ -235,15 +266,15 @@ Instructions:
 - Do not guess! If there is no mention of visa, student graduation date, or specific location availability, mark status as "unknown" and request verification in the reason.
 - A severity of "blocking" means the failure is a complete showstopper (e.g., student status for an internship when already graduated, or completely missing degree level requirements).
 - Output valid JSON only matching the schema.
-"""
+    """
     try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
+        content, _usage = _call_openai_text(
+            client,
+            model,
+            [{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
-            temperature=0.1
+            temperature=0.1,
         )
-        content = response.choices[0].message.content
         parsed = json.loads(_strip_json_fence(content))
     except Exception as e:
         print(f"[BG_ANALYSIS] checkHardConstraints failed: {e}")
@@ -291,6 +322,7 @@ def run_background_resume_analysis(
         parsed_resume = db.get_user_resume(user_id, resume_file_id)
         if not parsed_resume:
             raise ValueError("未找到已解析的简历文件。")
+        parsed_resume = ensure_resume_sections_for_analysis(user_id, resume_file_id, parsed_resume)
 
         chunks = parsed_resume.get("chunks") or []
         if not chunks:
@@ -300,7 +332,7 @@ def run_background_resume_analysis(
         chat_client, resolved_chat_config_id, chat_provider, chat_model = analyzer._client(user_id, chat_config_id)
 
         # Resolve Embedding configuration
-        emb_provider, emb_model, _, _ = service._resolve_embedding_config(user_id)
+        emb_provider, emb_model, _, _ = service._resolve_embedding_config(user_id, embedding_config_id)
 
         # Validate complete success
         update_background_progress(user_id, record_id, "validate", "success")
@@ -315,7 +347,7 @@ def run_background_resume_analysis(
         for idx, chunk in enumerate(chunks):
             content = chunk.get("content", "")
             # service.get_embedding_for_text automatically hashes and caches to the DB table `embeddings`
-            embedding = service.get_embedding_for_text(user_id, content) or []
+            embedding = service.get_embedding_for_text(user_id, content, embedding_config_id) or []
             embedded_chunks.append({
                 **chunk,
                 "embedding": embedding
@@ -334,7 +366,7 @@ def run_background_resume_analysis(
         parsed_jd = parse_job_description_py(chat_client, chat_model, jd_text)
 
         # Stage B: Vectorize whole JD
-        jd_embedding = service.get_embedding_for_text(user_id, jd_text) or []
+        jd_embedding = service.get_embedding_for_text(user_id, jd_text, embedding_config_id) or []
         update_background_progress(user_id, record_id, "jd_embedding", "success")
 
         # Step 4: Retrieve most relevant chunks
@@ -343,7 +375,7 @@ def run_background_resume_analysis(
         requirement_matches = []
         for req in parsed_jd["requirements"]:
             req_text = req["text"]
-            req_embedding = service.get_embedding_for_text(user_id, req_text) or []
+            req_embedding = service.get_embedding_for_text(user_id, req_text, embedding_config_id) or []
 
             matched_evidence = []
             if req_embedding:
@@ -526,22 +558,22 @@ def run_background_resume_analysis(
 }}
 """
             try:
-                response = chat_client.chat.completions.create(
-                    model=chat_model,
-                    messages=[{"role": "user", "content": prompt}],
+                llm_text, _usage = _call_openai_text(
+                    chat_client,
+                    chat_model,
+                    [{"role": "user", "content": prompt}],
                     response_format={"type": "json_object"},
-                    temperature=0.1
+                    temperature=0.1,
                 )
-                llm_text = response.choices[0].message.content
                 parsed_analysis = json.loads(_strip_json_fence(llm_text))
             except Exception as chat_err:
                 print(f"[BG_ANALYSIS] Chat completion with JSON mode failed: {chat_err}, trying standard completion")
-                response = chat_client.chat.completions.create(
-                    model=chat_model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.1
+                llm_text, _usage = _call_openai_text(
+                    chat_client,
+                    chat_model,
+                    [{"role": "user", "content": prompt}],
+                    temperature=0.1,
                 )
-                llm_text = response.choices[0].message.content
                 parsed_analysis = json.loads(_strip_json_fence(llm_text))
 
             with _CACHE_LOCK:
@@ -1086,25 +1118,25 @@ def tailor_form_fields_py(
 【需要生成的字段规范】
 {fields_list_str}
 
-只返回合法 JSON，不包含 markdown 格式或代码块包装。"""
+    只返回合法 JSON，不包含 markdown 格式或代码块包装。"""
     try:
-        response = chat_client.chat.completions.create(
-            model=chat_model,
-            messages=[{"role": "user", "content": prompt}],
+        content, _usage = _call_openai_text(
+            chat_client,
+            chat_model,
+            [{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
-            temperature=0.2
+            temperature=0.2,
         )
-        content = response.choices[0].message.content
         result = json.loads(_strip_json_fence(content))
     except Exception as e:
         print(f"[TAILOR_FIELDS] AI tailoring failed: {e}, retrying standard mode")
         try:
-            response = chat_client.chat.completions.create(
-                model=chat_model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.2
+            content, _usage = _call_openai_text(
+                chat_client,
+                chat_model,
+                [{"role": "user", "content": prompt}],
+                temperature=0.2,
             )
-            content = response.choices[0].message.content
             result = json.loads(_strip_json_fence(content))
         except Exception as e2:
             print(f"[TAILOR_FIELDS] AI tailoring completely failed: {e2}")

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ChatModelConfig, ChatProvider } from "../../types/modelConfig";
+import type { ChatModelConfig, ChatProvider, StreamApiMode } from "../../types/modelConfig";
 import { Button } from "../ui/Button";
 import { safeUUID } from "../../utils/uuid";
 import { ApiKeyInput } from "./ApiKeyInput";
@@ -52,6 +52,7 @@ function createDefault(): ChatModelConfig {
     temperature: 0.2,
     maxOutputTokens: 4096,
     responseMimeType: defaults.responseMimeType,
+    streamApiMode: "chat_completions",
     timeoutMs: 60000,
   };
 }
@@ -67,14 +68,14 @@ export function ChatModelForm({
 }) {
   const [draft, setDraft] = useState<ChatModelConfig>(() => {
     const base = editingConfig ?? createDefault();
-    return { ...base, apiKey: "" };
+    return { ...base, apiKey: "", streamApiMode: base.streamApiMode ?? "chat_completions" };
   });
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const base = editingConfig ?? createDefault();
-    setDraft({ ...base, apiKey: "" });
+    setDraft({ ...base, apiKey: "", streamApiMode: base.streamApiMode ?? "chat_completions" });
     setError(null);
   }, [editingConfig]);
 
@@ -108,6 +109,7 @@ export function ChatModelForm({
         baseUrl: draft.baseUrl?.trim(),
         fallbackModelId: draft.fallbackModelId?.trim(),
         testModelId: draft.testModelId?.trim(),
+        streamApiMode: draft.streamApiMode ?? "chat_completions",
         name: nameFromProviderModel(draft.provider, modelId),
         updatedAt: new Date().toISOString(),
       });
@@ -233,6 +235,17 @@ export function ChatModelForm({
                 placeholder={isGemini ? GEMINI_BASE_URL : "https://api.example.com/v1"}
                 disabled={isSaving}
               />
+            </label>
+            <label className="field">
+              <span>Stream API</span>
+              <select
+                value={draft.streamApiMode ?? "chat_completions"}
+                onChange={(event) => setDraft({ ...draft, streamApiMode: event.target.value as StreamApiMode })}
+                disabled={isSaving}
+              >
+                <option value="chat_completions">Chat Completions (/v1/chat/completions)</option>
+                <option value="responses">Responses (/v1/responses)</option>
+              </select>
             </label>
           </div>
         </details>

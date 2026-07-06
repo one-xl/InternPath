@@ -259,7 +259,7 @@ def analyze_job_with_doubao(
     user_id: Optional[Any] = None,
     config_id: Optional[str] = None
 ) -> dict[str, Any]:
-    from ai_analyzer import AIAnalyzer
+    from ai_analyzer import AIAnalyzer, _call_openai_text
     analyzer = AIAnalyzer()
     client, resolved_config_id, provider, model_id = analyzer._client(user_id, config_id)
 
@@ -294,15 +294,16 @@ def analyze_job_with_doubao(
             return _DOUBAO_CACHE[cache_key]
 
     try:
-        response = client.chat.completions.create(
-            model=model_id,
-            messages=[
+        content, _usage = _call_openai_text(
+            client,
+            model_id,
+            [
                 {"role": "system", "content": build_system_prompt()},
                 {"role": "user", "content": json.dumps(compact_payload, ensure_ascii=False)},
             ],
             temperature=0.1,
         )
-        content = strip_json_fence(response.choices[0].message.content or "")
+        content = strip_json_fence(content or "")
         result = normalize_llm_result(json.loads(content))
         with _CACHE_LOCK:
             _DOUBAO_CACHE[cache_key] = result
@@ -318,4 +319,3 @@ def analyze_job_with_doubao(
         raise DoubaoAnalysisError(f"大模型返回内容不是合法 JSON：{exc}") from exc
     except Exception as exc:  # noqa: BLE001
         raise DoubaoAnalysisError(f"大模型分析失败：{exc}") from exc
-

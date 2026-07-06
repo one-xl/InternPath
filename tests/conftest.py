@@ -4,6 +4,7 @@ from uuid import uuid4
 
 import pytest
 from redis import Redis
+from redis.exceptions import RedisError
 from rq import Queue
 
 from config import Config
@@ -29,5 +30,8 @@ def isolate_rq_queue(monkeypatch):
     yield
     if not Config.REDIS_URL:
         return
-    redis = Redis.from_url(Config.REDIS_URL)
-    Queue(queue_name, connection=redis).empty()
+    try:
+        redis = Redis.from_url(Config.REDIS_URL)
+        Queue(queue_name, connection=redis).empty()
+    except RedisError:
+        return

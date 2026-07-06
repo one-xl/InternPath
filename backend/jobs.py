@@ -7,6 +7,7 @@ from uuid import uuid4
 from app_log import log_event
 from config import Config
 from database import Database
+from backend.agents.events import append_agent_log_json, build_agent_log
 from backend.task_queue import get_redis_connection
 from service import CareerPathAIService
 
@@ -46,6 +47,46 @@ def _release_agent_task_lock(redis: Any, task_id: str, run_id: str) -> None:
             raw_value = raw_value.decode("utf-8")
         if raw_value == run_id:
             redis.delete(key)
+
+
+def _append_agent_resume_runtime_log(
+    *,
+    task_id: str,
+    user_id: Any,
+    message: str,
+    stage: str,
+    agent: str,
+    status: str = "running",
+    task_status: str = "RUNNING",
+    detail: Any = None,
+    log_type: str = "info",
+    error_type: str = "",
+) -> None:
+    db = Database()
+    task = db.get_agent_resume_task(user_id, task_id)
+    if not task:
+        return
+    trace_id = str(task.get("trace_id") or task_id)
+    logs = append_agent_log_json(
+        task.get("logs"),
+        build_agent_log(
+            message,
+            log_type=log_type,
+            detail=detail,
+            trace_id=trace_id,
+            task_id=task_id,
+            stage=stage,
+            agent=agent,
+            status=status,
+            error_type=error_type,
+        ),
+    )
+    db.update_agent_resume_task_status(
+        task_id=task_id,
+        user_id=user_id,
+        status=task_status,
+        logs=logs,
+    )
 
 
 def run_async_analysis_job(
@@ -192,13 +233,24 @@ def run_agent_resume_orchestration_job(
     user_id: Any,
     config_id: str | None,
     is_co_pilot: bool,
+    execution_mode: str = "pipeline",
+    tool_calling_mode: str = "auto",
 ) -> None:
-    from backend.agents.orchestrator import Orchestrator
     from backend.agents.tools.hitl_tool import HumanInteractionRequired
 
     run_id = uuid4().hex
     redis = _acquire_agent_task_lock(task_id, run_id)
     if redis is None:
+        _append_agent_resume_runtime_log(
+            task_id=task_id,
+            user_id=user_id,
+            message="worker 检测到同一任务已有运行锁，跳过重复执行。",
+            stage="worker_lock",
+            agent="RQWorker",
+            status="skipped",
+            task_status="RUNNING",
+            detail={"runId": run_id},
+        )
         log_event(
             service="BACKEND",
             level="INFO",
@@ -208,15 +260,47 @@ def run_agent_resume_orchestration_job(
         return
 
     try:
+        _append_agent_resume_runtime_log(
+            task_id=task_id,
+            user_id=user_id,
+            message="后台 worker 已接手任务，正在启动 Agent 执行链。",
+            stage="worker_start",
+            agent="RQWorker",
+            status="running",
+            task_status="RUNNING",
+            detail={
+                "runId": run_id,
+                "executionMode": execution_mode,
+                "toolCallingMode": tool_calling_mode,
+                "isCoPilot": is_co_pilot,
+            },
+        )
         try:
-            asyncio.run(
-                Orchestrator().run_orchestration(
-                    task_id=task_id,
-                    user_id=user_id,
-                    config_id=config_id,
-                    is_co_pilot=is_co_pilot,
+            normalized_execution_mode = str(execution_mode or "pipeline").strip().lower().replace("-", "_")
+            normalized_tool_calling_mode = str(tool_calling_mode or "auto").strip().lower().replace("-", "_")
+            if normalized_execution_mode == "agentic":
+                from backend.agents.agentic_orchestrator import AgenticOrchestrator
+
+                asyncio.run(
+                    AgenticOrchestrator().run_orchestration(
+                        task_id=task_id,
+                        user_id=user_id,
+                        config_id=config_id,
+                        is_co_pilot=is_co_pilot,
+                        tool_calling_mode=normalized_tool_calling_mode,
+                    )
                 )
-            )
+            else:
+                from backend.agents.orchestrator import Orchestrator
+
+                asyncio.run(
+                    Orchestrator().run_orchestration(
+                        task_id=task_id,
+                        user_id=user_id,
+                        config_id=config_id,
+                        is_co_pilot=is_co_pilot,
+                    )
+                )
         except HumanInteractionRequired as exc:
             Database().update_agent_resume_task_status(
                 task_id=task_id,

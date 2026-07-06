@@ -4,6 +4,24 @@ function nowMs(): number {
   return performance.now();
 }
 
+function openAiChatUrl(baseUrl: string): string {
+  const cleanBase = baseUrl.replace(/\/+$/, "");
+  if (cleanBase.endsWith("/chat/completions")) return cleanBase;
+  if (cleanBase.endsWith("/chat")) return `${cleanBase}/completions`;
+  return `${cleanBase}/chat/completions`;
+}
+
+function openAiResponsesUrl(baseUrl: string): string {
+  let cleanBase = baseUrl.replace(/\/+$/, "");
+  if (cleanBase.endsWith("/responses")) return cleanBase;
+  if (cleanBase.endsWith("/chat/completions")) {
+    cleanBase = cleanBase.slice(0, -"/chat/completions".length).replace(/\/+$/, "");
+  } else if (cleanBase.endsWith("/chat")) {
+    cleanBase = cleanBase.slice(0, -"/chat".length).replace(/\/+$/, "");
+  }
+  return `${cleanBase}/responses`;
+}
+
 export async function testEmbeddingModelConfig(config: EmbeddingModelConfig): Promise<ModelTestResult> {
   const started = nowMs();
   try {
@@ -56,7 +74,9 @@ export async function testChatModelConfig(
   const baseUrl = config.baseUrl?.trim() || "https://generativelanguage.googleapis.com/v1beta";
   const url = config.provider === "gemini"
     ? `${baseUrl.replace(/\/$/, "")}/models/${encodeURIComponent(modelId)}:generateContent`
-    : `${baseUrl.replace(/\/$/, "")}/chat/completions`;
+    : config.streamApiMode === "responses"
+      ? openAiResponsesUrl(baseUrl)
+      : openAiChatUrl(baseUrl);
 
   if (onProgress) {
     onProgress("正在向服务器发起测试连接请求...");

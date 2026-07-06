@@ -20,7 +20,7 @@ from uuid import uuid4
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile, status, Cookie, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 
@@ -30,14 +30,17 @@ from models import JobAnalysis
 from backend.doubao_job_rag import DoubaoAnalysisError, analyze_job_with_doubao, PLACEHOLDER_KEYS
 from backend.job_import import JobImportPayload, parse_salary_range
 from backend.ats_simulator import simulate_ats_compatibility
-from backend.resume_rag import parse_resume, retrieve_chunks
+from backend.resume_rag import parse_resume, repair_resume_chunk_sections, retrieve_chunks
+from backend.agents.base import BaseAgent
 from backend.agents.cache import normalize_cache_text
+from backend.agents.events import append_agent_log_json, build_agent_log
 from backend.jobs import (
     run_agent_resume_orchestration_job,
     run_async_analysis_job,
     run_background_resume_analysis_job,
 )
 from backend.task_queue import enqueue_job
+from backend.docx_boundary_check import DocxBoundaryCheckConfig, check_docx_file_boundaries
 from service import CareerPathAIService
 from config import Config
 from auth import hash_password, normalize_username
@@ -147,12 +150,60 @@ class UserResponse(BaseModel):
     generation_limit: int = 5
 
 
+AgentExecutionMode = Literal["pipeline", "agentic"]
+AgentToolCallingMode = Literal["native_responses", "json_action", "auto"]
+
+
+def normalize_agent_execution_mode(value: Any) -> AgentExecutionMode:
+    normalized = str(value or "pipeline").strip().lower().replace("-", "_")
+    return "agentic" if normalized == "agentic" else "pipeline"
+
+
+def normalize_agent_tool_calling_mode(value: Any) -> AgentToolCallingMode:
+    normalized = str(value or "auto").strip().lower().replace("-", "_")
+    if normalized in {"native_responses", "json_action"}:
+        return normalized
+    return "auto"
+
+
+def parse_agent_execution_options(execution_plan: str | None) -> dict[str, str]:
+    options = {
+        "executionMode": "pipeline",
+        "toolCallingMode": "auto",
+    }
+    if not execution_plan:
+        return options
+    try:
+        plan_data = json.loads(execution_plan)
+    except Exception:
+        return options
+    if not isinstance(plan_data, dict):
+        return options
+    options["executionMode"] = normalize_agent_execution_mode(
+        plan_data.get("execution_mode") or plan_data.get("executionMode")
+    )
+    options["toolCallingMode"] = normalize_agent_tool_calling_mode(
+        plan_data.get("tool_calling_mode") or plan_data.get("toolCallingMode")
+    )
+    return options
+
+
 class AgentOptimizeResumeRequest(BaseModel):
     resume_id: str
     jd_text: str = Field(..., min_length=1)
     config_id: Optional[str] = None
     task_id: Optional[str] = None
     is_co_pilot: Optional[bool] = True
+    execution_mode: Optional[str] = None
+    executionMode: Optional[str] = None
+    tool_calling_mode: Optional[str] = None
+    toolCallingMode: Optional[str] = None
+
+    def normalized_execution_mode(self) -> AgentExecutionMode:
+        return normalize_agent_execution_mode(self.execution_mode or self.executionMode)
+
+    def normalized_tool_calling_mode(self) -> AgentToolCallingMode:
+        return normalize_agent_tool_calling_mode(self.tool_calling_mode or self.toolCallingMode)
 
 
 class AgentAnswerRequest(BaseModel):
@@ -228,8 +279,19 @@ def _normalize_agent_log(raw_log: Any, trace_id: str = "") -> dict[str, Any] | N
         "cacheHit": raw_log.get("cacheHit", raw_log.get("cache_hit")),
         "durationMs": None if duration in {None, ""} else _to_int(duration),
         "modelId": str(raw_log.get("modelId") or raw_log.get("model_id") or ""),
+        "providerCacheAvailable": bool(raw_log.get("providerCacheAvailable") or raw_log.get("provider_cache_available")),
+        "providerCacheHit": raw_log.get("providerCacheHit", raw_log.get("provider_cache_hit")),
+        "providerCachedTokens": _to_int(raw_log.get("providerCachedTokens") or raw_log.get("provider_cached_tokens")),
+        "providerCacheMissTokens": _to_int(raw_log.get("providerCacheMissTokens") or raw_log.get("provider_cache_miss_tokens")),
+        "providerInputTokens": _to_int(raw_log.get("providerInputTokens") or raw_log.get("provider_input_tokens")),
+        "providerEndpointMode": str(raw_log.get("providerEndpointMode") or raw_log.get("provider_endpoint_mode") or ""),
+        "providerStream": raw_log.get("providerStream", raw_log.get("provider_stream")),
+        "providerPromptCacheKey": str(raw_log.get("providerPromptCacheKey") or raw_log.get("provider_prompt_cache_key") or ""),
+        "providerPromptCacheRetention": str(raw_log.get("providerPromptCacheRetention") or raw_log.get("provider_prompt_cache_retention") or ""),
+        "providerPromptCacheDisabledReason": str(raw_log.get("providerPromptCacheDisabledReason") or raw_log.get("provider_prompt_cache_disabled_reason") or ""),
         "retryCount": _to_int(retry_count),
         "errorType": str(raw_log.get("errorType") or raw_log.get("error_type") or ""),
+        "sequence": _to_int(raw_log.get("sequence")),
     }
 
 
@@ -243,10 +305,108 @@ def parse_agent_logs(raw_logs: Any, trace_id: str = "") -> list[dict[str, Any]]:
     return logs
 
 
+def append_agent_resume_log(
+    task: dict[str, Any],
+    message: str,
+    *,
+    log_type: str = "info",
+    detail: Any = None,
+    retry_count: int = 0,
+) -> str:
+    return append_agent_log_json(
+        task.get("logs"),
+        build_agent_log(
+            message,
+            log_type=log_type,
+            detail=detail,
+            trace_id=str(task.get("trace_id") or task.get("task_id") or ""),
+            task_id=str(task.get("task_id") or ""),
+            stage="retry",
+            agent="Retry",
+            status="retrying",
+            retry_count=retry_count,
+        ),
+    )
+
+
+def recover_agent_retry_options(execution_plan: str | None) -> tuple[str | None, bool]:
+    options = recover_agent_retry_execution_options(execution_plan)
+    return options["config_id"], options["is_co_pilot"]
+
+
+def recover_agent_retry_execution_options(execution_plan: str | None) -> dict[str, Any]:
+    fallback = {
+        "config_id": None,
+        "is_co_pilot": True,
+        "execution_mode": "pipeline",
+        "tool_calling_mode": "auto",
+    }
+    if not execution_plan:
+        return fallback
+    try:
+        plan_data = json.loads(execution_plan)
+    except Exception:
+        return fallback
+    if not isinstance(plan_data, dict):
+        return fallback
+    config_id = plan_data.get("config_id")
+    return {
+        "config_id": str(config_id) if config_id else None,
+        "is_co_pilot": bool(plan_data.get("is_co_pilot", True)),
+        "execution_mode": normalize_agent_execution_mode(
+            plan_data.get("execution_mode") or plan_data.get("executionMode")
+        ),
+        "tool_calling_mode": normalize_agent_tool_calling_mode(
+            plan_data.get("tool_calling_mode") or plan_data.get("toolCallingMode")
+        ),
+    }
+
+
+def prepare_agent_retry_execution_plan(execution_plan: str | None) -> tuple[str | None, dict[str, Any], int]:
+    plan_data: dict[str, Any] = {}
+    if execution_plan:
+        try:
+            parsed = json.loads(execution_plan)
+            if isinstance(parsed, dict):
+                plan_data = parsed
+        except Exception:
+            plan_data = {}
+    failure_point = plan_data.get("failure_point")
+    if not isinstance(failure_point, dict):
+        failure_point = {}
+    existing_retry_count = _to_int(
+        failure_point.get("retry_count")
+        or failure_point.get("retryCount")
+        or plan_data.get("retry_count")
+    )
+    retry_count = existing_retry_count + 1
+    retry_request = {
+        "failed_stage": str(failure_point.get("failed_stage") or ""),
+        "failed_tool_name": str(failure_point.get("failed_tool_name") or ""),
+        "failed_tool_arguments": failure_point.get("failed_tool_arguments") if isinstance(failure_point.get("failed_tool_arguments"), dict) else {},
+        "failed_model_input_ref": str(failure_point.get("failed_model_input_ref") or ""),
+        "failed_sequence": _to_int(failure_point.get("failed_sequence")),
+        "retry_count": retry_count,
+        "requested_at": datetime.now().isoformat(),
+    }
+    if isinstance(failure_point.get("failed_model_input"), dict):
+        retry_request["failed_model_input"] = failure_point["failed_model_input"]
+    if isinstance(failure_point.get("last_successful_tool_result"), dict):
+        retry_request["last_successful_tool_result"] = failure_point["last_successful_tool_result"]
+    if failure_point:
+        plan_data["failure_point"] = {**failure_point, "retry_count": retry_count}
+        plan_data["retry_request"] = retry_request
+        plan_data["retry_count"] = retry_count
+        return json.dumps(plan_data, ensure_ascii=False), retry_request, retry_count
+    plan_data["retry_count"] = retry_count
+    return json.dumps(plan_data, ensure_ascii=False) if plan_data else execution_plan, retry_request, retry_count
+
+
 def serialize_cache_stats(execution_plan: str | None) -> dict[str, Any]:
     cache_stats = {
         "hits": 0,
         "misses": 0,
+        "hitRate": 0,
         "savedModelCalls": 0,
         "items": [],
     }
@@ -276,11 +436,94 @@ def serialize_cache_stats(execution_plan: str | None) -> dict[str, Any]:
                 "timestamp": str(item.get("timestamp") or ""),
             })
 
+    hits = _to_int(raw_stats.get("hits"))
+    misses = _to_int(raw_stats.get("misses"))
+    total = hits + misses
     return {
-        "hits": _to_int(raw_stats.get("hits")),
-        "misses": _to_int(raw_stats.get("misses")),
+        "hits": hits,
+        "misses": misses,
+        "hitRate": round((hits / total) * 100) if total else 0,
         "savedModelCalls": _to_int(raw_stats.get("saved_model_calls") or raw_stats.get("savedModelCalls")),
         "items": items,
+    }
+
+
+def serialize_provider_cache_stats(logs: list[dict[str, Any]]) -> dict[str, Any]:
+    checks = 0
+    hits = 0
+    cached_tokens = 0
+    miss_tokens = 0
+    input_tokens = 0
+    items: list[dict[str, Any]] = []
+    for log in logs:
+        if not isinstance(log, dict) or not log.get("providerCacheAvailable"):
+            continue
+        checks += 1
+        hit = log.get("providerCacheHit") is True
+        if hit:
+            hits += 1
+        cached = _to_int(log.get("providerCachedTokens"))
+        missed = _to_int(log.get("providerCacheMissTokens"))
+        input_count = _to_int(log.get("providerInputTokens"))
+        cached_tokens += cached
+        miss_tokens += missed
+        input_tokens += input_count
+        items.append({
+            "stage": str(log.get("stage") or ""),
+            "agent": str(log.get("agent") or ""),
+            "modelId": str(log.get("modelId") or ""),
+            "hit": hit,
+            "cachedTokens": cached,
+            "cacheMissTokens": missed,
+            "inputTokens": input_count,
+            "endpointMode": str(log.get("providerEndpointMode") or ""),
+            "stream": log.get("providerStream"),
+            "promptCacheDisabledReason": str(log.get("providerPromptCacheDisabledReason") or ""),
+            "timestamp": str(log.get("timestamp") or ""),
+        })
+    return {
+        "checks": checks,
+        "hits": hits,
+        "misses": max(0, checks - hits),
+        "hitRate": round((hits / checks) * 100) if checks else 0,
+        "cachedTokens": cached_tokens,
+        "cacheMissTokens": miss_tokens,
+        "inputTokens": input_tokens,
+        "items": items[-80:],
+    }
+
+
+def format_sse_event(event: str, data: Any) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
+
+
+def serialize_retry_available_event(task: dict[str, Any], logs: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if str(task.get("status") or "") != "FAILED":
+        return None
+    try:
+        plan_data = json.loads(task.get("execution_plan") or "{}")
+    except Exception:
+        return None
+    if not isinstance(plan_data, dict):
+        return None
+    failure_point = plan_data.get("failure_point")
+    if not isinstance(failure_point, dict) or not failure_point:
+        return None
+    trace_id = str(task.get("trace_id") or task.get("task_id") or "")
+    return {
+        "traceId": trace_id,
+        "taskId": str(task.get("task_id") or ""),
+        "stage": str(failure_point.get("failed_stage") or "retry"),
+        "agent": "Retry",
+        "status": "available",
+        "timestamp": str(task.get("updated_at") or datetime.now().isoformat()),
+        "sequence": _to_int(failure_point.get("failed_sequence")) or len(logs) + 1,
+        "failedStage": str(failure_point.get("failed_stage") or ""),
+        "failedToolName": str(failure_point.get("failed_tool_name") or ""),
+        "failedToolArguments": failure_point.get("failed_tool_arguments") if isinstance(failure_point.get("failed_tool_arguments"), dict) else {},
+        "failedModelInputRef": str(failure_point.get("failed_model_input_ref") or ""),
+        "retryCount": _to_int(failure_point.get("retry_count") or failure_point.get("retryCount")),
+        "error": str(failure_point.get("error") or task.get("error_message") or ""),
     }
 
 
@@ -374,10 +617,113 @@ def serialize_agent_conversation_state(state: dict[str, Any] | None) -> dict[str
     }
 
 
-def serialize_agent_task_summary(task: dict[str, Any]) -> dict[str, Any]:
+def read_agent_stream_preview(user_id: Any, task_id: str) -> str:
+    if user_id is None or not task_id:
+        return ""
+    try:
+        from backend.agents.tools.workspace_tools import tool_read_file
+
+        preview = tool_read_file(user_id, task_id, "stream_preview.md")
+        if preview.startswith("错误：") or preview.startswith("读取文件失败："):
+            return ""
+        return preview
+    except Exception:
+        return ""
+
+
+def read_latest_agent_modification_patch(user_id: Any, task_id: str) -> dict[str, Any] | None:
+    if user_id is None or not task_id:
+        return None
+    try:
+        from backend.agents.tools.workspace_tools import tool_read_file
+
+        raw_log = tool_read_file(user_id, task_id, "modification_log.json")
+        if raw_log.startswith("错误：") or raw_log.startswith("读取文件失败："):
+            return None
+        items = json.loads(raw_log)
+    except Exception:
+        return None
+    if not isinstance(items, list) or not items:
+        return None
+    latest = items[-1]
+    if not isinstance(latest, dict):
+        return None
+    return {
+        "section_name": str(latest.get("section_name") or ""),
+        "section_index": _to_int(latest.get("section_index")),
+        "original": str(latest.get("original") or ""),
+        "new": str(latest.get("new") or ""),
+        "reason": str(latest.get("reason") or ""),
+        "timestamp": str(latest.get("timestamp") or ""),
+    }
+
+
+def prewarm_agent_resume_workspace(
+    *,
+    user_id: Any,
+    task_id: str,
+    resume_text: str,
+    jd_text: str,
+) -> dict[str, Any]:
+    detail = {
+        "resumeCharacters": len(resume_text or ""),
+        "jdCharacters": len(jd_text or ""),
+        "files": [],
+        "errors": [],
+    }
+    try:
+        from backend.agents.tools.workspace_tools import tool_write_file
+
+        preview_text = (
+            "已创建任务，正在排队接入后台 worker。\n\n"
+            f"- 简历正文已预热：{detail['resumeCharacters']} 字符\n"
+            f"- JD 已预热：{detail['jdCharacters']} 字符\n"
+            "- 下一步：worker 接手后会解析偏好、模型配置、缓存和工具链。"
+        )
+        for filename, content in (
+            ("original_resume.txt", resume_text),
+            ("job_description.txt", jd_text),
+            ("stream_preview.md", preview_text),
+        ):
+            result = tool_write_file(user_id, task_id, filename, content)
+            if str(result).startswith("成功："):
+                detail["files"].append(filename)
+            else:
+                detail["errors"].append({"file": filename, "message": str(result)})
+    except Exception as exc:
+        detail["errors"].append({"file": "workspace", "message": str(exc)})
+    return detail
+
+
+def serialize_agent_task_summary(
+    task: dict[str, Any],
+    *,
+    parsed_logs: list[dict[str, Any]] | None = None,
+    include_artifacts: bool = True,
+) -> dict[str, Any]:
     trace_id = str(task.get("trace_id") or "")
-    logs = parse_agent_logs(task.get("logs"), trace_id)
-    cache_stats = serialize_cache_stats(task.get("execution_plan"))
+    logs = parsed_logs if parsed_logs is not None else parse_agent_logs(task.get("logs"), trace_id)
+    execution_plan = task.get("execution_plan")
+    execution_options = parse_agent_execution_options(execution_plan)
+    cache_stats = serialize_cache_stats(execution_plan)
+    provider_cache_stats = serialize_provider_cache_stats(logs)
+    task_id = str(task.get("task_id") or "")
+    user_id = task.get("user_id")
+    stream_preview_md = read_agent_stream_preview(user_id, task_id)
+    has_docx = False
+    modification_log: list[dict[str, Any]] = []
+    if include_artifacts and user_id is not None and task_id:
+        try:
+            from backend.agents.tools.workspace_tools import get_safe_workspace_path, tool_read_file
+
+            has_docx = os.path.exists(get_safe_workspace_path(user_id, task_id, "optimized_resume.docx"))
+            raw_log = tool_read_file(user_id, task_id, "modification_log.json")
+            loaded_log = json.loads(raw_log)
+            if isinstance(loaded_log, list):
+                modification_log = [item for item in loaded_log if isinstance(item, dict)]
+        except Exception:
+            pass
+
     return {
         "taskId": task.get("task_id"),
         "traceId": trace_id,
@@ -387,18 +733,23 @@ def serialize_agent_task_summary(task: dict[str, Any]) -> dict[str, Any]:
         "jdText": task.get("jd_text"),
         "logs": logs,
         "optimizedResumeMd": task.get("optimized_resume_md") or "",
+        "streamPreviewMd": stream_preview_md,
         "errorMessage": task.get("error_message") or "",
         "createdAt": task.get("created_at"),
         "updatedAt": task.get("updated_at"),
         "modificationDiffMd": "",
-        "hasDocx": False,
-        "modificationLog": [],
+        "hasDocx": has_docx,
+        "modificationLog": modification_log,
         "pendingQuestion": task.get("pending_question") or "",
         "humanAnswer": task.get("human_answer") or "",
-        "executionPlan": task.get("execution_plan") or "",
+        "executionPlan": execution_plan or "",
+        "executionMode": execution_options["executionMode"],
+        "toolCallingMode": execution_options["toolCallingMode"],
         "conversationTurns": [],
         "conversationState": serialize_agent_conversation_state(None),
+        "localReuseStats": cache_stats,
         "cacheStats": cache_stats,
+        "providerCacheStats": provider_cache_stats,
         "stageMetrics": build_agent_stage_metrics(logs, cache_stats, trace_id),
     }
 
@@ -597,6 +948,61 @@ def openai_chat_body(model_id: str, request_body: dict) -> dict:
     return openai_body
 
 
+def openai_responses_body(
+    model_id: str,
+    request_body: dict,
+    *,
+    prompt_cache_extra: Optional[dict[str, Any]] = None,
+    prompt_cache_namespace: str = "model_proxy",
+) -> dict:
+    input_items = []
+    contents = request_body.get("contents", [])
+    for item in contents:
+        role = item.get("role", "user")
+        if role == "model":
+            role = "assistant"
+        if role not in {"user", "assistant"}:
+            role = "user"
+        parts = item.get("parts", [])
+        text_content = ""
+        for part in parts:
+            if isinstance(part, dict) and "text" in part:
+                text_content += part["text"]
+            elif isinstance(part, str):
+                text_content += part
+        if text_content:
+            input_items.append({"role": role, "content": text_content})
+
+    gen_config = request_body.get("generationConfig", {})
+    temperature = gen_config.get("temperature", 0.2)
+    max_tokens = gen_config.get("maxOutputTokens") or gen_config.get("max_tokens") or 4096
+
+    responses_body = {
+        "model": model_id,
+        "input": input_items or "",
+        "temperature": temperature,
+        "max_output_tokens": max_tokens,
+    }
+    responses_body.update(BaseAgent.responses_prompt_cache_kwargs(
+        extra=prompt_cache_extra,
+        model=model_id,
+        namespace=prompt_cache_namespace,
+    ))
+
+    response_mime = gen_config.get("responseMimeType")
+    if response_mime == "application/json":
+        responses_body["text"] = {"format": {"type": "json_object"}}
+        has_json_word = False
+        for item in input_items:
+            if "json" in item.get("content", "").lower():
+                has_json_word = True
+                break
+        if not has_json_word and input_items:
+            input_items[-1]["content"] += "\n\nReturn the output in JSON format."
+
+    return responses_body
+
+
 def wrap_openai_chat_response(res_json: dict) -> dict:
     choices = res_json.get("choices", [])
     text = ""
@@ -618,6 +1024,42 @@ def wrap_openai_chat_response(res_json: dict) -> dict:
     prompt_tokens = usage.get("prompt_tokens") or 0
     completion_tokens = usage.get("completion_tokens") or 0
     total_tokens = usage.get("total_tokens") or 0
+
+    return {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        { "text": text }
+                    ]
+                },
+                "finishReason": finish_reason
+            }
+        ],
+        "usageMetadata": {
+            "promptTokenCount": prompt_tokens,
+            "candidatesTokenCount": completion_tokens,
+            "totalTokenCount": total_tokens
+        }
+    }
+
+
+def wrap_openai_responses_response(res_json: dict) -> dict:
+    text = BaseAgent._extract_response_text(res_json)
+    usage = res_json.get("usage") or {}
+    if not isinstance(usage, dict):
+        usage = {}
+
+    prompt_tokens = usage.get("input_tokens") or usage.get("prompt_tokens") or 0
+    completion_tokens = usage.get("output_tokens") or usage.get("completion_tokens") or 0
+    total_tokens = usage.get("total_tokens") or (prompt_tokens + completion_tokens)
+
+    status_value = str(res_json.get("status") or "").lower()
+    incomplete_details = res_json.get("incomplete_details") or {}
+    incomplete_reason = ""
+    if isinstance(incomplete_details, dict):
+        incomplete_reason = str(incomplete_details.get("reason") or "").lower()
+    finish_reason = "MAX_TOKENS" if status_value == "incomplete" or incomplete_reason == "max_output_tokens" else "STOP"
 
     return {
         "candidates": [
@@ -703,6 +1145,39 @@ def chat_base_url(user_id: Any, provider: str, model_id: str) -> str:
     return ""
 
 
+def chat_config_extra(config_id: Optional[str]) -> dict[str, Any]:
+    if not config_id:
+        return {}
+    try:
+        from uuid import UUID
+        UUID(str(config_id))
+    except Exception:
+        return {}
+
+    db = Database()
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT config_json FROM model_configs WHERE id = ?", (config_id,))
+        row = cursor.fetchone()
+    finally:
+        conn.close()
+
+    if not row or not row[0]:
+        return {}
+    try:
+        extra = json.loads(row[0])
+    except Exception:
+        return {}
+    return extra if isinstance(extra, dict) else {}
+
+
+def chat_base_url_for_config(config_id: Optional[str]) -> str:
+    extra = chat_config_extra(config_id)
+    base_url = extra.get("baseUrl") or extra.get("base_url")
+    return base_url.strip() if isinstance(base_url, str) and base_url.strip() else ""
+
+
 def openai_chat_url(base_url: str) -> str:
     import urllib.parse
     import re
@@ -723,6 +1198,36 @@ def openai_chat_url(base_url: str) -> str:
         pass
 
     return f"{base}/chat/completions"
+
+
+def openai_responses_url(base_url: str) -> str:
+    import urllib.parse
+    import re
+
+    base = base_url.rstrip("/")
+    if base.endswith("/responses"):
+        return base
+    if base.endswith("/chat/completions"):
+        base = base[:-17].rstrip("/")
+    elif base.endswith("/chat"):
+        base = base[:-5].rstrip("/")
+
+    try:
+        parsed = urllib.parse.urlparse(base)
+        path = parsed.path.rstrip("/")
+        if not path or not re.search(r"/(v\d+[^/]*)$", path):
+            base = f"{base}/v1"
+    except Exception:
+        pass
+
+    return f"{base}/responses"
+
+
+def chat_stream_api_mode(config_id: Optional[str]) -> str:
+    extra = chat_config_extra(config_id)
+    return BaseAgent._normalize_stream_api_mode(
+        extra.get("streamApiMode") or extra.get("stream_api_mode")
+    )
 
 
 def create_app(
@@ -852,6 +1357,47 @@ def create_app(
         expires_at = datetime.now() + timedelta(seconds=SESSION_MAX_AGE_SECONDS)
         state.auth_db.create_session(token, user_id, expires_at)
         return token
+
+    def ensure_resume_sections(
+        user_id: Any,
+        resume_id: str,
+        parsed_resume: dict[str, Any],
+        *,
+        persist: bool = True,
+    ) -> dict[str, Any]:
+        repaired, changed = repair_resume_chunk_sections(parsed_resume)
+        if not changed:
+            return parsed_resume
+
+        state.resume_store[resume_id] = {
+            "parsed_resume": repaired,
+            "user_id": user_id,
+        }
+        if not persist:
+            return repaired
+
+        file_info = repaired.get("file") if isinstance(repaired.get("file"), dict) else {}
+        file_name = file_info.get("name") or "resume"
+        file_size = int(file_info.get("size") or 0)
+        file_type = file_info.get("type") or "application/octet-stream"
+        db_targets = [state.auth_db]
+        try:
+            db_targets.append(state.service.user_db(user_id))
+        except Exception as exc:
+            print(f"[RESUME] Failed to open service DB for repaired chunks {resume_id}: {exc}")
+        for db_target in db_targets:
+            try:
+                db_target.save_user_resume(
+                    user_id=user_id,
+                    resume_id=resume_id,
+                    file_name=file_name,
+                    file_size=file_size,
+                    file_type=file_type,
+                    parsed_resume=repaired,
+                )
+            except Exception as exc:
+                print(f"[RESUME] Failed to persist repaired chunks for {resume_id}: {exc}")
+        return repaired
 
     def current_user_id(
         session_id: Optional[str] = Cookie(default=None),
@@ -1027,16 +1573,25 @@ def create_app(
         # Check if a resume with the same file name already exists in the database
         existing_resumes = await asyncio.to_thread(state.auth_db.list_user_resumes, user_id)
         existing_resume = None
+        existing_resume_id = ""
         for r in existing_resumes:
             if r.get("name") == file.filename:
                 # Find this existing resume
                 existing_resume = await asyncio.to_thread(state.auth_db.get_user_resume, user_id, r.get("id"))
                 if existing_resume:
+                    existing_resume_id = str(r.get("id") or existing_resume.get("file", {}).get("id") or "")
                     break
 
         if existing_resume:
+            existing_resume = await asyncio.to_thread(
+                ensure_resume_sections,
+                user_id,
+                existing_resume_id,
+                existing_resume,
+            )
             print(f"[UPLOAD] Found existing resume with same filename '{file.filename}', reusing it.")
-            state.resume_store[existing_resume["file"]["id"]] = {
+            existing_resume_id = str(existing_resume.get("file", {}).get("id") or existing_resume_id)
+            state.resume_store[existing_resume_id] = {
                 "parsed_resume": existing_resume,
                 "user_id": user_id,
             }
@@ -1077,6 +1632,66 @@ def create_app(
             "parsedResume": parsed_resume,
         }
 
+    @app.post("/api/documents/docx-boundary-check")
+    async def check_docx_boundary_format(
+        file: UploadFile = File(...),
+        save_evidence: Optional[bool] = Form(None),
+        region_ratio: Optional[float] = Form(None),
+        edge_band_ratio: Optional[float] = Form(None),
+        use_llm: Optional[bool] = Form(None),
+        llm_required: Optional[bool] = Form(None),
+        user_id: Any = Depends(current_user_id),
+    ) -> dict[str, Any]:
+        original_name = file.filename or "upload.docx"
+        if Path(original_name).suffix.lower() != ".docx":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="仅支持 DOCX 文件")
+
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="文件为空，请重新选择")
+        if len(content) > 10 * 1024 * 1024:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="上传文件过大，请压缩后重新上传。")
+
+        task_id = f"docx-boundary-{uuid4().hex}"
+        workspace_dir = Path(Config.USER_DB_DIR) / "workspaces" / f"user_{user_id}" / f"task_{task_id}" / "docx_boundary_input"
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        input_path = workspace_dir / "input.docx"
+        await asyncio.to_thread(input_path.write_bytes, content)
+
+        base_config = DocxBoundaryCheckConfig.from_app_config()
+        runtime_config = DocxBoundaryCheckConfig(
+            region_ratio=region_ratio if region_ratio is not None else base_config.region_ratio,
+            edge_band_ratio=edge_band_ratio if edge_band_ratio is not None else base_config.edge_band_ratio,
+            dark_pixel_threshold=base_config.dark_pixel_threshold,
+            min_edge_dark_pixels=base_config.min_edge_dark_pixels,
+            min_edge_dark_ratio=base_config.min_edge_dark_ratio,
+            horizontal_line_width_ratio=base_config.horizontal_line_width_ratio,
+            vertical_line_height_ratio=base_config.vertical_line_height_ratio,
+            min_vertical_edge_lines=base_config.min_vertical_edge_lines,
+            save_evidence=save_evidence if save_evidence is not None else base_config.save_evidence,
+            evidence_dir=base_config.evidence_dir,
+            llm_enabled=use_llm if use_llm is not None else base_config.llm_enabled,
+            llm_required=llm_required if llm_required is not None else base_config.llm_required,
+            llm_model=base_config.llm_model,
+            llm_base_url=base_config.llm_base_url,
+            llm_temperature=base_config.llm_temperature,
+            llm_timeout=base_config.llm_timeout,
+        ).normalized()
+
+        try:
+            return await asyncio.to_thread(
+                check_docx_file_boundaries,
+                input_path,
+                user_id=user_id,
+                task_id=task_id,
+                config=runtime_config,
+                file_label=Path(original_name).name,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+
     @app.get("/api/resumes")
     def list_resumes(user_id: Any = Depends(current_user_id)) -> dict[str, Any]:
         resumes = state.auth_db.list_user_resumes(user_id)
@@ -1096,7 +1711,9 @@ def create_app(
 
         if entry is None or entry.get("user_id") != user_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="记录不存在或无权访问。")
-        return {"parsedResume": entry.get("parsed_resume")}
+        parsed_resume = ensure_resume_sections(user_id, resume_id, entry.get("parsed_resume") or {})
+        entry["parsed_resume"] = parsed_resume
+        return {"parsedResume": parsed_resume}
 
     @app.delete("/api/resumes/{resume_id}")
     def delete_resume(resume_id: str, user_id: Any = Depends(current_user_id)) -> dict[str, Any]:
@@ -1126,7 +1743,8 @@ def create_app(
 
         if entry is None or entry.get("user_id") != user_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="记录不存在或无权访问。")
-        parsed_resume = entry.get("parsed_resume")
+        parsed_resume = ensure_resume_sections(user_id, payload.resumeFileId, entry.get("parsed_resume") or {})
+        entry["parsed_resume"] = parsed_resume
         try:
             return retrieve_chunks(payload.jdText, parsed_resume.get("chunks", []), payload.topK)
         except DocumentParseError as exc:
@@ -1157,6 +1775,7 @@ def create_app(
         if not db_resume:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="简历不存在或无权访问。")
 
+        db_resume = await asyncio.to_thread(ensure_resume_sections, user_id, resume_id, db_resume)
         chunks = db_resume.get("chunks", [])
         if not chunks:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="简历中不包含有效的文本片段。")
@@ -1255,6 +1874,8 @@ def create_app(
             parsed_resume = payload.parsedResume
         if parsed_resume is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="记录不存在或无权访问。")
+        if payload.resumeFileId:
+            parsed_resume = ensure_resume_sections(user_id, payload.resumeFileId, parsed_resume)
         chunks = parsed_resume.get("chunks", []) or []
         selected = [chunk for chunk in chunks if chunk.get("id") in set(payload.retrievedChunkIds)]
         if not selected and payload.retrievedChunks:
@@ -1424,16 +2045,30 @@ def create_app(
             request_json = payload.requestBody
             wrap_openai = False
         else:
-            base_url = chat_base_url(user_id, payload.provider, model_id)
+            base_url = chat_base_url_for_config(resolved_config_id) or chat_base_url(user_id, payload.provider, model_id)
             if not base_url:
                 raise HTTPException(status_code=400, detail="Base URL is required for OpenAI Compatible or Custom chat models.")
-            url = openai_chat_url(base_url)
+            chat_extra = chat_config_extra(resolved_config_id)
+            stream_api_mode = BaseAgent._normalize_stream_api_mode(
+                chat_extra.get("streamApiMode") or chat_extra.get("stream_api_mode")
+            )
+            if stream_api_mode == "responses":
+                url = openai_responses_url(base_url)
+                request_json = openai_responses_body(
+                    model_id,
+                    payload.requestBody,
+                    prompt_cache_extra=chat_extra,
+                    prompt_cache_namespace="model_proxy",
+                )
+                wrap_openai = "responses"
+            else:
+                url = openai_chat_url(base_url)
+                request_json = openai_chat_body(model_id, payload.requestBody)
+                wrap_openai = "chat_completions"
             headers = {
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {api_key}",
             }
-            request_json = openai_chat_body(model_id, payload.requestBody)
-            wrap_openai = True
 
         start_time = time.time()
         success = False
@@ -1450,8 +2085,13 @@ def create_app(
                             status_code=502,
                             detail=f"Failed to communicate with LLM provider: Expected JSON but got text/html. Upstream response preview: {res.text[:500]}"
                         )
+                    wrapped_json = (
+                        wrap_openai_responses_response(res_json)
+                        if wrap_openai == "responses"
+                        else wrap_openai_chat_response(res_json)
+                    )
                     return Response(
-                        content=json.dumps(wrap_openai_chat_response(res_json), ensure_ascii=False),
+                        content=json.dumps(wrapped_json, ensure_ascii=False),
                         status_code=200,
                         media_type="application/json"
                     )
@@ -1516,17 +2156,25 @@ def create_app(
                             if parts:
                                 output_chars = len(parts[0].get("text", ""))
                     else:
-                        if wrap_openai:
+                        if wrap_openai == "responses":
                             usage = res_data.get("usage", {})
+                            prompt_tokens = usage.get("input_tokens") or usage.get("prompt_tokens")
+                            completion_tokens = usage.get("output_tokens") or usage.get("completion_tokens")
+                            total_tokens = usage.get("total_tokens")
+                            output_chars = len(BaseAgent._extract_response_text(res_data))
+                        elif wrap_openai:
+                            usage = res_data.get("usage", {})
+                            prompt_tokens = usage.get("prompt_tokens")
+                            completion_tokens = usage.get("completion_tokens")
+                            total_tokens = usage.get("total_tokens")
+                            choices = res_data.get("choices", [])
+                            if choices:
+                                output_chars = len(choices[0].get("message", {}).get("content", ""))
                         else:
                             usage = res_data.get("usageMetadata", {}) or res_data.get("usage", {})
-                        prompt_tokens = usage.get("prompt_tokens") or usage.get("promptTokenCount")
-                        completion_tokens = usage.get("completion_tokens") or usage.get("candidatesTokenCount")
-                        total_tokens = usage.get("total_tokens") or usage.get("totalTokenCount")
-
-                        choices = res_data.get("choices", [])
-                        if choices:
-                            output_chars = len(choices[0].get("message", {}).get("content", ""))
+                            prompt_tokens = usage.get("prompt_tokens") or usage.get("promptTokenCount")
+                            completion_tokens = usage.get("completion_tokens") or usage.get("candidatesTokenCount")
+                            total_tokens = usage.get("total_tokens") or usage.get("totalTokenCount")
                 else:
                     error_type = f"HTTP_{res.status_code}" if res is not None else "CONNECTION_ERROR"
 
@@ -1802,18 +2450,40 @@ def create_app(
                     return {"ok": False, "message": message}
 
                 if payload.type == "chat" and payload.provider in {"openai-compatible", "custom"}:
-                    base_url = chat_base_url(user_id, payload.provider, model_id)
+                    base_url = chat_base_url_for_config(resolved_config_id) or chat_base_url(user_id, payload.provider, model_id)
                     if not base_url:
                         message = "请先为该大语言模型配置 Base URL。"
                         return {"ok": False, "message": message}
-                    url = openai_chat_url(base_url)
-                    test_body = {
-                        "model": payload.modelId,
-                        "messages": [{"role": "user", "content": "Return exactly: {\"ok\": true} in JSON format."}],
-                        "temperature": 0,
-                        "max_tokens": 256,
-                        "response_format": {"type": "json_object"},
-                    }
+                    chat_extra = chat_config_extra(resolved_config_id)
+                    stream_api_mode = BaseAgent._normalize_stream_api_mode(
+                        chat_extra.get("streamApiMode") or chat_extra.get("stream_api_mode")
+                    )
+                    if stream_api_mode == "responses":
+                        url = openai_responses_url(base_url)
+                        test_body = openai_responses_body(
+                            payload.modelId,
+                            {
+                                "contents": [
+                                    {"role": "user", "parts": [{"text": "Return exactly: {\"ok\": true} in JSON format."}]}
+                                ],
+                                "generationConfig": {
+                                    "temperature": 0,
+                                    "maxOutputTokens": 256,
+                                    "responseMimeType": "application/json",
+                                },
+                            },
+                            prompt_cache_extra=chat_extra,
+                            prompt_cache_namespace="model_test_connection",
+                        )
+                    else:
+                        url = openai_chat_url(base_url)
+                        test_body = {
+                            "model": payload.modelId,
+                            "messages": [{"role": "user", "content": "Return exactly: {\"ok\": true} in JSON format."}],
+                            "temperature": 0,
+                            "max_tokens": 256,
+                            "response_format": {"type": "json_object"},
+                        }
                     async with httpx.AsyncClient() as client:
                         res = await client.post(url, headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, json=test_body, timeout=20.0)
                         res_status = res.status_code
@@ -2366,6 +3036,7 @@ def create_app(
         payload: AgentOptimizeResumeRequest,
         user_id: Any = Depends(current_user_id)
     ) -> dict[str, Any]:
+        request_started_at = time.perf_counter()
         # 1. 鏍￠獙绠€鍘嗘槸鍚﹀瓨鍦?
         resume_data = state.auth_db.get_user_resume(user_id, payload.resume_id)
         if not resume_data:
@@ -2379,13 +3050,17 @@ def create_app(
             raise HTTPException(status_code=400, detail="请提供目标岗位 JD。")
 
         requested_is_co_pilot = payload.is_co_pilot if payload.is_co_pilot is not None else True
+        execution_mode = payload.normalized_execution_mode()
+        tool_calling_mode = payload.normalized_tool_calling_mode()
         normalized_jd = normalize_cache_text(payload.jd_text)
 
         # Reuse matching active/completed Agent tasks for duplicate submissions.
         # This keeps repeated resume/JD/model runs from consuming another model job.
-        for candidate in state.auth_db.list_user_agent_resume_tasks(user_id):
-            if candidate.get("resume_id") != payload.resume_id:
-                continue
+        for candidate in state.auth_db.list_recent_agent_resume_task_candidates(
+            user_id,
+            resume_id=payload.resume_id,
+            limit=40,
+        ):
             if normalize_cache_text(candidate.get("jd_text") or "") != normalized_jd:
                 continue
 
@@ -2393,9 +3068,7 @@ def create_app(
             if candidate_status not in {"PENDING", "RUNNING", "WAITING_FOR_HUMAN", "COMPLETED"}:
                 continue
 
-            detail = state.auth_db.get_agent_resume_task(user_id, candidate.get("task_id"))
-            if not detail:
-                continue
+            detail = candidate
             plan_str = detail.get("execution_plan")
             if not plan_str:
                 if (
@@ -2403,7 +3076,10 @@ def create_app(
                     and detail.get("optimized_resume_md")
                     and not payload.config_id
                     and requested_is_co_pilot is False
+                    and execution_mode == "pipeline"
+                    and tool_calling_mode == "auto"
                 ):
+                    detail["logs"] = parse_agent_logs(detail.get("logs"), str(detail.get("trace_id") or detail.get("task_id") or ""))
                     return {
                         "ok": True,
                         "taskId": detail["task_id"],
@@ -2411,6 +3087,7 @@ def create_app(
                         "cacheHit": True,
                         "cacheHitSource": "legacy_completed_result",
                         "message": "已复用相同简历和 JD 的历史完成结果。",
+                        "task": serialize_agent_task_summary(detail, include_artifacts=False),
                     }
                 continue
             try:
@@ -2419,7 +3096,11 @@ def create_app(
                 continue
             same_config = (plan_data.get("config_id") or None) == (payload.config_id or None)
             same_mode = bool(plan_data.get("is_co_pilot", True)) == bool(requested_is_co_pilot)
-            if same_config and same_mode:
+            plan_execution_options = parse_agent_execution_options(plan_str)
+            same_execution_mode = plan_execution_options["executionMode"] == execution_mode
+            same_tool_mode = plan_execution_options["toolCallingMode"] == tool_calling_mode
+            if same_config and same_mode and same_execution_mode and same_tool_mode:
+                detail["logs"] = parse_agent_logs(detail.get("logs"), str(detail.get("trace_id") or detail.get("task_id") or ""))
                 return {
                     "ok": True,
                     "taskId": detail["task_id"],
@@ -2427,6 +3108,7 @@ def create_app(
                     "cacheHit": True,
                     "cacheHitSource": "matching_agent_task",
                     "message": "已命中相同简历、JD 和模式的历史任务，直接复用结果。",
+                    "task": serialize_agent_task_summary(detail, include_artifacts=False),
                 }
 
         # 2. 鍒涘缓 task_id 鍜岀墿鐞嗛殧绂?workspace_path
@@ -2442,14 +3124,65 @@ def create_app(
             jd_text=payload.jd_text,
             workspace_path=workspace_path
         )
+        created_task = state.auth_db.get_agent_resume_task(user_id, task_id) or {"task_id": task_id}
+        trace_id = str(created_task.get("trace_id") or task_id)
+        logs_json = append_agent_log_json(
+            "[]",
+            build_agent_log(
+                "任务已创建：已收到简历和 JD，正在进行本地预热。",
+                detail={
+                    "executionMode": execution_mode,
+                    "toolCallingMode": tool_calling_mode,
+                    "isCoPilot": requested_is_co_pilot,
+                    "resumeCharacters": len(resume_text),
+                    "jdCharacters": len(payload.jd_text.strip()),
+                },
+                trace_id=trace_id,
+                task_id=task_id,
+                stage="bootstrap",
+                agent="AgentGateway",
+                status="running",
+                duration_ms=int((time.perf_counter() - request_started_at) * 1000),
+            ),
+        )
+        prewarm_started_at = time.perf_counter()
+        prewarm_detail = prewarm_agent_resume_workspace(
+            user_id=user_id,
+            task_id=task_id,
+            resume_text=resume_text,
+            jd_text=payload.jd_text,
+        )
+        prewarm_duration_ms = int((time.perf_counter() - prewarm_started_at) * 1000)
+        prewarm_detail["durationMs"] = prewarm_duration_ms
+        logs_json = append_agent_log_json(
+            logs_json,
+            build_agent_log(
+                (
+                    "本地工作区预热完成：简历、JD 和流式预览已准备好。"
+                    if not prewarm_detail["errors"]
+                    else "本地工作区预热遇到非阻塞问题，后台会继续补齐。"
+                ),
+                detail=prewarm_detail,
+                trace_id=trace_id,
+                task_id=task_id,
+                stage="workspace_prewarm",
+                agent="AgentGateway",
+                status="completed" if not prewarm_detail["errors"] else "warning",
+                log_type="info" if not prewarm_detail["errors"] else "warning",
+                duration_ms=prewarm_duration_ms,
+            ),
+        )
         state.auth_db.update_agent_resume_task_status(
             task_id=task_id,
             user_id=user_id,
             status="PENDING",
+            logs=logs_json,
             execution_plan=json.dumps({
                 "bootstrap_only": True,
                 "config_id": payload.config_id,
                 "is_co_pilot": requested_is_co_pilot,
+                "execution_mode": execution_mode,
+                "tool_calling_mode": tool_calling_mode,
                 "steps": [],
                 "cache_stats": {
                     "hits": 0,
@@ -2461,19 +3194,76 @@ def create_app(
         )
 
         # 4. 鎻愪氦浼佷笟绾ч槦鍒椾换鍔★紝鐢?RQ worker 鎵ц闀胯€楁椂 Agent workflow
-        enqueue_job(
-            run_agent_resume_orchestration_job,
+        enqueue_started_at = time.perf_counter()
+        try:
+            enqueue_job(
+                run_agent_resume_orchestration_job,
+                task_id=task_id,
+                user_id=user_id,
+                config_id=payload.config_id,
+                is_co_pilot=requested_is_co_pilot,
+                execution_mode=execution_mode,
+                tool_calling_mode=tool_calling_mode,
+                job_id=task_id,
+            )
+            enqueue_duration_ms = int((time.perf_counter() - enqueue_started_at) * 1000)
+        except Exception as enqueue_err:
+            failed_logs = append_agent_log_json(
+                logs_json,
+                build_agent_log(
+                    f"后台队列提交失败：{enqueue_err}",
+                    detail={"error": str(enqueue_err), "queue": Config.RQ_QUEUE_NAME},
+                    trace_id=trace_id,
+                    task_id=task_id,
+                    stage="queue",
+                    agent="RQ",
+                    status="failed",
+                    log_type="error",
+                    error_type="QueueEnqueueError",
+                ),
+            )
+            state.auth_db.update_agent_resume_task_status(
+                task_id=task_id,
+                user_id=user_id,
+                status="FAILED",
+                error_message=str(enqueue_err),
+                logs=failed_logs,
+            )
+            raise HTTPException(status_code=503, detail=f"后台队列提交失败：{enqueue_err}") from enqueue_err
+
+        queued_logs = append_agent_log_json(
+            logs_json,
+            build_agent_log(
+                "任务已进入后台队列，等待 worker 秒级接手。",
+                detail={
+                    "queue": Config.RQ_QUEUE_NAME,
+                    "jobId": task_id,
+                    "enqueueDurationMs": enqueue_duration_ms,
+                    "startupElapsedMs": int((time.perf_counter() - request_started_at) * 1000),
+                },
+                trace_id=trace_id,
+                task_id=task_id,
+                stage="queue",
+                agent="RQ",
+                status="queued",
+                duration_ms=enqueue_duration_ms,
+            ),
+        )
+        state.auth_db.update_agent_resume_task_status(
             task_id=task_id,
             user_id=user_id,
-            config_id=payload.config_id,
-            is_co_pilot=requested_is_co_pilot,
-            job_id=task_id,
+            status="PENDING",
+            logs=queued_logs,
         )
+        queued_task = state.auth_db.get_agent_resume_task(user_id, task_id)
 
         return {
             "ok": True,
             "taskId": task_id,
-            "status": "PENDING"
+            "status": "PENDING",
+            "executionMode": execution_mode,
+            "toolCallingMode": tool_calling_mode,
+            "task": serialize_agent_task_summary(queued_task, include_artifacts=False) if queued_task else None,
         }
 
     @app.get("/api/agent/resume/tasks/{task_id}")
@@ -2523,7 +3313,9 @@ def create_app(
             conversation_turns = []
 
         execution_plan = task.get("execution_plan") or ""
+        execution_options = parse_agent_execution_options(execution_plan)
         cache_stats = serialize_cache_stats(execution_plan)
+        provider_cache_stats = serialize_provider_cache_stats(logs_list)
         try:
             conversation_state = state.auth_db.get_agent_resume_conversation_state(user_id, task_id)
         except Exception:
@@ -2538,6 +3330,7 @@ def create_app(
             "jdText": task["jd_text"],
             "logs": logs_list,
             "optimizedResumeMd": task["optimized_resume_md"],
+            "streamPreviewMd": read_agent_stream_preview(user_id, task_id),
             "errorMessage": task["error_message"],
             "createdAt": task["created_at"],
             "updatedAt": task["updated_at"],
@@ -2547,11 +3340,223 @@ def create_app(
             "pendingQuestion": task.get("pending_question") or "",
             "humanAnswer": task.get("human_answer") or "",
             "executionPlan": execution_plan,
+            "executionMode": execution_options["executionMode"],
+            "toolCallingMode": execution_options["toolCallingMode"],
             "conversationTurns": conversation_turns,
             "conversationState": serialize_agent_conversation_state(conversation_state),
+            "localReuseStats": cache_stats,
             "cacheStats": cache_stats,
+            "providerCacheStats": provider_cache_stats,
             "stageMetrics": build_agent_stage_metrics(logs_list, cache_stats, str(task.get("trace_id") or task_id)),
         }
+
+    @app.post("/api/agent/resume/tasks/{task_id}/retry")
+    async def retry_agent_resume_task(
+        task_id: str,
+        user_id: Any = Depends(current_user_id)
+    ) -> dict[str, Any]:
+        task = state.auth_db.get_agent_resume_task(user_id, task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="未找到该优化任务")
+        if task.get("status") != "FAILED":
+            raise HTTPException(status_code=409, detail="只有失败的任务可以从失败点重试")
+
+        resume_id = task.get("resume_id")
+        if not resume_id or not state.auth_db.get_user_resume(user_id, resume_id):
+            raise HTTPException(status_code=404, detail="未找到该任务关联的简历，无法重试")
+
+        retry_options = recover_agent_retry_execution_options(task.get("execution_plan"))
+        config_id = retry_options["config_id"]
+        is_co_pilot = retry_options["is_co_pilot"]
+        execution_mode = retry_options["execution_mode"]
+        tool_calling_mode = retry_options["tool_calling_mode"]
+        next_execution_plan, retry_request, retry_count = prepare_agent_retry_execution_plan(task.get("execution_plan"))
+        retry_detail = retry_request if retry_request.get("failed_tool_name") else None
+        retry_logs = append_agent_resume_log(
+            task,
+            (
+                f"正在从失败点重试：将重放工具 {retry_request['failed_tool_name']} 的同一组参数。"
+                if retry_request.get("failed_tool_name")
+                else "正在从失败点重试：复用同一份简历、JD、模型配置和未完成步骤继续执行。"
+            ),
+            detail=retry_detail,
+            retry_count=retry_count,
+        )
+        previous_error = task.get("error_message") or ""
+
+        state.auth_db.update_agent_resume_task_status(
+            task_id=task_id,
+            user_id=user_id,
+            status="RUNNING",
+            error_message="",
+            logs=retry_logs,
+            execution_plan=next_execution_plan,
+        )
+
+        try:
+            enqueue_job(
+                run_agent_resume_orchestration_job,
+                task_id=task_id,
+                user_id=user_id,
+                config_id=config_id,
+                is_co_pilot=is_co_pilot,
+                execution_mode=execution_mode,
+                tool_calling_mode=tool_calling_mode,
+                job_id=f"{task_id}:retry:{uuid4().hex}",
+            )
+        except Exception as enqueue_err:
+            state.auth_db.update_agent_resume_task_status(
+                task_id=task_id,
+                user_id=user_id,
+                status="FAILED",
+                error_message=previous_error or str(enqueue_err),
+                logs=retry_logs,
+            )
+            raise HTTPException(status_code=503, detail=f"重试任务入队失败：{enqueue_err}") from enqueue_err
+
+        return {
+            "ok": True,
+            "taskId": task_id,
+            "status": "RUNNING",
+            "message": "已从失败点重新提交，正在用同一份失败数据继续调用模型。",
+        }
+
+    @app.get("/api/agent/resume/tasks/{task_id}/events")
+    async def stream_agent_resume_task_events(
+        task_id: str,
+        request: Request,
+        user_id: Any = Depends(current_user_id)
+    ):
+        if not state.auth_db.get_agent_resume_task(user_id, task_id):
+            raise HTTPException(status_code=404, detail="未找到该优化任务")
+
+        async def event_stream():
+            sent_log_count = 0
+            last_snapshot_signature = ""
+            last_modification_patch_signature = ""
+            retry_available_sent = False
+            terminal_statuses = {"COMPLETED", "FAILED", "WAITING_FOR_HUMAN"}
+            stream_started_at = time.perf_counter()
+            last_heartbeat_at = 0.0
+
+            yield format_sse_event("connected", {
+                "taskId": task_id,
+                "timestamp": datetime.now().isoformat(),
+                "pollIntervalMs": 350,
+                "message": "事件流已连接，正在同步任务首包。",
+            })
+
+            while True:
+                if await request.is_disconnected():
+                    break
+
+                task = state.auth_db.get_agent_resume_task(user_id, task_id)
+                if not task:
+                    yield format_sse_event("error", {"message": "任务不存在或已被删除。"})
+                    break
+
+                trace_id = str(task.get("trace_id") or task_id)
+                logs = parse_agent_logs(task.get("logs"), trace_id)
+                for log in logs[sent_log_count:]:
+                    yield format_sse_event("agent_log", log)
+                    detail = log.get("detail") if isinstance(log.get("detail"), dict) else {}
+                    if (
+                        str(log.get("stage") or "") == "tool_result"
+                        and str(detail.get("tool_name") or "") == "replace_resume_section"
+                        and detail.get("ok") is True
+                    ):
+                        patch = read_latest_agent_modification_patch(user_id, task_id)
+                        if patch:
+                            patch_signature = hashlib.sha1(
+                                json.dumps(patch, ensure_ascii=False, sort_keys=True).encode("utf-8")
+                            ).hexdigest()
+                            if patch_signature != last_modification_patch_signature:
+                                last_modification_patch_signature = patch_signature
+                                yield format_sse_event("modification_patch", {
+                                    "taskId": task_id,
+                                    "traceId": trace_id,
+                                    "patch": patch,
+                                })
+                sent_log_count = len(logs)
+
+                task_status = str(task.get("status") or "")
+                snapshot_started_at = time.perf_counter()
+                snapshot = serialize_agent_task_summary(
+                    task,
+                    parsed_logs=logs,
+                    include_artifacts=task_status in terminal_statuses,
+                )
+                snapshot_build_ms = int((time.perf_counter() - snapshot_started_at) * 1000)
+                snapshot["eventStreamMeta"] = {
+                    "snapshotBuildMs": snapshot_build_ms,
+                    "artifactMode": "full" if task_status in terminal_statuses else "live",
+                    "pollIntervalMs": 350 if time.perf_counter() - stream_started_at < 8 else 1000,
+                }
+                stream_preview = str(snapshot.get("streamPreviewMd") or "")
+                signature = ":".join([
+                    str(snapshot.get("status") or ""),
+                    str(snapshot.get("updatedAt") or ""),
+                    str(sent_log_count),
+                    str(snapshot.get("cacheStats", {}).get("hits") or 0),
+                    str(snapshot.get("cacheStats", {}).get("misses") or 0),
+                    str(snapshot.get("providerCacheStats", {}).get("cachedTokens") or 0),
+                    str(snapshot.get("providerCacheStats", {}).get("checks") or 0),
+                    hashlib.sha1(stream_preview.encode("utf-8")).hexdigest() if stream_preview else "",
+                ])
+                if signature != last_snapshot_signature:
+                    last_snapshot_signature = signature
+                    yield format_sse_event("snapshot", snapshot)
+
+                if not retry_available_sent:
+                    retry_event = serialize_retry_available_event(task, logs)
+                    if retry_event is not None:
+                        retry_available_sent = True
+                        yield format_sse_event("retry_available", retry_event)
+
+                now = time.perf_counter()
+                if task_status not in terminal_statuses and now - stream_started_at >= 1.2 and now - last_heartbeat_at >= 2.0:
+                    last_heartbeat_at = now
+                    elapsed_seconds = round(now - stream_started_at, 1)
+                    last_message = str(logs[-1].get("message") if logs else "")
+                    heartbeat_stage = "queue_wait" if task_status == "PENDING" else "worker_heartbeat"
+                    heartbeat_message = (
+                        f"仍在等待后台 worker 接手，已等待 {elapsed_seconds} 秒。"
+                        if task_status == "PENDING"
+                        else f"后台仍在处理中，最近一步：{last_message or '等待下一条日志'}。"
+                    )
+                    yield format_sse_event("agent_log", build_agent_log(
+                        heartbeat_message,
+                        detail={
+                            "elapsedSeconds": elapsed_seconds,
+                            "lastPersistedLog": last_message,
+                            "persistedLogCount": sent_log_count,
+                        },
+                        trace_id=trace_id,
+                        task_id=task_id,
+                        stage=heartbeat_stage,
+                        agent="SSE",
+                        status="waiting" if task_status == "PENDING" else "running",
+                    ))
+
+                if task_status in terminal_statuses:
+                    yield format_sse_event("done", {
+                        "taskId": task_id,
+                        "status": task_status,
+                        "logCount": sent_log_count,
+                    })
+                    break
+
+                await asyncio.sleep(0.35 if now - stream_started_at < 8 else 1)
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @app.post("/api/agent/resume/tasks/{task_id}/answer")
     async def answer_agent_question(
@@ -2568,17 +3573,7 @@ def create_app(
             raise HTTPException(status_code=404, detail="未找到该优化任务")
 
         task_status = str(task.get("status") or "")
-        if task_status != "WAITING_FOR_HUMAN":
-            if task_status in {"PENDING", "RUNNING", "COMPLETED"}:
-                return {
-                    "ok": True,
-                    "status": task_status,
-                    "duplicateIgnored": True,
-                    "message": "任务已在继续执行或已经完成，无需重复提交回答。",
-                }
-            raise HTTPException(status_code=409, detail="当前任务状态不接受回答。")
-
-        # 提取 execution_plan 中保留的模型配置。
+        # 提取 execution_plan 中保留的模型配置和当前步骤，用于恢复执行或回答追问。
         config_id = None
         plan_data = {}
         plan_str = task.get("execution_plan")
@@ -2588,9 +3583,12 @@ def create_app(
                 config_id = plan_data.get("config_id")
             except:
                 pass
-
-        if not config_id:
-            config_id = "default"
+        plan_execution_mode = normalize_agent_execution_mode(
+            plan_data.get("execution_mode") or plan_data.get("executionMode")
+        ) if isinstance(plan_data, dict) else "pipeline"
+        plan_tool_calling_mode = normalize_agent_tool_calling_mode(
+            plan_data.get("tool_calling_mode") or plan_data.get("toolCallingMode")
+        ) if isinstance(plan_data, dict) else "auto"
 
         active_section = ""
         active_step_index = None
@@ -2603,6 +3601,79 @@ def create_app(
                     except (TypeError, ValueError):
                         active_step_index = None
                     break
+
+        if task_status != "WAITING_FOR_HUMAN":
+            if task_status in {"PENDING", "RUNNING", "COMPLETED"}:
+                try:
+                    state.auth_db.add_agent_resume_turn(
+                        task_id=task_id,
+                        user_id=user_id,
+                        step_index=active_step_index,
+                        role="user",
+                        content=answer,
+                        answer_type=payload.answer_type,
+                        remember=payload.remember,
+                        evidence_scope=payload.evidence_scope,
+                    )
+                except Exception as turn_err:
+                    print(f"[AGENT_TURNS] Failed to save non-blocking user turn: {turn_err}")
+
+                try:
+                    current_conversation_state = state.auth_db.get_agent_resume_conversation_state(user_id, task_id)
+                    merged_state = merge_agent_conversation_state(
+                        current_conversation_state,
+                        answer=answer,
+                        answer_type=payload.answer_type,
+                        evidence_scope=payload.evidence_scope,
+                        active_section=active_section,
+                    )
+                    state.auth_db.upsert_agent_resume_conversation_state(
+                        task_id=task_id,
+                        user_id=user_id,
+                        summary=merged_state["summary"],
+                        global_preferences=merged_state["global_preferences"],
+                        fact_ledger=merged_state["fact_ledger"],
+                    )
+                except Exception as state_err:
+                    print(f"[AGENT_CONVERSATION] Failed to update non-blocking conversation state: {state_err}")
+
+                if payload.answer_type == "question":
+                    explanation = build_agent_question_explanation(
+                        task=task,
+                        plan_data=plan_data,
+                        active_section=active_section,
+                        active_step_index=active_step_index,
+                        question=answer,
+                    )
+                    try:
+                        state.auth_db.add_agent_resume_turn(
+                            task_id=task_id,
+                            user_id=user_id,
+                            step_index=active_step_index,
+                            role="assistant",
+                            content=explanation,
+                            answer_type="clarification",
+                            remember=False,
+                            evidence_scope=payload.evidence_scope,
+                            summary=explanation[:240],
+                        )
+                    except Exception as assistant_turn_err:
+                        print(f"[AGENT_TURNS] Failed to save non-blocking assistant explanation: {assistant_turn_err}")
+                    return {
+                        "ok": True,
+                        "status": task_status,
+                        "message": explanation,
+                        "answeredQuestion": True,
+                        "recordedOnly": True,
+                    }
+
+                return {
+                    "ok": True,
+                    "status": task_status,
+                    "recordedOnly": True,
+                    "message": "已保存到本任务对话记录。"
+                }
+            raise HTTPException(status_code=409, detail="当前任务状态不接受回答。")
 
         duplicate_answer = False
         if active_step_index is not None:
@@ -2735,6 +3806,8 @@ def create_app(
                 user_id=user_id,
                 config_id=config_id,
                 is_co_pilot=is_co_pilot_plan,
+                execution_mode=plan_execution_mode,
+                tool_calling_mode=plan_tool_calling_mode,
                 job_id=f"{task_id}:resume",
             )
         except Exception as enqueue_err:
@@ -2778,40 +3851,37 @@ def create_app(
             from urllib.parse import quote
             try:
                 docx_path = get_safe_workspace_path(user_id, task_id, "optimized_resume.docx")
-                if os.path.exists(docx_path):
-                    orig_name = task.get('original_resume_name') or 'resume'
-                    if orig_name.endswith('.md') or orig_name.endswith('.txt'):
-                        orig_name = os.path.splitext(orig_name)[0]
-                    elif orig_name.endswith('.docx') or orig_name.endswith('.pdf'):
-                        orig_name = os.path.splitext(orig_name)[0]
-                    filename = f"optimized_{orig_name}.docx"
-                    encoded_filename = quote(filename)
-                    return FileResponse(
-                        path=docx_path,
-                        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                        filename=filename,
-                        headers={
-                            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
-                        }
+                if not os.path.exists(docx_path):
+                    original_docx_path = get_safe_workspace_path(user_id, task_id, "original_resume.docx")
+                    if os.path.exists(original_docx_path):
+                        from backend.agents.tools.docx_tools import update_docx_resume_from_log
+                        update_docx_resume_from_log(user_id, task_id)
+
+                if not os.path.exists(docx_path):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="未找到高保真 DOCX 输出。系统已停止生成会丢失照片和模板元素的兜底 DOCX，请上传 DOCX 原件后重新优化，或下载 Markdown。",
                     )
-                from backend.agents.tools.docx_tools import generate_docx_from_markdown
-                generate_docx_from_markdown(user_id, task_id, task["optimized_resume_md"], docx_path)
-                if os.path.exists(docx_path):
-                    orig_name = task.get('original_resume_name') or 'resume'
-                    if orig_name.endswith('.md') or orig_name.endswith('.txt') or orig_name.endswith('.docx') or orig_name.endswith('.pdf'):
-                        orig_name = os.path.splitext(orig_name)[0]
-                    filename = f"optimized_{orig_name}.docx"
-                    encoded_filename = quote(filename)
-                    return FileResponse(
-                        path=docx_path,
-                        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                        filename=filename,
-                        headers={
-                            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
-                        }
-                    )
+
+                orig_name = task.get('original_resume_name') or 'resume'
+                if orig_name.endswith('.md') or orig_name.endswith('.txt'):
+                    orig_name = os.path.splitext(orig_name)[0]
+                elif orig_name.endswith('.docx') or orig_name.endswith('.pdf'):
+                    orig_name = os.path.splitext(orig_name)[0]
+                filename = f"optimized_{orig_name}.docx"
+                encoded_filename = quote(filename)
+                return FileResponse(
+                    path=docx_path,
+                    media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    filename=filename,
+                    headers={
+                        "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
+                    }
+                )
+            except HTTPException:
+                raise
             except Exception as e:
-                pass
+                raise HTTPException(status_code=500, detail=f"DOCX 导出出错: {str(e)}")
 
         if format == "pdf":
             from backend.agents.tools.workspace_tools import get_safe_workspace_path
@@ -2825,8 +3895,16 @@ def create_app(
                 pdf_path = os.path.join(workspace_dir, "optimized_resume.pdf")
 
                 if not os.path.exists(docx_path):
-                    from backend.agents.tools.docx_tools import generate_docx_from_markdown
-                    generate_docx_from_markdown(user_id, task_id, task["optimized_resume_md"], docx_path)
+                    original_docx_path = get_safe_workspace_path(user_id, task_id, "original_resume.docx")
+                    if os.path.exists(original_docx_path):
+                        from backend.agents.tools.docx_tools import update_docx_resume_from_log
+                        update_docx_resume_from_log(user_id, task_id)
+
+                if not os.path.exists(docx_path):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="未找到高保真 DOCX 输出，无法在保留照片和模板元素的前提下导出 PDF。请上传 DOCX 原件后重新优化，或下载 Markdown。",
+                    )
 
                 # Perform PDF conversion dynamically
                 success = convert_docx_to_pdf(user_id, task_id, docx_path, workspace_dir)
@@ -2848,6 +3926,8 @@ def create_app(
                     )
                 else:
                     raise HTTPException(status_code=500, detail="PDF 杞崲澶辫触锛岃纭绯荤粺瀹夎鏈?LibreOffice")
+            except HTTPException:
+                raise
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"PDF 瀵煎嚭鍑洪敊: {str(e)}")
 

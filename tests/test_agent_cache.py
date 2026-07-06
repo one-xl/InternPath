@@ -2,6 +2,7 @@ import json
 
 from fastapi.testclient import TestClient
 
+import backend.main as main_module
 from backend.agent_resume import check_resume_fact_integrity
 from backend.agents.cache import (
     FileAgentCacheStore,
@@ -11,6 +12,7 @@ from backend.agents.cache import (
     get_agent_cache,
     set_agent_cache,
 )
+from backend.agents.tools.workspace_tools import tool_write_file
 from backend.main import create_app
 from config import Config
 from database import Database
@@ -178,6 +180,98 @@ def test_agent_optimize_reuses_matching_completed_task(tmp_path, monkeypatch):
     data = resp.json()
     assert data["cacheHit"] is True
     assert data["taskId"] == task_id
+
+
+def test_agent_retry_failed_task_requeues_same_task_payload(tmp_path, monkeypatch):
+    monkeypatch.setattr(Config, "EMAIL_VERIFICATION_REQUIRED", False)
+    monkeypatch.setattr(Config, "USER_DB_DIR", str(tmp_path / "user_data"))
+    monkeypatch.setattr(Config, "DB_PATH", str(tmp_path / "career_path.db"))
+
+    enqueued = []
+
+    def fake_enqueue(func, *args, **kwargs):
+        enqueued.append({"func": func, "args": args, "kwargs": kwargs})
+        return object()
+
+    monkeypatch.setattr(main_module, "enqueue_job", fake_enqueue)
+
+    service = object.__new__(CareerPathAIService)
+    db = Database(str(tmp_path / "auth.db"))
+    app = create_app(service=service, auth_db=db)
+    client = TestClient(app)
+
+    reg = client.post("/api/auth/register", json={"username": "retry@example.com", "password": "password123"})
+    token = reg.json()["token"]
+    user_id = reg.json()["user"]["id"]
+
+    resume_id = "resume_retry_1"
+    db.save_user_resume(
+        user_id=user_id,
+        resume_id=resume_id,
+        file_name="resume.docx",
+        file_size=128,
+        file_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        parsed_resume={
+            "file": {"id": resume_id, "name": "resume.docx", "size": 128, "type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+            "cleanedText": "Project: built an InternPath agent workflow.",
+            "rawText": "Project: built an InternPath agent workflow.",
+            "chunks": [],
+        },
+    )
+
+    task_id = "agent-resume-retry-failed"
+    db.create_agent_resume_task(
+        task_id=task_id,
+        user_id=user_id,
+        resume_id=resume_id,
+        original_resume_name="resume.docx",
+        jd_text="Backend internship requiring FastAPI and LLM workflow experience.",
+    )
+    db.update_agent_resume_task_status(
+        task_id=task_id,
+        user_id=user_id,
+        status="FAILED",
+        error_message="upstream 503",
+        logs=json.dumps([
+            {
+                "timestamp": "2026-07-05T20:32:50",
+                "type": "error",
+                "message": "调用大模型失败: upstream 503",
+                "stage": "hr_critic",
+                "agent": "HRCritic",
+            }
+        ], ensure_ascii=False),
+        execution_plan=json.dumps({
+            "config_id": "cfg-retry",
+            "is_co_pilot": False,
+            "steps": [
+                {"step_index": 1, "status": "COMPLETED"},
+                {"step_index": 2, "status": "PENDING"},
+            ],
+        }, ensure_ascii=False),
+    )
+
+    resp = client.post(
+        f"/api/agent/resume/tasks/{task_id}/retry",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["taskId"] == task_id
+    assert enqueued
+    queued_kwargs = enqueued[0]["kwargs"]
+    assert queued_kwargs["task_id"] == task_id
+    assert queued_kwargs["user_id"] == user_id
+    assert queued_kwargs["config_id"] == "cfg-retry"
+    assert queued_kwargs["is_co_pilot"] is False
+    assert queued_kwargs["job_id"].startswith(f"{task_id}:retry:")
+
+    retried_task = db.get_agent_resume_task(user_id, task_id)
+    assert retried_task["status"] == "RUNNING"
+    assert retried_task["error_message"] == ""
+    logs = json.loads(retried_task["logs"])
+    assert logs[-1]["stage"] == "retry"
+    assert "同一份简历" in logs[-1]["message"]
 
 
 def test_agent_optimize_reuses_legacy_completed_task_without_plan(tmp_path, monkeypatch):
@@ -385,6 +479,7 @@ def test_agent_task_status_returns_cache_stats(tmp_path, monkeypatch):
     cache_stats = body["cacheStats"]
     assert cache_stats["hits"] == 2
     assert cache_stats["misses"] == 1
+    assert cache_stats["hitRate"] == 67
     assert cache_stats["savedModelCalls"] == 4
     assert cache_stats["items"][0]["label"] == "JD decode"
     assert cache_stats["items"][0]["savedModelCalls"] == 1
@@ -397,3 +492,201 @@ def test_agent_task_status_returns_cache_stats(tmp_path, monkeypatch):
         "factLedger": [],
         "updatedAt": "",
     }
+
+
+def test_agent_task_events_stream_logs_and_cache_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setattr(Config, "EMAIL_VERIFICATION_REQUIRED", False)
+    monkeypatch.setattr(Config, "USER_DB_DIR", str(tmp_path / "user_data"))
+    monkeypatch.setattr(Config, "DB_PATH", str(tmp_path / "career_path.db"))
+
+    service = object.__new__(CareerPathAIService)
+    db = Database(str(tmp_path / "auth.db"))
+    app = create_app(service=service, auth_db=db)
+    client = TestClient(app)
+
+    reg = client.post("/api/auth/register", json={"username": "cache-stream@example.com", "password": "password123"})
+    token = reg.json()["token"]
+    user_id = reg.json()["user"]["id"]
+
+    task_id = "agent-resume-cache-stream"
+    db.create_agent_resume_task(
+        task_id=task_id,
+        user_id=user_id,
+        resume_id="resume_stream",
+        original_resume_name="resume.docx",
+        jd_text="Backend intern role.",
+    )
+    db.update_agent_resume_task_status(
+        task_id=task_id,
+        user_id=user_id,
+        status="COMPLETED",
+        logs=json.dumps([
+            {
+                "timestamp": "2026-07-04T00:00:01",
+                "type": "info",
+                "message": "JD decode cache hit",
+                "stage": "cache",
+                "agent": "Cache",
+                "cacheNamespace": "job_decode_v2",
+                "cacheHit": True,
+            }
+        ], ensure_ascii=False),
+        optimized_resume_md="optimized",
+        execution_plan=json.dumps({
+            "steps": [],
+            "cache_stats": {
+                "hits": 1,
+                "misses": 1,
+                "saved_model_calls": 1,
+                "items": [],
+            },
+        }, ensure_ascii=False),
+    )
+    tool_write_file(user_id, task_id, "stream_preview.md", "streaming preview")
+
+    with client.stream(
+        "GET",
+        f"/api/agent/resume/tasks/{task_id}/events",
+        headers={"Authorization": f"Bearer {token}"},
+    ) as resp:
+        body = "".join(resp.iter_text())
+
+    assert resp.status_code == 200
+    assert "event: connected" in body
+    assert "event: agent_log" in body
+    assert "event: snapshot" in body
+    assert "event: done" in body
+    assert '"streamPreviewMd": "streaming preview"' in body
+    assert '"eventStreamMeta"' in body
+    assert '"artifactMode": "full"' in body
+    assert '"hitRate": 50' in body
+
+
+def test_agent_task_events_stream_emits_retry_available(tmp_path, monkeypatch):
+    monkeypatch.setattr(Config, "EMAIL_VERIFICATION_REQUIRED", False)
+    monkeypatch.setattr(Config, "USER_DB_DIR", str(tmp_path / "user_data"))
+    monkeypatch.setattr(Config, "DB_PATH", str(tmp_path / "career_path.db"))
+
+    service = object.__new__(CareerPathAIService)
+    db = Database(str(tmp_path / "auth.db"))
+    app = create_app(service=service, auth_db=db)
+    client = TestClient(app)
+
+    reg = client.post("/api/auth/register", json={"username": "retry-stream@example.com", "password": "password123"})
+    token = reg.json()["token"]
+    user_id = reg.json()["user"]["id"]
+
+    task_id = "agent-resume-retry-stream"
+    db.create_agent_resume_task(
+        task_id=task_id,
+        user_id=user_id,
+        resume_id="resume_retry_stream",
+        original_resume_name="resume.docx",
+        jd_text="Backend intern role.",
+    )
+    db.update_agent_resume_task_status(
+        task_id=task_id,
+        user_id=user_id,
+        status="FAILED",
+        error_message="provider disconnected",
+        logs=json.dumps([
+            {
+                "timestamp": "2026-07-04T00:00:01",
+                "type": "error",
+                "message": "Tool failed",
+                "stage": "tool_result",
+                "agent": "AgenticToolLoop",
+                "traceId": task_id,
+                "status": "failed",
+            }
+        ], ensure_ascii=False),
+        execution_plan=json.dumps({
+            "failure_point": {
+                "failed_stage": "tool_result",
+                "failed_tool_name": "replace_resume_section",
+                "failed_tool_arguments": {"section_index": 2, "new_content": "same data"},
+                "failed_model_input_ref": "turn:3",
+                "failed_sequence": 7,
+                "retry_count": 1,
+                "error": "provider disconnected",
+            }
+        }, ensure_ascii=False),
+    )
+
+    with client.stream(
+        "GET",
+        f"/api/agent/resume/tasks/{task_id}/events",
+        headers={"Authorization": f"Bearer {token}"},
+    ) as resp:
+        body = "".join(resp.iter_text())
+
+    assert resp.status_code == 200
+    assert "event: retry_available" in body
+    assert '"failedToolName": "replace_resume_section"' in body
+    assert '"section_index": 2' in body
+    assert '"sequence": 7' in body
+
+
+def test_agent_task_events_stream_emits_live_modification_patch(tmp_path, monkeypatch):
+    monkeypatch.setattr(Config, "EMAIL_VERIFICATION_REQUIRED", False)
+    monkeypatch.setattr(Config, "USER_DB_DIR", str(tmp_path / "user_data"))
+    monkeypatch.setattr(Config, "DB_PATH", str(tmp_path / "career_path.db"))
+
+    service = object.__new__(CareerPathAIService)
+    db = Database(str(tmp_path / "auth.db"))
+    app = create_app(service=service, auth_db=db)
+    client = TestClient(app)
+
+    reg = client.post("/api/auth/register", json={"username": "patch-stream@example.com", "password": "password123"})
+    token = reg.json()["token"]
+    user_id = reg.json()["user"]["id"]
+
+    task_id = "agent-resume-live-patch"
+    db.create_agent_resume_task(
+        task_id=task_id,
+        user_id=user_id,
+        resume_id="resume_patch_stream",
+        original_resume_name="resume.docx",
+        jd_text="Backend intern role.",
+    )
+    db.update_agent_resume_task_status(
+        task_id=task_id,
+        user_id=user_id,
+        status="WAITING_FOR_HUMAN",
+        logs=json.dumps([
+            {
+                "timestamp": "2026-07-04T00:00:01",
+                "type": "tool_response",
+                "message": "Tool replace_resume_section completed.",
+                "stage": "tool_result",
+                "agent": "AgenticToolLoop",
+                "traceId": task_id,
+                "status": "completed",
+                "detail": {
+                    "tool_name": "replace_resume_section",
+                    "ok": True,
+                },
+            }
+        ], ensure_ascii=False),
+    )
+    tool_write_file(user_id, task_id, "modification_log.json", json.dumps([
+        {
+            "section_name": "Work Experience",
+            "section_index": 1,
+            "original": "Built APIs",
+            "new": "Built reliable FastAPI services",
+            "reason": "match backend JD",
+        }
+    ], ensure_ascii=False))
+
+    with client.stream(
+        "GET",
+        f"/api/agent/resume/tasks/{task_id}/events",
+        headers={"Authorization": f"Bearer {token}"},
+    ) as resp:
+        body = "".join(resp.iter_text())
+
+    assert resp.status_code == 200
+    assert "event: modification_patch" in body
+    assert '"section_name": "Work Experience"' in body
+    assert '"new": "Built reliable FastAPI services"' in body

@@ -33,7 +33,14 @@ cd ..
 ## 测试
 
 ```powershell
+npm run doctor
+npm run agent:compile
+npm run frontend:build
+npm run agent:test
+
 .\.venv\Scripts\python.exe -m pytest -q
 cd frontend
 npm run build
 ```
+
+`npm run doctor` 会输出 JSON 格式的本地工具链检查结果，覆盖 Python/Node/npm、关键目录、环境变量、PostgreSQL/Redis 连通性、端口占用和源码扫描计数，方便人和 Agent 快速判断缺什么。

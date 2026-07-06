@@ -1705,6 +1705,60 @@ class Database:
             })
         return tasks
 
+    def list_recent_agent_resume_task_candidates(
+        self,
+        user_id: Any,
+        *,
+        resume_id: Optional[str] = None,
+        limit: int = 40,
+    ) -> list[dict]:
+        conn = self.get_connection()
+        cursor = DatabaseCursorWrapper(conn.cursor(), self.is_postgres)
+        capped_limit = max(1, min(int(limit or 40), 200))
+        params: list[Any] = [str(user_id)]
+        resume_clause = ""
+        if resume_id:
+            resume_clause = "AND resume_id = ?"
+            params.append(resume_id)
+        params.append(capped_limit)
+        cursor.execute(
+            f"""
+            SELECT task_id, user_id, trace_id, status, resume_id, original_resume_name,
+                   jd_text, workspace_path, logs, optimized_resume_md, error_message,
+                   created_at, updated_at, pending_question, human_answer, execution_plan
+            FROM agent_resume_tasks
+            WHERE user_id = ?
+              {resume_clause}
+              AND status IN ('PENDING', 'RUNNING', 'WAITING_FOR_HUMAN', 'COMPLETED')
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            tuple(params),
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        tasks = []
+        for row in rows:
+            tasks.append({
+                "task_id": row[0],
+                "user_id": row[1],
+                "trace_id": row[2],
+                "status": row[3],
+                "resume_id": row[4],
+                "original_resume_name": row[5],
+                "jd_text": row[6],
+                "workspace_path": row[7],
+                "logs": row[8],
+                "optimized_resume_md": row[9],
+                "error_message": row[10],
+                "created_at": row[11],
+                "updated_at": row[12],
+                "pending_question": row[13],
+                "human_answer": row[14],
+                "execution_plan": row[15],
+            })
+        return tasks
+
     def delete_agent_resume_task(self, user_id: Any, task_id: str) -> bool:
         conn = self.get_connection()
         cursor = DatabaseCursorWrapper(conn.cursor(), self.is_postgres)

@@ -1,0 +1,404 @@
+InternPath 项目技术栈说明
+
+一、项目整体定位
+
+InternPath 是一个个人求职决策工作台，核心目标是把“岗位 JD 分析、简历解析、匹配度判断、简历定向优化、投递历史沉淀”串成一条完整流程。项目采用前后端分离架构：
+
+1. 前端 React 工作台负责用户操作界面。
+2. FastAPI 后端负责认证、业务接口、数据库访问、后台任务投递。
+3. Redis/RQ Worker 负责执行耗时分析任务，避免接口长时间阻塞。
+4. PostgreSQL + pgvector 负责结构化业务数据和向量数据存储。
+5. 独立 AI Service 负责 RAG 检索、报告校验和分析工作流。
+6. Chrome Extension 负责从招聘网站抓取岗位并回填到工作台。
+
+整体调用链可以理解为：
+
+用户在 React 页面输入 JD / 上传简历
+-> FastAPI 后端校验请求并保存任务
+-> Redis/RQ 把耗时任务交给后台 Worker
+-> Worker 调用数据库、AI Service、外部模型接口
+-> PostgreSQL 保存分析结果、简历优化结果和历史记录
+-> 前端轮询或刷新接口展示最终结果
+
+
+二、前端技术栈
+
+1. React 19
+
+选用原因：
+React 适合构建状态复杂的单页应用。InternPath 前端包含岗位表单、历史记录、模型配置、个人材料、Agent 简历优化、结果对照等多个交互密集页面，用 React 组件化组织更容易维护。
+
+实现描述：
+前端入口在 frontend/src/main.tsx，主应用在 frontend/src/App.tsx。App 维护当前页面、登录态、岗位草稿、简历上传状态、分析状态等全局级状态；各页面组件负责独立业务界面，例如 DashboardPage、NewAnalysisPage、ResultPage、AgentResumePage。用户操作触发 fetch 请求，后端返回 JSON 后更新 React state，界面随 state 自动刷新。
+
+2. TypeScript 5
+
+选用原因：
+项目的数据结构较多，例如岗位草稿、分析结果、简历片段、模型配置、Agent 任务状态。TypeScript 可以提前约束字段名称和类型，减少前后端字段不一致造成的运行时错误。
+
+实现描述：
+类型定义集中在 frontend/src/types/ 下，例如 analysis.ts、job.ts、navigation.ts。组件通过这些类型约束 props 和状态，让页面在编译阶段就能发现字段缺失、状态值错误等问题。
+
+3. Vite 6
+
+选用原因：
+Vite 启动快、热更新快，适合本项目这种前端频繁调试的单页应用。生产构建也比较简单，配合 npm run build 生成静态资源。
+
+实现描述：
+开发时执行 frontend 下的 npm run dev，Vite 在 127.0.0.1:5173 启动开发服务器。构建时执行 npm run build，先由 tsc 做 TypeScript 编译检查，再由 Vite 打包 dist 静态文件。
+
+4. CSS / 项目自定义样式
+
+选用原因：
+项目页面很多，但没有引入大型 UI 组件库，使用统一 CSS 变量和自定义 class 可以保持轻量，并让工作台、结果页、Agent 页风格一致。
+
+实现描述：
+主要样式集中在 frontend/src/styles.css。文件中定义了全局颜色、卡片、按钮、表单、侧边栏、分析页、Agent 页面等样式。AgentResumePage 使用 agent-page、agent-panel、agent-tabs 等 class 接入项目现有视觉语言。
+
+5. GSAP
+
+选用原因：
+登录页和部分交互页面需要更平滑的动效，GSAP 比手写复杂 CSS 动画更可控。
+
+实现描述：
+登录页 LoginPage 和部分布局组件中通过 gsap / @gsap/react 做入场动画、背景粒子或过渡效果。它只影响视觉表现，不承担业务逻辑。
+
+
+三、后端 API 技术栈
+
+1. Python 3 + FastAPI
+
+选用原因：
+FastAPI 适合构建类型清晰、接口多、需要异步能力的后端服务。项目需要处理文件上传、认证、模型代理、历史记录、Agent 任务、Chrome 插件接口等多类 API，FastAPI 的路由和依赖注入机制比较合适。
+
+实现描述：
+后端入口是 backend/main.py。create_app 会注册 API 路由，例如登录注册、简历上传、岗位分析、历史记录、模型配置、Agent 简历优化等。接口通过 Depends(current_user_id) 获取当前用户，通过 HTTPException 返回中文错误信息。
+
+2. Pydantic v2
+
+选用原因：
+接口请求和响应结构复杂，Pydantic 可以做数据校验、默认值处理和结构化序列化，减少手动校验成本。
+
+实现描述：
+后端在 models.py、backend/agents/schemas.py、ai-service/app/api/schemas.py 等文件定义请求/响应模型。FastAPI 接收到请求后会自动用 Pydantic 校验字段，字段不合法时返回 422 错误。
+
+3. Uvicorn
+
+选用原因：
+Uvicorn 是 FastAPI 常用 ASGI 服务器，适合本项目的异步接口和本地/服务器部署。
+
+实现描述：
+本地启动后端使用：
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8787
+AI Service 使用：
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+
+4. httpx / OpenAI SDK 兼容调用
+
+选用原因：
+项目需要调用外部大模型、嵌入模型和内部 AI Service。httpx 适合服务间 HTTP 请求，OpenAI SDK 兼容多种 OpenAI-compatible 模型网关。
+
+实现描述：
+后端通过配置中的 LLM_BASE_URL、LLM_MODEL、LLM_API_KEY 等连接 DeepSeek / Doubao Ark 等兼容接口；Gemini 相关配置由 GEMINI_API_KEY 和 GEMINI_BASE_URL 提供。模型调用结果会被后端解析成项目内部的分析结果字段。
+
+
+四、数据层技术栈
+
+1. PostgreSQL
+
+选用原因：
+项目包含用户、会话、岗位草稿、历史记录、简历文件、模型配置、审计日志、Agent 任务等大量结构化数据。PostgreSQL 稳定、事务能力强，适合长期保存业务数据。项目约定运行时只支持 PostgreSQL，不使用 SQLite 作为运行数据库。
+
+实现描述：
+database.py 中的 Database 类负责连接 PostgreSQL、初始化表结构、执行查询和封装数据访问方法。后端业务接口通过 Database 写入和读取用户数据、历史记录、简历解析结果、Agent 任务状态等。
+
+2. pgvector
+
+选用原因：
+岗位 JD 与简历片段匹配需要向量检索。pgvector 可以把向量和业务数据放在同一套 PostgreSQL 中，减少额外向量数据库的部署复杂度。
+
+实现描述：
+database.py 初始化时会创建 vector 扩展，并在 embeddings、knowledge_chunk 等表中使用 vector 字段保存嵌入向量。简历片段被向量化后写入数据库，后续分析时用于召回与 JD 相关的经历片段。
+
+3. psycopg2-binary
+
+选用原因：
+Python 后端需要连接 PostgreSQL。psycopg2 是成熟稳定的 PostgreSQL 驱动。
+
+实现描述：
+Database 类通过 psycopg2 建立连接，并用 DatabaseCursorWrapper 兼容项目中较早的参数占位写法，让旧查询也能在 PostgreSQL 上执行。
+
+4. cryptography / Fernet
+
+选用原因：
+用户可能在系统中保存模型 API Key，这类敏感信息不能明文存储。
+
+实现描述：
+database.py 中使用 cryptography.fernet 对模型 API Key 加密保存。后端读取配置时再解密，用于向模型服务发起请求。浏览器端不会直接保存真实 API Key。
+
+5. 数据库会话 Session
+
+选用原因：
+工作台需要登录态，并且不能只依赖内存，否则服务重启后会话丢失。
+
+实现描述：
+登录成功后，后端生成 session token，写入 sessions 表，并通过 session_id Cookie 返回浏览器。后续接口从 Cookie 或 Bearer token 中取 token，再查询 sessions 表确认用户身份。
+
+
+五、后台任务技术栈
+
+1. Redis
+
+选用原因：
+岗位分析、简历向量化、Agent 简历优化都属于耗时任务，不能让 HTTP 请求一直等待。Redis 适合作为轻量任务队列和状态协调组件。
+
+实现描述：
+docker-compose.yml 中提供 redis:7-alpine 服务。后端读取 REDIS_URL 连接 Redis，把任务投递到指定队列。
+
+2. RQ
+
+选用原因：
+RQ 是 Python 生态中简单直接的 Redis 队列方案。相比引入更重的任务系统，它更适合本项目当前的后台分析任务。
+
+实现描述：
+backend/task_queue.py 封装 enqueue_job，把任务函数、参数和 job_id 投递到 RQ 队列。backend/rq_worker.py 启动 Worker 消费队列。Windows 下使用 SimpleWorker，Linux 下使用 Worker。后台任务执行完成后把结果写回 PostgreSQL，前端再从后端接口读取。
+
+
+六、AI / RAG 技术栈
+
+1. 独立 AI Service
+
+选用原因：
+AI 分析、RAG 检索、事实校验和工作流执行相对独立，拆成单独服务可以让主后端保持清晰，也方便后续独立扩展。
+
+实现描述：
+AI Service 位于 ai-service/，入口是 ai-service/app/main.py，默认端口 8000。它提供 /health、/ai/rag/search、/ai/verify-report、/ai/analyze-jd 等接口。后端通过 AI_SERVICE_BASE_URL 调用它。
+
+2. RAG 检索
+
+选用原因：
+求职分析不能只凭模型自由发挥，需要基于用户简历片段和岗位 JD 做有依据的判断。RAG 可以把相关经历片段召回给模型，降低无依据生成。
+
+实现描述：
+简历上传后被解析、清洗、切分成 chunks。分析时系统先把 JD 和简历片段向量化，或在 AI Service 中用 BM25 等方式检索相关片段，然后把这些证据片段放入分析上下文，生成匹配度、Gap、简历建议和后续行动。
+
+3. Doubao / OpenAI-compatible Embedding
+
+选用原因：
+项目需要把 JD 和简历文本转成向量，才能做语义匹配。Doubao Ark 或 OpenAI-compatible embedding 接口可以提供文本向量。
+
+实现描述：
+service.py 和 backend/main.py 中包含 embedding 调用逻辑。系统会读取用户启用的 embedding 配置，调用 /embeddings 或 /embeddings/multimodal 接口，得到向量后缓存到数据库，避免重复计算。
+
+4. Gemini / DeepSeek / Doubao 等生成模型
+
+选用原因：
+岗位分析和简历改写需要自然语言生成、结构化推理和中文表达能力。项目通过兼容接口支持多个模型供应商，避免绑定单一厂商。
+
+实现描述：
+后端根据模型配置选择 provider、base_url、model_id 和 api_key，把 JD、简历片段、用户画像等组织成 prompt，调用模型生成结构化分析结果。结果再被解析为投递建议、匹配分数、简历建议、学习路径等字段。
+
+5. 事实校验 / Hallucination Control
+
+选用原因：
+简历优化最怕夸大经历或编造事实。项目需要控制生成结果必须有原简历或用户补充作为依据。
+
+实现描述：
+ai-service/app/verification 下负责把报告拆成 claim，并检查 claim 是否能被证据片段支持。Agent 工具 backend/agents/tools/hallucination_tools.py 也会对改写后的简历进行事实完整性检查，避免新增没有来源的经历。
+
+
+七、Agent 简历优化技术栈
+
+1. 自研 Agent Orchestrator
+
+选用原因：
+简历定向优化不是单次模型调用能稳定完成的任务，它需要岗位解析、简历拆段、Gap 分析、段落改写、事实核对、版式输出、必要时向用户确认等多个步骤。
+
+实现描述：
+backend/agents/orchestrator.py 负责串联整个流程。它调用 job_decoder、resume_copywriter、hr_critic、layout_auditor 等模块，并使用工具层完成简历分段、段落替换、事实核对、DOCX 生成等工作。每个阶段的日志、耗时、缓存命中和任务状态会写入数据库，前端 AgentResumePage 展示为“运行明细”和“过程记录”。
+
+2. Agent 工具层
+
+选用原因：
+把工具拆开可以降低大模型直接操作文件和业务对象的风险，也方便测试每个步骤。
+
+实现描述：
+backend/agents/tools/ 下包含：
+- resume_section_tools.py：提取简历段落、分析差距、改写段落、生成修改对照。
+- hallucination_tools.py：检查改写内容是否有事实依据。
+- docx_tools.py：读取原 DOCX 样式、生成优化 DOCX、转换 PDF。
+- hitl_tool.py：需要用户补充事实时中断任务并记录问题。
+- workspace_tools.py：控制任务工作目录和文件读写范围。
+
+3. Agent Cache
+
+选用原因：
+JD 解码、执行计划、段落改写和事实核对可能重复发生。缓存可以减少模型调用次数，加快重复任务。
+
+实现描述：
+backend/agents/cache.py 提供 Agent 缓存能力，支持 file、redis、postgres 等存储方式。任务执行时根据阶段、输入内容、模型配置生成缓存 key，命中后直接复用结果，并在前端显示“结果复用率”和“节省生成次数”。
+
+4. Human-in-the-loop 人工确认
+
+选用原因：
+当简历中缺少某些关键事实时，系统不能擅自编造，需要向用户确认或补充。
+
+实现描述：
+Agent 遇到信息不足时把任务状态更新为 WAITING_FOR_HUMAN，并记录 pending_question。前端 AgentResumePage 展示“需要确认”面板，用户可以补充事实、偏好、澄清或选择无补充。提交后后端继续执行任务。
+
+
+八、文件处理技术栈
+
+1. python-multipart
+
+选用原因：
+FastAPI 处理简历上传需要解析 multipart/form-data。
+
+实现描述：
+用户上传 PDF / DOCX / DOC 文件时，后端接口接收 UploadFile，读取字节内容，再交给简历解析模块处理。
+
+2. pypdf
+
+选用原因：
+用户常上传 PDF 简历，需要从 PDF 中提取文本用于分析。
+
+实现描述：
+document_parser.py 和 backend/resume_rag.py 会根据文件类型调用 PDF 提取逻辑，得到原始文本后清洗和切分。
+
+3. python-docx
+
+选用原因：
+DOCX 是简历最常见的可编辑格式，项目既要解析 DOCX，也要生成优化后的 DOCX。
+
+实现描述：
+后端读取 DOCX 内容和样式信息，Agent 优化完成后通过 docx_tools.py 生成新的 DOCX 文件，并尽量保留原文档版式。
+
+4. docx2pdf / pdf2image
+
+选用原因：
+简历优化结果需要多格式输出和预览，DOCX 转 PDF、PDF 转图片可以支持下载和视觉检查。
+
+实现描述：
+docx_tools.py 中封装 DOCX 到 PDF 的转换能力；pdf2image 可用于把 PDF 页面转换为图像，方便后续检查或展示。
+
+
+九、Chrome 插件技术栈
+
+1. Chrome Extension Manifest V3
+
+选用原因：
+求职流程经常发生在招聘网站上。浏览器插件可以直接从 BOSS 直聘、牛客网等页面抓取 JD，并把岗位信息导入 InternPath 工作台，减少复制粘贴成本。
+
+实现描述：
+chrome-extension/manifest.json 定义插件权限、background、content script 和 popup。content.js 在招聘网站页面读取职位标题、公司、JD 文本等信息；background.js 负责和工作台页面或后端 API 通信；popup.js 提供插件设置入口。
+
+2. chrome.storage.local
+
+选用原因：
+插件需要保存 InternPath 后端地址、登录 token 等本地配置。
+
+实现描述：
+popup.js 写入 internpathHost、internpathToken 等配置，content.js 和 background.js 再读取这些配置调用后端接口或回填工作台。
+
+
+十、部署与运行技术栈
+
+1. Docker Compose
+
+选用原因：
+本地和服务器部署都需要 PostgreSQL + pgvector、Redis。Docker Compose 可以快速启动依赖服务，减少环境配置成本。
+
+实现描述：
+docker-compose.yml 定义 postgres 和 redis 两个服务。postgres 使用 pgvector/pgvector:pg16 镜像，redis 使用 redis:7-alpine。启动后后端通过 DATABASE_URL 和 REDIS_URL 连接。
+
+2. Shell / PowerShell / CMD 启停脚本
+
+选用原因：
+项目包含前端、后端、AI Service、RQ Worker、数据库、Redis，手动启动步骤较多。脚本可以降低使用门槛。
+
+实现描述：
+Windows 下 start_internpath.cmd 调用 deploy/internpath.ps1；Linux 下 start_internpath.sh 会检查 .env、启动依赖服务、启动 AI Service、RQ Worker 和后端，并把日志写入 logs/。
+
+3. systemd
+
+选用原因：
+生产环境需要服务开机启动、异常重启和统一日志管理。systemd 是 Linux 服务器上常见的服务管理方式。
+
+实现描述：
+deploy/systemd/ 下定义 internpath、internpath-ai、internpath-worker 三个服务。server_install.sh 部署时会安装依赖、构建前端、写入环境变量并注册 systemd 服务。
+
+
+十一、测试技术栈
+
+1. pytest
+
+选用原因：
+项目后端逻辑复杂，包含认证、数据库、后台任务、Agent 缓存、Chrome 插件接口、PostgreSQL 隔离等，需要自动化测试兜底。
+
+实现描述：
+tests/ 下包含后端测试文件，例如 test_fastapi_backend.py、test_agent_cache.py、test_agent_phase2.py、test_agent_phase3.py 等。执行 python -m pytest -q 会运行测试套件，验证核心接口和任务流程。
+
+2. TypeScript build check
+
+选用原因：
+前端没有单独测试框架时，tsc + Vite build 是最基础的类型和构建校验。
+
+实现描述：
+执行 frontend 下的 npm run build，会先运行 tsc -b 检查类型，再由 Vite 打包。如果组件类型、导入路径或语法错误，会在构建阶段暴露。
+
+
+十二、为什么这样组合技术栈
+
+1. React + FastAPI 适合快速迭代产品功能
+前端页面复杂、交互多，React 适合做工作台；后端接口多、校验多，FastAPI 能快速组织 API。
+
+2. PostgreSQL + pgvector 兼顾业务数据和语义检索
+项目既要保存长期业务数据，也要做向量召回。使用 PostgreSQL + pgvector 可以避免额外维护独立向量数据库。
+
+3. Redis/RQ 让耗时任务后台化
+岗位分析、模型调用、简历优化都可能耗时较久。队列化后，用户不用一直等待 HTTP 请求，系统也能更稳定地处理失败重试和任务状态。
+
+4. AI Service 拆分降低主后端复杂度
+RAG、校验、分析工作流和主业务接口职责不同。拆成 AI Service 后，后续可以单独扩容或替换实现。
+
+5. Agent 工具化降低简历造假风险
+简历优化需要强约束。通过工具层、事实核对、人工确认和缓存，系统能在提升简历表达的同时尽量避免编造经历。
+
+6. Chrome 插件贴近真实求职场景
+用户通常先在招聘网站看到岗位，再回到工作台分析。插件能把外部页面数据带回 InternPath，减少手动录入。
+
+
+十三、核心技术栈速览
+
+前端：
+- React 19：组件化页面和状态驱动 UI。
+- TypeScript 5：约束前端数据结构。
+- Vite 6：开发服务器和生产构建。
+- GSAP：登录页和交互动效。
+
+后端：
+- Python 3：主开发语言。
+- FastAPI：业务 API。
+- Pydantic v2：请求/响应校验。
+- Uvicorn：ASGI 服务运行。
+- httpx / OpenAI SDK：调用内部服务和外部模型。
+
+数据与任务：
+- PostgreSQL：业务数据持久化。
+- pgvector：向量存储和语义检索。
+- Redis：后台任务队列依赖。
+- RQ：Python 后台任务执行。
+- cryptography：API Key 加密。
+
+AI 与 Agent：
+- AI Service：RAG、校验、分析工作流。
+- Doubao / OpenAI-compatible Embedding：文本向量化。
+- Gemini / DeepSeek / Doubao：岗位分析和文本生成。
+- 自研 Agent Orchestrator：简历定向优化流程编排。
+- python-docx / pypdf / docx2pdf：简历文件解析和生成。
+
+扩展与部署：
+- Chrome Manifest V3：招聘网站岗位抓取和回填。
+- Docker Compose：PostgreSQL/pgvector 与 Redis 本地依赖。
+- systemd：生产服务管理。
+- pytest：后端自动化测试。

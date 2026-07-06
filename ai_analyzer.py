@@ -7,6 +7,7 @@ from typing import List, Optional, Tuple, Any
 import httpx
 from openai import APIConnectionError, APITimeoutError, AuthenticationError, OpenAI
 
+from backend.agents.base import BaseAgent
 from config import Config
 from models import (
     FitExamPaper,
@@ -46,6 +47,93 @@ def _limit_cache_size(cache_dict: dict, max_size: int = 1000):
                 cache_dict.pop(oldest_key, None)
             except StopIteration:
                 pass
+
+
+def _usage_value(usage: Any, key: str) -> int:
+    if isinstance(usage, dict):
+        value = usage.get(key)
+    else:
+        value = getattr(usage, key, 0)
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _call_openai_text(
+    client: OpenAI,
+    model: str,
+    messages: list[dict[str, Any]],
+    *,
+    temperature: float,
+    response_format: Optional[dict[str, Any]] = None,
+    max_tokens: Optional[int] = None,
+) -> tuple[str, dict[str, int]]:
+    mode = BaseAgent._normalize_stream_api_mode(
+        getattr(client, "_internpath_stream_api_mode", None)
+    )
+    if mode == "responses":
+        response_args = BaseAgent._messages_to_responses_args(messages)
+        create_kwargs: dict[str, Any] = {
+            "model": model,
+            "temperature": temperature,
+            "input": response_args["input"],
+        }
+        if response_args["instructions"]:
+            create_kwargs["instructions"] = response_args["instructions"]
+        if max_tokens:
+            create_kwargs["max_output_tokens"] = max_tokens
+        if response_format and response_format.get("type") == "json_object":
+            create_kwargs["text"] = {"format": {"type": "json_object"}}
+        BaseAgent._apply_responses_prompt_cache(
+            create_kwargs,
+            client,
+            model=model,
+            namespace="ai_analyzer",
+        )
+
+        text = BaseAgent._collect_responses_stream_sync(
+            client,
+            create_kwargs,
+            model=model,
+            namespace="ai_analyzer",
+        )
+        provider_cache = BaseAgent.pop_provider_cache_usage(client)
+        return text, {
+            "prompt_tokens": int(provider_cache.get("providerInputTokens") or 0),
+            "completion_tokens": int(provider_cache.get("providerOutputTokens") or 0),
+            "total_tokens": int(provider_cache.get("providerTotalTokens") or 0),
+            "cached_tokens": int(provider_cache.get("providerCachedTokens") or 0),
+        }
+
+    create_kwargs = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+    }
+    if response_format:
+        create_kwargs["response_format"] = response_format
+    if max_tokens:
+        create_kwargs["max_tokens"] = max_tokens
+
+    BaseAgent._clear_provider_cache_usage(client)
+    BaseAgent._remember_provider_request(
+        client,
+        endpoint_mode="chat_completions",
+        stream=False,
+        model=model,
+        namespace="ai_analyzer",
+    )
+    response = client.chat.completions.create(**create_kwargs)
+    BaseAgent._remember_provider_cache_usage(client, response)
+    usage = getattr(response, "usage", None) or {}
+    provider_cache = BaseAgent._extract_provider_cache_usage(response)
+    return BaseAgent._extract_stream_delta(response), {
+        "prompt_tokens": _usage_value(usage, "prompt_tokens"),
+        "completion_tokens": _usage_value(usage, "completion_tokens"),
+        "total_tokens": _usage_value(usage, "total_tokens"),
+        "cached_tokens": int(provider_cache.get("providerCachedTokens") or 0),
+    }
 
 
 class AIAnalyzer:
@@ -117,13 +205,15 @@ class AIAnalyzer:
                         decrypted_key = db.decrypt_api_key(encrypted_key).strip() if encrypted_key else ""
                         if decrypted_key:
                             base_url = ""
+                            extra = {}
                             if config_json:
-                                import json
                                 try:
-                                    extra = json.loads(config_json)
-                                    base_url = extra.get("baseUrl") or extra.get("base_url") or ""
+                                    parsed_extra = json.loads(config_json)
+                                    if isinstance(parsed_extra, dict):
+                                        extra = parsed_extra
+                                        base_url = extra.get("baseUrl") or extra.get("base_url") or ""
                                 except:
-                                    pass
+                                    extra = {}
 
                             if not base_url:
                                 if provider == "gemini":
@@ -156,11 +246,23 @@ class AIAnalyzer:
                                             pass
                                         base_url = base
 
-                                return OpenAI(
+                                client = OpenAI(
                                     api_key=decrypted_key,
                                     base_url=base_url,
                                     http_client=self._http_client,
-                                ), cfg_id, provider, model_id
+                                )
+                                setattr(
+                                    client,
+                                    "_internpath_stream_api_mode",
+                                    extra.get("streamApiMode") or extra.get("stream_api_mode") or "chat_completions",
+                                )
+                                BaseAgent.configure_responses_prompt_cache(
+                                    client,
+                                    extra,
+                                    model=model_id,
+                                    namespace="ai_analyzer",
+                                )
+                                return client, cfg_id, provider, model_id
             except Exception as e:
                 print(f"[STAR_AI] Database model config resolution error: {e}")
 
@@ -178,11 +280,14 @@ class AIAnalyzer:
                     base_url = f"{base_url}/v1"
             except Exception:
                 pass
-            return OpenAI(
+            client = OpenAI(
                 api_key=Config.LLM_API_KEY,
                 base_url=base_url,
                 http_client=self._http_client,
-            ), None, "default", Config.LLM_MODEL
+            )
+            setattr(client, "_internpath_stream_api_mode", "chat_completions")
+            BaseAgent.configure_responses_prompt_cache(client, {}, model=Config.LLM_MODEL, namespace="ai_analyzer")
+            return client, None, "default", Config.LLM_MODEL
 
         raise Exception("系统默认大模型为空，请先在个人中心/设置中配置并启用您的自定义模型。")
 
@@ -212,15 +317,16 @@ class AIAnalyzer:
         user_prompt = f"请分析以下岗位 JD：\n\n{jd_text}"
 
         try:
-            response = client.chat.completions.create(
-                model=self.model,
-                messages=[
+            result_text, _usage = _call_openai_text(
+                client,
+                self.model,
+                [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.3,
             )
-            result_text = _strip_json_fence((response.choices[0].message.content or "").strip())
+            result_text = _strip_json_fence(result_text.strip())
             res = JobAnalysis(**json.loads(result_text))
             with _CACHE_LOCK:
                 _SKILLS_CACHE[cache_key] = res
@@ -325,15 +431,16 @@ class AIAnalyzer:
         user_prompt = json.dumps(payload, ensure_ascii=False)
 
         try:
-            response = client.chat.completions.create(
-                model=self.model,
-                messages=[
+            result_text, _usage = _call_openai_text(
+                client,
+                self.model,
+                [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.1,
             )
-            result_text = _strip_json_fence((response.choices[0].message.content or "").strip())
+            result_text = _strip_json_fence(result_text.strip())
             raw = json.loads(result_text)
 
             # Enforce backend-calculated unified scoring (education 30%, skills 30%, projects 30%, keywords/bonus 10%)
@@ -406,15 +513,16 @@ class AIAnalyzer:
         )
 
         try:
-            response = client.chat.completions.create(
-                model=self.model,
-                messages=[
+            result_text, _usage = _call_openai_text(
+                client,
+                self.model,
+                [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.35,
             )
-            result_text = _strip_json_fence((response.choices[0].message.content or "").strip())
+            result_text = _strip_json_fence(result_text.strip())
             payload = json.loads(result_text)
             questions: List[FitExamQuestion] = []
             for item in payload.get("questions") or []:
@@ -469,15 +577,16 @@ class AIAnalyzer:
         user_prompt = "\n".join(history_lines) + f"\n\n样本点数：{sample_count}\n{hint}"
 
         try:
-            response = client.chat.completions.create(
-                model=self.model,
-                messages=[
+            result_text, _usage = _call_openai_text(
+                client,
+                self.model,
+                [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.25,
             )
-            result_text = _strip_json_fence((response.choices[0].message.content or "").strip())
+            result_text = _strip_json_fence(result_text.strip())
             payload = json.loads(result_text)
             return SalaryTrendPrediction(
                 narrative=str(payload.get("narrative", "")).strip(),
@@ -543,22 +652,22 @@ class AIAnalyzer:
         output_text = ""
 
         try:
-            response = client.chat.completions.create(
-                model=self.model,
-                messages=[
+            output_text, usage = _call_openai_text(
+                client,
+                self.model,
+                [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.35,
             )
-            output_text = (response.choices[0].message.content or "").strip()
+            output_text = output_text.strip()
             success = True
 
-            usage = getattr(response, "usage", None)
             if usage:
-                prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
-                completion_tokens = getattr(usage, "completion_tokens", 0) or 0
-                total_tokens = getattr(usage, "total_tokens", 0) or 0
+                prompt_tokens = usage.get("prompt_tokens", 0)
+                completion_tokens = usage.get("completion_tokens", 0)
+                total_tokens = usage.get("total_tokens", 0)
 
             return output_text
         except Exception as e:
@@ -650,22 +759,22 @@ class AIAnalyzer:
         output_text = ""
 
         try:
-            response = client.chat.completions.create(
-                model=self.model,
-                messages=[
+            output_text, usage = _call_openai_text(
+                client,
+                self.model,
+                [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.3,
             )
-            output_text = (response.choices[0].message.content or "").strip()
+            output_text = output_text.strip()
             success = True
 
-            usage = getattr(response, "usage", None)
             if usage:
-                prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
-                completion_tokens = getattr(usage, "completion_tokens", 0) or 0
-                total_tokens = getattr(usage, "total_tokens", 0) or 0
+                prompt_tokens = usage.get("prompt_tokens", 0)
+                completion_tokens = usage.get("completion_tokens", 0)
+                total_tokens = usage.get("total_tokens", 0)
 
             return output_text
         except Exception as e:
@@ -781,21 +890,21 @@ class AIAnalyzer:
             messages[-1]["content"] += "\n\nReturn the output in JSON format."
 
         try:
-            response = client.chat.completions.create(
-                model=self.model,
-                messages=messages,
+            output_text, usage = _call_openai_text(
+                client,
+                self.model,
+                messages,
                 temperature=0.3,
                 response_format={"type": "json_object"},
                 max_tokens=4096,
             )
-            output_text = (response.choices[0].message.content or "").strip()
+            output_text = output_text.strip()
             success = True
 
-            usage = getattr(response, "usage", None)
             if usage:
-                prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
-                completion_tokens = getattr(usage, "completion_tokens", 0) or 0
-                total_tokens = getattr(usage, "total_tokens", 0) or 0
+                prompt_tokens = usage.get("prompt_tokens", 0)
+                completion_tokens = usage.get("completion_tokens", 0)
+                total_tokens = usage.get("total_tokens", 0)
         except Exception as first_err:
             err_msg = str(first_err).lower()
             if "blocked" in err_msg or "content_filter" in err_msg:
@@ -912,26 +1021,27 @@ class AIAnalyzer:
 
         try:
             # We set a low max_tokens to keep the call fast and cheap.
-            response = client.chat.completions.create(
-                model=self.model,
-                messages=[
+            output_text, usage = _call_openai_text(
+                client,
+                self.model,
+                [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.0,
                 max_tokens=150,
             )
-            output_text = (response.choices[0].message.content or "").strip()
+            output_text = output_text.strip()
             cleaned = _strip_json_fence(output_text)
 
             data = json.loads(cleaned)
             passed = bool(data.get("passed", True))
             reason = data.get("reason", "")
 
-            if hasattr(response, "usage") and response.usage:
-                prompt_tokens = getattr(response.usage, "prompt_tokens", 0)
-                completion_tokens = getattr(response.usage, "completion_tokens", 0)
-                total_tokens = getattr(response.usage, "total_tokens", 0)
+            if usage:
+                prompt_tokens = usage.get("prompt_tokens", 0)
+                completion_tokens = usage.get("completion_tokens", 0)
+                total_tokens = usage.get("total_tokens", 0)
 
             res = (passed, reason)
             with _CACHE_LOCK:

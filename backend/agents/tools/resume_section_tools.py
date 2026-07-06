@@ -4,8 +4,52 @@ import json
 from datetime import datetime
 from typing import Any
 
+from backend.agents.base import BaseAgent
 from backend.agents.tools.workspace_tools import tool_read_file, tool_write_file
 from backend.resume_rag import section_for_line
+
+
+def _call_text_llm(openai_client: Any, model_id: str, messages: list[dict[str, Any]], temperature: float) -> str:
+    mode = BaseAgent._normalize_stream_api_mode(
+        getattr(openai_client, "_internpath_stream_api_mode", None)
+    )
+    if mode == "responses":
+        response_args = BaseAgent._messages_to_responses_args(messages)
+        create_kwargs = {
+            "model": model_id,
+            "temperature": temperature,
+            "input": response_args["input"],
+        }
+        if response_args["instructions"]:
+            create_kwargs["instructions"] = response_args["instructions"]
+        BaseAgent._apply_responses_prompt_cache(
+            create_kwargs,
+            openai_client,
+            model=model_id,
+            namespace="resume_section_tools",
+        )
+        return BaseAgent._collect_responses_stream_sync(
+            openai_client,
+            create_kwargs,
+            model=model_id,
+            namespace="resume_section_tools",
+        )
+
+    BaseAgent._clear_provider_cache_usage(openai_client)
+    BaseAgent._remember_provider_request(
+        openai_client,
+        endpoint_mode="chat_completions",
+        stream=False,
+        model=model_id,
+        namespace="resume_section_tools",
+    )
+    response = openai_client.chat.completions.create(
+        model=model_id,
+        messages=messages,
+        temperature=temperature,
+    )
+    BaseAgent._remember_provider_cache_usage(openai_client, response)
+    return BaseAgent._extract_stream_delta(response)
 
 
 def tool_analyze_gap(openai_client: Any, model_id: str, resume_text: str, jd_text: str) -> str:
@@ -28,15 +72,15 @@ def tool_analyze_gap(openai_client: Any, model_id: str, resume_text: str, jd_tex
 请给出一份结构清晰的分析报告。
 """
     try:
-        response = openai_client.chat.completions.create(
-            model=model_id,
-            messages=[
+        return _call_text_llm(
+            openai_client,
+            model_id,
+            [
                 {"role": "system", "content": "你是一个严谨的简历 GAP 分析助手。请只输出客观的分析报告，不要有多余的废话。"},
                 {"role": "user", "content": prompt},
             ],
             temperature=0.2,
-        )
-        return response.choices[0].message.content or "未能生成差距分析。"
+        ) or "未能生成差距分析。"
     except Exception as exc:
         return f"GAP 分析调用大模型失败：{str(exc)}"
 
@@ -75,15 +119,15 @@ def tool_rewrite_section(
 请输出润色重构后的完美段落。
 """
     try:
-        response = openai_client.chat.completions.create(
-            model=model_id,
-            messages=[
+        return _call_text_llm(
+            openai_client,
+            model_id,
+            [
                 {"role": "system", "content": "你是一个精通简历修改的助手。请直接输出优化后的段落文本，不需要解释你的修改过程。"},
                 {"role": "user", "content": prompt},
             ],
             temperature=0.3,
-        )
-        return response.choices[0].message.content or "改写失败。"
+        ) or "改写失败。"
     except Exception as exc:
         return f"改写段落大模型调用失败：{str(exc)}"
 
@@ -134,15 +178,15 @@ def tool_rewrite_section_retry(
 请输出针对性修改优化后的完美段落文本。
 """
     try:
-        response = openai_client.chat.completions.create(
-            model=model_id,
-            messages=[
+        return _call_text_llm(
+            openai_client,
+            model_id,
+            [
                 {"role": "system", "content": "你是一个精通简历修改的助手。请直接输出针对反馈优化后的段落文本，不需要任何解释。"},
                 {"role": "user", "content": prompt},
             ],
             temperature=0.3,
-        )
-        return response.choices[0].message.content or "重试改写失败。"
+        ) or "重试改写失败。"
     except Exception as exc:
         return f"重试改写大模型调用失败：{str(exc)}"
 
@@ -239,8 +283,11 @@ def tool_replace_resume_section(
         write_assembled_status = tool_write_file(user_id, task_id, "assembled_resume.txt", assembled_content)
         if "错误" in write_assembled_status:
             return f"错误：写入 assembled_resume.txt 失败: {write_assembled_status}"
+        write_preview_status = tool_write_file(user_id, task_id, "stream_preview.md", assembled_content)
+        if "错误" in write_preview_status:
+            return f"错误：写入 stream_preview.md 失败: {write_preview_status}"
 
-        return f"成功：已替换段落「{section_name}」(index={section_index})，assembled_resume.txt 已更新"
+        return f"成功：已替换段落「{section_name}」(index={section_index})，assembled_resume.txt 与 stream_preview.md 已更新"
     except Exception as e:
         return f"替换段落失败：{str(e)}"
 

@@ -20,6 +20,21 @@ export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
 apt-get install -y python3 python3-venv python3-pip wget curl redis-server
+apt-get install -y libreoffice-writer poppler-utils fontconfig fonts-noto-cjk
+
+echo "Checking DOCX visual audit runtime dependencies..."
+if command -v soffice >/dev/null 2>&1; then
+  echo "LibreOffice detected: $(command -v soffice)"
+elif command -v libreoffice >/dev/null 2>&1; then
+  echo "LibreOffice detected: $(command -v libreoffice)"
+else
+  echo "Warning: LibreOffice was not detected. DOCX visual audit will be skipped, but DOCX template structure guard still works."
+fi
+if command -v pdftoppm >/dev/null 2>&1; then
+  echo "Poppler pdftoppm detected: $(command -v pdftoppm)"
+else
+  echo "Warning: Poppler pdftoppm was not detected. DOCX visual audit will be skipped, but DOCX template structure guard still works."
+fi
 
 # PostgreSQL & pgvector automatic installation on cloud server
 if command -v apt-get >/dev/null 2>&1; then

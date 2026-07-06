@@ -25,6 +25,7 @@ export function AppShell({ activePage, onNavigate, onLogout, userRole, generatio
   const shellRef = useRef<HTMLDivElement | null>(null);
   const isMobile = useIsMobile();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const immersivePage = activePage === "agent-resume";
 
   // Active Announcements States
   const [activeAnnouncements, setActiveAnnouncements] = useState<AdminAnnouncement[]>([]);
@@ -413,7 +414,7 @@ export function AppShell({ activePage, onNavigate, onLogout, userRole, generatio
   // ─── MOBILE layout ───
   if (isMobile) {
     return (
-      <div ref={shellRef} className="app-shell app-shell--mobile">
+      <div ref={shellRef} className={`app-shell app-shell--mobile${immersivePage ? " app-shell--immersive" : ""}`}>
         {/* Fixed Top Bar */}
         <header className="mobile-topbar">
           <button
@@ -453,8 +454,8 @@ export function AppShell({ activePage, onNavigate, onLogout, userRole, generatio
 
         {/* Main content */}
         <div className="app-main app-main--mobile">
-          <Header isMobile onNewAnalysis={() => onNavigate("new")} onHistory={() => onNavigate("history")} />
-          {renderAnnouncementBanner()}
+          {!immersivePage && <Header isMobile onNewAnalysis={() => onNavigate("new")} onHistory={() => onNavigate("history")} />}
+          {!immersivePage && renderAnnouncementBanner()}
           {children}
         </div>
         {renderDetailModal()}
@@ -465,11 +466,11 @@ export function AppShell({ activePage, onNavigate, onLogout, userRole, generatio
 
   // ─── DESKTOP layout (original, unchanged) ───
   return (
-    <div ref={shellRef} className="app-shell">
+    <div ref={shellRef} className={`app-shell${immersivePage ? " app-shell--immersive" : ""}`}>
       <Sidebar activePage={activePage} onNavigate={onNavigate} onLogout={onLogout} userRole={userRole} generationLimit={generationLimit} />
       <div className="app-main">
-        <Header onNewAnalysis={() => onNavigate("new")} onHistory={() => onNavigate("history")} />
-        {renderAnnouncementBanner()}
+        {!immersivePage && <Header onNewAnalysis={() => onNavigate("new")} onHistory={() => onNavigate("history")} />}
+        {!immersivePage && renderAnnouncementBanner()}
         {children}
       </div>
       {renderDetailModal()}

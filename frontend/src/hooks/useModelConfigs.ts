@@ -114,6 +114,7 @@ export function useModelConfigs(enabled = true) {
         maxOutputTokens: stamped.maxOutputTokens,
         timeoutMs: stamped.timeoutMs,
         responseMimeType: stamped.responseMimeType,
+        streamApiMode: stamped.streamApiMode,
         fallbackModelId: stamped.fallbackModelId,
         testModelId: stamped.testModelId,
       });

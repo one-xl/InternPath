@@ -6743,9 +6743,15 @@ blockquote,
 
 .agent-process-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
+}
+
+.agent-process-head > div:first-child {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
 }
 
 .agent-process-head strong {
@@ -6756,6 +6762,40 @@ blockquote,
 .agent-process-head span {
   color: var(--agent-muted);
   font-size: 12px;
+}
+
+.agent-process-head-stats {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.agent-process-head-stats em {
+  display: inline-flex;
+  align-items: center;
+  max-width: 160px;
+  min-height: 22px;
+  padding: 3px 7px;
+  border: 1px solid rgba(125, 211, 252, 0.2);
+  border-radius: 999px;
+  background: rgba(125, 211, 252, 0.08);
+  color: #dbeafe;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 740;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-process-head-stats em.is-failed {
+  border-color: rgba(248, 113, 113, 0.35);
+  background: rgba(248, 113, 113, 0.12);
+  color: #fecaca;
 }
 
 .agent-process-list {

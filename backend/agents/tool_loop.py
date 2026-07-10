@@ -9,6 +9,7 @@ from typing import Any, Callable, Literal
 
 from backend.agents.base import BaseAgent
 from backend.agents.tool_registry import AgentToolContext, AgentToolRegistry
+from backend.agents.tools.hitl_tool import HumanInteractionRequired
 
 
 ToolLoopStatus = Literal["completed", "needs_human", "failed", "max_turns"]
@@ -399,6 +400,12 @@ class AgenticToolLoop:
             "You are the InternPath resume optimization agent. "
             "You must operate only by returning strict JSON actions. "
             "Use call_tool when you need project tools, and final_answer only when the resume artifacts are ready.\n\n"
+            "Hard completion rules:\n"
+            "- Never return a full rewritten resume directly as final_answer.\n"
+            "- First inspect the workspace/bootstrap evidence, then call replace_resume_section for each concrete edit.\n"
+            "- If the resume/JD does not support a factual claim, call ask_user_for_fact instead of inventing it.\n"
+            "- Before final_answer, call generate_modification_diff and finalize_resume_artifacts.\n"
+            "- final_answer is valid only after at least one successful replace_resume_section and one successful finalize_resume_artifacts.\n\n"
             "Allowed JSON shapes:\n"
             '{"action":"call_tool","tool":"tool_name","arguments":{}}\n'
             '{"action":"final_answer","content":"short completion summary"}\n\n'
@@ -414,9 +421,60 @@ class AgenticToolLoop:
             "Use the provided Responses function tools to inspect, rewrite, diff, and finalize resume artifacts. "
             "Do not invent facts. Preserve the original resume structure and only strengthen wording that is supported "
             "by the resume, JD, or confirmed user context. If a required fact is missing, call ask_user_for_fact. "
-            "When the resume artifacts are ready, return a concise final answer instead of more tool calls.\n\n"
+            "Never return a full rewritten resume directly as final text. You must call replace_resume_section for "
+            "each concrete edit, then generate_modification_diff, then finalize_resume_artifacts. Return a concise "
+            "final answer only after at least one replace_resume_section call and a successful finalize_resume_artifacts "
+            "call. If no safe edit is possible, ask the user for missing facts instead of finalizing.\n\n"
             "Available tools:\n"
             + "\n".join(tool_lines)
+        )
+
+    @staticmethod
+    def _requires_resume_artifacts(ctx: AgentToolContext) -> bool:
+        return bool(str(ctx.resume_text or "").strip() and str(ctx.jd_text or "").strip())
+
+    @staticmethod
+    def _successful_tool_events(events: list[dict[str, Any]], tool_name: str) -> list[dict[str, Any]]:
+        return [
+            event
+            for event in events
+            if event.get("type") == "tool_result"
+            and event.get("tool_name") == tool_name
+            and bool(event.get("ok"))
+        ]
+
+    def _resume_artifacts_ready(self, events: list[dict[str, Any]], ctx: AgentToolContext) -> bool:
+        if not self._requires_resume_artifacts(ctx):
+            return True
+        return bool(
+            self._successful_tool_events(events, "replace_resume_section")
+            and self._successful_tool_events(events, "finalize_resume_artifacts")
+        )
+
+    @staticmethod
+    def _resume_artifacts_feedback(events: list[dict[str, Any]]) -> str:
+        replaced = any(
+            event.get("type") == "tool_result"
+            and event.get("tool_name") == "replace_resume_section"
+            and bool(event.get("ok"))
+            for event in events
+        )
+        finalized = any(
+            event.get("type") == "tool_result"
+            and event.get("tool_name") == "finalize_resume_artifacts"
+            and bool(event.get("ok"))
+            for event in events
+        )
+        missing = []
+        if not replaced:
+            missing.append("a successful replace_resume_section call")
+        if not finalized:
+            missing.append("a successful finalize_resume_artifacts call")
+        return (
+            "The previous final answer was rejected because resume artifacts are not ready. "
+            f"Missing: {', '.join(missing)}. "
+            "Call the required tools with concrete, evidence-backed section edits. "
+            "If evidence is insufficient, call ask_user_for_fact."
         )
 
     def _replay_retry_tool(
@@ -506,6 +564,13 @@ class AgenticToolLoop:
 
         return results
 
+    def _run_native_bootstrap_tools(
+        self,
+        ctx: AgentToolContext,
+        emit: Callable[[dict[str, Any]], None],
+    ) -> list[dict[str, Any]]:
+        return self._run_json_bootstrap_tools(ctx, emit)
+
     def run_json_action_loop(
         self,
         ctx: AgentToolContext,
@@ -535,6 +600,13 @@ class AgenticToolLoop:
                         "Do not invent facts. Ask the user if required facts are missing. "
                         "Before your first model turn, the runner will execute safe bootstrap tools so you can start "
                         "from live workspace evidence instead of rereading obvious files."
+                        + (
+                            "\n\n[Verified user answer]\n"
+                            + ctx.human_context
+                            + "\nUse this answer as confirmed evidence for the pending question."
+                            if ctx.human_context
+                            else ""
+                        )
                     ),
                 },
             ]
@@ -585,7 +657,7 @@ class AgenticToolLoop:
                 if can_set_stream_sink:
                     previous_stream_sink = getattr(model_turn, "stream_delta_sink", None)
                     setattr(model_turn, "stream_delta_sink", on_stream_delta)
-                raw_text = model_turn(messages)
+                raw_text = model_turn(copy.deepcopy(messages))
             except Exception as exc:
                 error = str(exc)
                 emit({
@@ -626,13 +698,34 @@ class AgenticToolLoop:
 
             if action["action"] == "final_answer":
                 final_text = str(action.get("content") or "")
+                if not self._resume_artifacts_ready(events, ctx):
+                    feedback = self._resume_artifacts_feedback(events)
+                    emit({
+                        "type": "error",
+                        "turn": turn_index,
+                        "error": feedback,
+                        "retryable": True,
+                    })
+                    messages.append({"role": "assistant", "content": raw_text})
+                    messages.append({"role": "user", "content": feedback})
+                    continue
                 emit({"type": "done", "turn": turn_index, "content": final_text})
                 return ToolLoopResult(status="completed", final_text=final_text, turns=turn_index, events=events)
 
             tool_name = str(action.get("tool") or "").strip()
             arguments = action.get("arguments") or {}
             emit({"type": "tool_call", "turn": turn_index, "tool_name": tool_name, "arguments": arguments})
-            tool_result = self.registry.execute(tool_name, arguments, ctx)
+            try:
+                tool_result = self.registry.execute(tool_name, arguments, ctx)
+            except HumanInteractionRequired as exc:
+                tool_result = {
+                    "tool_name": tool_name,
+                    "ok": True,
+                    "result": {"status": "waiting_for_human"},
+                    "error": "",
+                    "duration_ms": 0,
+                    "preview": str(exc),
+                }
             emit({"type": "tool_result", "turn": turn_index, **tool_result})
 
             messages.append({"role": "assistant", "content": json.dumps(action, ensure_ascii=False)})
@@ -642,7 +735,13 @@ class AgenticToolLoop:
             }, ensure_ascii=False)})
 
             if tool_name == "ask_user_for_fact":
-                return ToolLoopResult(status="needs_human", turns=turn_index, events=events)
+                question = str(arguments.get("question") or tool_result.get("preview") or tool_result.get("error") or "")
+                return ToolLoopResult(
+                    status="needs_human",
+                    final_text=question,
+                    turns=turn_index,
+                    events=events,
+                )
 
             if not tool_result.get("ok"):
                 messages.append({
@@ -681,6 +780,7 @@ class AgenticToolLoop:
             manual_context_items = list(retry_input_items)
             previous_response_id = str(retry_model_input.get("previous_response_id") or "")
         else:
+            bootstrap_results = self._run_native_bootstrap_tools(ctx, emit) if not retry_failure_point else []
             initial_input: list[dict[str, Any]] = [
                 {
                     "role": "user",
@@ -688,6 +788,13 @@ class AgenticToolLoop:
                         "Optimize this resume for the target JD using the provided function tools. "
                         "Do not invent facts. Ask the user if required facts are missing.\n\n"
                         f"[Resume]\n{ctx.resume_text}\n\n[JD]\n{ctx.jd_text}"
+                        + (
+                            "\n\n[Verified user answer]\n"
+                            + ctx.human_context
+                            + "\nUse this answer as confirmed evidence for the pending question."
+                            if ctx.human_context
+                            else ""
+                        )
                     ),
                 }
             ]
@@ -700,6 +807,18 @@ class AgenticToolLoop:
                         "Continue from this result without restarting unrelated work.\n"
                         + json.dumps({"retry_tool_result": retry_replay}, ensure_ascii=False, default=str)
                     ),
+                })
+            elif bootstrap_results:
+                initial_input.append({
+                    "role": "user",
+                    "content": json.dumps({
+                        "bootstrap_tool_results": bootstrap_results,
+                        "instruction": (
+                            "These safe bootstrap tools have already prepared live workspace evidence. "
+                            "Use the extracted sections to call replace_resume_section with precise edits. "
+                            "Do not return the rewritten resume as final text."
+                        ),
+                    }, ensure_ascii=False, default=str),
                 })
             input_items = list(initial_input)
             manual_context_items = list(initial_input)
@@ -748,6 +867,21 @@ class AgenticToolLoop:
             if not function_calls:
                 final_text = str(result.text or "")
                 if final_text:
+                    if not self._resume_artifacts_ready(events, ctx):
+                        feedback = self._resume_artifacts_feedback(events)
+                        emit({"type": "error", "turn": turn_index, "error": feedback, "retryable": True})
+                        feedback_item = {"role": "user", "content": feedback}
+                        if result.response_id:
+                            previous_response_id = result.response_id
+                            input_items = [feedback_item]
+                        else:
+                            manual_context_items.extend(
+                                _coerce_response_item(item)
+                                for item in _response_output_items(result.response)
+                            )
+                            manual_context_items.append(feedback_item)
+                            input_items = list(manual_context_items)
+                        continue
                     emit({"type": "done", "turn": turn_index, "content": final_text})
                     return ToolLoopResult(status="completed", final_text=final_text, turns=turn_index, events=events)
 
@@ -822,7 +956,13 @@ class AgenticToolLoop:
                 tool_outputs.append(_function_call_output(call_id, tool_result))
 
                 if tool_name == "ask_user_for_fact":
-                    return ToolLoopResult(status="needs_human", turns=turn_index, events=events)
+                    question = str(arguments.get("question") or tool_result.get("preview") or tool_result.get("error") or "")
+                    return ToolLoopResult(
+                        status="needs_human",
+                        final_text=question,
+                        turns=turn_index,
+                        events=events,
+                    )
 
             if result.response_id:
                 previous_response_id = result.response_id

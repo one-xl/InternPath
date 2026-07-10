@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from backend.agents.tools.docx_tools import update_docx_resume_from_log
+from backend.agents.tools.docx_tools import convert_docx_to_pdf, update_docx_resume_from_log
 from backend.agents.tools.hitl_tool import ask_human_question
 from backend.agents.tools.resume_section_tools import (
     tool_extract_resume_sections,
@@ -32,6 +32,7 @@ class AgentToolContext:
     resume_text: str = ""
     jd_text: str = ""
     is_co_pilot: bool = True
+    human_context: str = ""
 
 
 @dataclass(frozen=True)
@@ -196,6 +197,30 @@ def _ask_user_for_fact(ctx: AgentToolContext, arguments: JsonDict) -> JsonDict:
 
 
 def _finalize_resume_artifacts(ctx: AgentToolContext, _arguments: JsonDict) -> JsonDict:
+    mod_log_path = get_safe_workspace_path(ctx.user_id, ctx.task_id, "modification_log.json")
+    if not os.path.exists(mod_log_path):
+        return _json_result(False, {
+            "docx_updated": False,
+            "pdf_updated": False,
+            "markdown_file": "",
+        }, "No modification_log.json exists; the agent has not applied any section replacement.")
+
+    try:
+        with open(mod_log_path, "r", encoding="utf-8") as f:
+            modification_log = json.load(f)
+    except Exception as exc:
+        return _json_result(False, {
+            "docx_updated": False,
+            "pdf_updated": False,
+            "markdown_file": "",
+        }, f"Cannot read modification_log.json: {exc}")
+    if not isinstance(modification_log, list) or not modification_log:
+        return _json_result(False, {
+            "docx_updated": False,
+            "pdf_updated": False,
+            "markdown_file": "",
+        }, "modification_log.json is empty; no resume edits were applied.")
+
     docx_updated = False
     docx_error = ""
     try:
@@ -218,10 +243,40 @@ def _finalize_resume_artifacts(ctx: AgentToolContext, _arguments: JsonDict) -> J
     assembled = tool_read_file(ctx.user_id, ctx.task_id, "assembled_resume.txt") if os.path.exists(assembled_path) else ""
     if assembled:
         tool_write_file(ctx.user_id, ctx.task_id, "optimized_resume.md", assembled)
+    try:
+        tool_generate_modification_diff(ctx.user_id, ctx.task_id)
+    except Exception:
+        pass
+
+    if not docx_updated:
+        return _json_result(False, {
+            "docx_updated": False,
+            "pdf_updated": False,
+            "markdown_file": "optimized_resume.md" if assembled else "",
+            "docx_error": docx_error,
+        }, docx_error or "High-fidelity DOCX was not generated.")
+
+    docx_path = get_safe_workspace_path(ctx.user_id, ctx.task_id, "optimized_resume.docx")
+    workspace_dir = os.path.dirname(docx_path)
+    pdf_path = os.path.join(workspace_dir, "optimized_resume.pdf")
+    pdf_updated = os.path.exists(pdf_path)
+    pdf_error = ""
+    if not pdf_updated:
+        try:
+            pdf_updated = bool(convert_docx_to_pdf(ctx.user_id, ctx.task_id, docx_path, workspace_dir))
+        except Exception as exc:
+            pdf_error = str(exc)
+    if not pdf_updated and not pdf_error:
+        pdf_error = "PDF conversion did not produce optimized_resume.pdf."
+
     return _json_result(True, {
         "docx_updated": docx_updated,
+        "pdf_updated": pdf_updated,
         "docx_error": docx_error,
+        "pdf_error": pdf_error,
         "markdown_file": "optimized_resume.md",
+        "docx_file": "optimized_resume.docx",
+        "pdf_file": "optimized_resume.pdf" if pdf_updated else "",
     })
 
 
@@ -265,8 +320,12 @@ class AgentToolRegistry:
         try:
             _validate_args(tool.parameters_schema, arguments)
             result = tool.handler(ctx, arguments)
-            ok = True
-            error = ""
+            if isinstance(result, dict) and result.get("ok") is False:
+                ok = False
+                error = str(result.get("error") or "")
+            else:
+                ok = True
+                error = ""
         except Exception as exc:
             result = None
             ok = False

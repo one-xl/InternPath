@@ -152,24 +152,42 @@ class UserResponse(BaseModel):
 
 AgentExecutionMode = Literal["pipeline", "agentic"]
 AgentToolCallingMode = Literal["native_responses", "json_action", "auto"]
+DEFAULT_AGENT_EXECUTION_MODE: AgentExecutionMode = "agentic"
+DEFAULT_AGENT_TOOL_CALLING_MODE: AgentToolCallingMode = "native_responses"
 
 
-def normalize_agent_execution_mode(value: Any) -> AgentExecutionMode:
-    normalized = str(value or "pipeline").strip().lower().replace("-", "_")
-    return "agentic" if normalized == "agentic" else "pipeline"
+def normalize_agent_execution_mode(
+    value: Any,
+    *,
+    default: AgentExecutionMode = DEFAULT_AGENT_EXECUTION_MODE,
+) -> AgentExecutionMode:
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    if not normalized:
+        return default
+    if normalized == "agentic":
+        return "agentic"
+    if normalized == "pipeline":
+        return "pipeline"
+    return default
 
 
-def normalize_agent_tool_calling_mode(value: Any) -> AgentToolCallingMode:
-    normalized = str(value or "auto").strip().lower().replace("-", "_")
+def normalize_agent_tool_calling_mode(
+    value: Any,
+    *,
+    default: AgentToolCallingMode = DEFAULT_AGENT_TOOL_CALLING_MODE,
+) -> AgentToolCallingMode:
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    if not normalized:
+        return default
     if normalized in {"native_responses", "json_action"}:
         return normalized
-    return "auto"
+    return default
 
 
 def parse_agent_execution_options(execution_plan: str | None) -> dict[str, str]:
     options = {
-        "executionMode": "pipeline",
-        "toolCallingMode": "auto",
+        "executionMode": DEFAULT_AGENT_EXECUTION_MODE,
+        "toolCallingMode": DEFAULT_AGENT_TOOL_CALLING_MODE,
     }
     if not execution_plan:
         return options
@@ -179,6 +197,13 @@ def parse_agent_execution_options(execution_plan: str | None) -> dict[str, str]:
         return options
     if not isinstance(plan_data, dict):
         return options
+    has_execution_mode = bool(plan_data.get("execution_mode") or plan_data.get("executionMode"))
+    has_tool_calling_mode = bool(plan_data.get("tool_calling_mode") or plan_data.get("toolCallingMode"))
+    if not has_execution_mode and not has_tool_calling_mode:
+        return {
+            "executionMode": "pipeline",
+            "toolCallingMode": "auto",
+        }
     options["executionMode"] = normalize_agent_execution_mode(
         plan_data.get("execution_mode") or plan_data.get("executionMode")
     )
@@ -200,10 +225,16 @@ class AgentOptimizeResumeRequest(BaseModel):
     toolCallingMode: Optional[str] = None
 
     def normalized_execution_mode(self) -> AgentExecutionMode:
-        return normalize_agent_execution_mode(self.execution_mode or self.executionMode)
+        return normalize_agent_execution_mode(
+            self.execution_mode or self.executionMode,
+            default=DEFAULT_AGENT_EXECUTION_MODE,
+        )
 
     def normalized_tool_calling_mode(self) -> AgentToolCallingMode:
-        return normalize_agent_tool_calling_mode(self.tool_calling_mode or self.toolCallingMode)
+        return normalize_agent_tool_calling_mode(
+            self.tool_calling_mode or self.toolCallingMode,
+            default=DEFAULT_AGENT_TOOL_CALLING_MODE,
+        )
 
 
 class AgentAnswerRequest(BaseModel):
@@ -338,8 +369,8 @@ def recover_agent_retry_execution_options(execution_plan: str | None) -> dict[st
     fallback = {
         "config_id": None,
         "is_co_pilot": True,
-        "execution_mode": "pipeline",
-        "tool_calling_mode": "auto",
+        "execution_mode": DEFAULT_AGENT_EXECUTION_MODE,
+        "tool_calling_mode": DEFAULT_AGENT_TOOL_CALLING_MODE,
     }
     if not execution_plan:
         return fallback
@@ -695,6 +726,27 @@ def prewarm_agent_resume_workspace(
     return detail
 
 
+def get_agent_resume_artifact_state(user_id: Any, task_id: str) -> dict[str, bool]:
+    state = {"hasDocx": False, "hasPdf": False}
+    if user_id is None or not task_id:
+        return state
+    try:
+        from backend.agents.tools.workspace_tools import get_safe_workspace_path
+
+        state["hasDocx"] = os.path.exists(get_safe_workspace_path(user_id, task_id, "optimized_resume.docx"))
+        state["hasPdf"] = os.path.exists(get_safe_workspace_path(user_id, task_id, "optimized_resume.pdf"))
+    except Exception:
+        pass
+    return state
+
+
+def optimized_resume_download_filename(task: dict[str, Any], suffix: str) -> str:
+    original = os.path.basename(str(task.get("original_resume_name") or "resume"))
+    stem = os.path.splitext(original)[0].strip() or "resume"
+    safe_stem = re.sub(r'[\\/:*?"<>|]+', "_", stem).strip(" .") or "resume"
+    return f"optimized_{safe_stem}.{suffix.lstrip('.')}"
+
+
 def serialize_agent_task_summary(
     task: dict[str, Any],
     *,
@@ -710,13 +762,13 @@ def serialize_agent_task_summary(
     task_id = str(task.get("task_id") or "")
     user_id = task.get("user_id")
     stream_preview_md = read_agent_stream_preview(user_id, task_id)
-    has_docx = False
+    artifacts = {"hasDocx": False, "hasPdf": False}
     modification_log: list[dict[str, Any]] = []
     if include_artifacts and user_id is not None and task_id:
         try:
             from backend.agents.tools.workspace_tools import get_safe_workspace_path, tool_read_file
 
-            has_docx = os.path.exists(get_safe_workspace_path(user_id, task_id, "optimized_resume.docx"))
+            artifacts = get_agent_resume_artifact_state(user_id, task_id)
             raw_log = tool_read_file(user_id, task_id, "modification_log.json")
             loaded_log = json.loads(raw_log)
             if isinstance(loaded_log, list):
@@ -738,7 +790,8 @@ def serialize_agent_task_summary(
         "createdAt": task.get("created_at"),
         "updatedAt": task.get("updated_at"),
         "modificationDiffMd": "",
-        "hasDocx": has_docx,
+        "hasDocx": artifacts["hasDocx"],
+        "hasPdf": artifacts["hasPdf"],
         "modificationLog": modification_log,
         "pendingQuestion": task.get("pending_question") or "",
         "humanAnswer": task.get("human_answer") or "",
@@ -3052,6 +3105,10 @@ def create_app(
         requested_is_co_pilot = payload.is_co_pilot if payload.is_co_pilot is not None else True
         execution_mode = payload.normalized_execution_mode()
         tool_calling_mode = payload.normalized_tool_calling_mode()
+        if execution_mode == "agentic" and tool_calling_mode == "auto":
+            tool_calling_mode = DEFAULT_AGENT_TOOL_CALLING_MODE
+        if execution_mode == "pipeline":
+            tool_calling_mode = "auto"
         normalized_jd = normalize_cache_text(payload.jd_text)
 
         # Reuse matching active/completed Agent tasks for duplicate submissions.
@@ -3249,6 +3306,17 @@ def create_app(
                 duration_ms=enqueue_duration_ms,
             ),
         )
+        post_enqueue_task = state.auth_db.get_agent_resume_task(user_id, task_id)
+        post_enqueue_status = str((post_enqueue_task or {}).get("status") or "")
+        if post_enqueue_status and post_enqueue_status != "PENDING":
+            return {
+                "ok": True,
+                "taskId": task_id,
+                "status": post_enqueue_status,
+                "executionMode": execution_mode,
+                "toolCallingMode": tool_calling_mode,
+                "task": serialize_agent_task_summary(post_enqueue_task, include_artifacts=False) if post_enqueue_task else None,
+            }
         state.auth_db.update_agent_resume_task_status(
             task_id=task_id,
             user_id=user_id,
@@ -3282,7 +3350,7 @@ def create_app(
         import os
 
         diff_content = ""
-        has_docx = False
+        artifacts = {"hasDocx": False, "hasPdf": False}
         modification_log = []
         try:
             res = tool_read_file(user_id, task_id, "modification_diff.md")
@@ -3292,8 +3360,7 @@ def create_app(
             pass
 
         try:
-            docx_path = get_safe_workspace_path(user_id, task_id, "optimized_resume.docx")
-            has_docx = os.path.exists(docx_path)
+            artifacts = get_agent_resume_artifact_state(user_id, task_id)
         except:
             pass
 
@@ -3335,7 +3402,8 @@ def create_app(
             "createdAt": task["created_at"],
             "updatedAt": task["updated_at"],
             "modificationDiffMd": diff_content,
-            "hasDocx": has_docx,
+            "hasDocx": artifacts["hasDocx"],
+            "hasPdf": artifacts["hasPdf"],
             "modificationLog": modification_log,
             "pendingQuestion": task.get("pending_question") or "",
             "humanAnswer": task.get("human_answer") or "",
@@ -3585,10 +3653,10 @@ def create_app(
                 pass
         plan_execution_mode = normalize_agent_execution_mode(
             plan_data.get("execution_mode") or plan_data.get("executionMode")
-        ) if isinstance(plan_data, dict) else "pipeline"
+        ) if isinstance(plan_data, dict) else DEFAULT_AGENT_EXECUTION_MODE
         plan_tool_calling_mode = normalize_agent_tool_calling_mode(
             plan_data.get("tool_calling_mode") or plan_data.get("toolCallingMode")
-        ) if isinstance(plan_data, dict) else "auto"
+        ) if isinstance(plan_data, dict) else DEFAULT_AGENT_TOOL_CALLING_MODE
 
         active_section = ""
         active_step_index = None
@@ -3790,7 +3858,7 @@ def create_app(
             human_answer=answer
         )
 
-        # 重新提交后台任务启动 Orchestrator，并保留最初的 is_co_pilot 配置。
+        # 重新提交后台任务启动 LangGraph coordinator，并保留最初的 is_co_pilot 配置。
         is_co_pilot_plan = True
         if plan_str:
             try:
@@ -3808,7 +3876,14 @@ def create_app(
                 is_co_pilot=is_co_pilot_plan,
                 execution_mode=plan_execution_mode,
                 tool_calling_mode=plan_tool_calling_mode,
-                job_id=f"{task_id}:resume",
+                resume_payload={
+                    "answer": answer,
+                    "answer_type": payload.answer_type,
+                    "remember": payload.remember,
+                    "evidence_scope": payload.evidence_scope,
+                    "step_index": active_step_index,
+                },
+                job_id=f"{task_id}:resume:{uuid4().hex}",
             )
         except Exception as enqueue_err:
             error_text = str(enqueue_err).lower()
@@ -3863,12 +3938,7 @@ def create_app(
                         detail="未找到高保真 DOCX 输出。系统已停止生成会丢失照片和模板元素的兜底 DOCX，请上传 DOCX 原件后重新优化，或下载 Markdown。",
                     )
 
-                orig_name = task.get('original_resume_name') or 'resume'
-                if orig_name.endswith('.md') or orig_name.endswith('.txt'):
-                    orig_name = os.path.splitext(orig_name)[0]
-                elif orig_name.endswith('.docx') or orig_name.endswith('.pdf'):
-                    orig_name = os.path.splitext(orig_name)[0]
-                filename = f"optimized_{orig_name}.docx"
+                filename = optimized_resume_download_filename(task, "docx")
                 encoded_filename = quote(filename)
                 return FileResponse(
                     path=docx_path,
@@ -3906,15 +3976,11 @@ def create_app(
                         detail="未找到高保真 DOCX 输出，无法在保留照片和模板元素的前提下导出 PDF。请上传 DOCX 原件后重新优化，或下载 Markdown。",
                     )
 
-                # Perform PDF conversion dynamically
-                success = convert_docx_to_pdf(user_id, task_id, docx_path, workspace_dir)
+                success = os.path.exists(pdf_path)
+                if not success:
+                    success = convert_docx_to_pdf(user_id, task_id, docx_path, workspace_dir)
                 if success and os.path.exists(pdf_path):
-                    orig_name = task.get('original_resume_name') or 'resume'
-                    if orig_name.endswith('.md') or orig_name.endswith('.txt'):
-                        orig_name = os.path.splitext(orig_name)[0]
-                    elif orig_name.endswith('.docx') or orig_name.endswith('.pdf'):
-                        orig_name = os.path.splitext(orig_name)[0]
-                    filename = f"optimized_{orig_name}.pdf"
+                    filename = optimized_resume_download_filename(task, "pdf")
                     encoded_filename = quote(filename)
                     return FileResponse(
                         path=pdf_path,
@@ -3932,7 +3998,7 @@ def create_app(
                 raise HTTPException(status_code=500, detail=f"PDF 瀵煎嚭鍑洪敊: {str(e)}")
 
         from fastapi.responses import Response
-        filename = f"optimized_{task.get('original_resume_name') or 'resume'}.md"
+        filename = optimized_resume_download_filename(task, "md")
         from urllib.parse import quote
         encoded_filename = quote(filename)
 
@@ -3985,7 +4051,7 @@ def create_app(
             raise HTTPException(status_code=404, detail="未找到对应的简历优化任务。")
 
         from backend.agents.tools.workspace_tools import get_safe_workspace_path, tool_read_file, tool_write_file
-        from backend.agents.tools.docx_tools import update_docx_resume_from_log
+        from backend.agents.tools.docx_tools import convert_docx_to_pdf, update_docx_resume_from_log
         import json
         import os
 
@@ -4069,12 +4135,14 @@ def create_app(
             )
 
         try:
-            update_docx_resume_from_log(user_id, task_id)
+            docx_updated = update_docx_resume_from_log(user_id, task_id)
             docx_path = get_safe_workspace_path(user_id, task_id, "optimized_resume.docx")
             workspace_dir = os.path.dirname(docx_path)
             pdf_path = os.path.join(workspace_dir, "optimized_resume.pdf")
             if os.path.exists(pdf_path):
                 os.remove(pdf_path)
+            if docx_updated and os.path.exists(docx_path):
+                convert_docx_to_pdf(user_id, task_id, docx_path, workspace_dir)
         except Exception as e:
             print(f"[EDIT_SAVE] Failed to update docx/pdf: {e}")
 

@@ -40,7 +40,7 @@ async def execute_resume_agent_workflow(
 ) -> None:
     raise RuntimeError(
         "Legacy resume Agent workflow is disabled. "
-        "Use backend.jobs.run_agent_resume_orchestration_job with Orchestrator.run_orchestration."
+        "Use backend.jobs.run_agent_resume_orchestration_job with the LangGraph coordinators."
     )
 
 

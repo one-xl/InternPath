@@ -207,6 +207,41 @@ def test_materialize_original_pdf_from_uploaded_resume(tmp_path, monkeypatch):
     assert original_pdf.read_bytes() == pdf_bytes
 
 
+def test_pdf_original_is_converted_to_docx_before_high_fidelity_replacement(tmp_path, monkeypatch):
+    import docx
+    import backend.agents.tools.docx_tools as docx_tools
+
+    monkeypatch.setattr(Config, "USER_DB_DIR", str(tmp_path / "user_data"))
+    user_id = "user-pdf-source"
+    task_id = "pdf-source-docx-replace"
+    workspace_dir = Path(get_safe_workspace_path(user_id, task_id, "marker.txt")).parent
+    (workspace_dir / "original_resume.pdf").write_bytes(b"%PDF-1.4\n% fake source pdf\n")
+    with open(workspace_dir / "modification_log.json", "w", encoding="utf-8") as f:
+        json.dump([
+            {
+                "section_name": "Projects",
+                "original": "Built APIs.",
+                "new": "Built reliable FastAPI APIs.",
+                "reason": "JD requires backend API experience.",
+            }
+        ], f, ensure_ascii=False)
+
+    def fake_pdf_to_docx(_user_id, _task_id, _pdf_path, docx_path):
+        source_doc = docx.Document()
+        source_doc.add_paragraph("Projects")
+        source_doc.add_paragraph("Built APIs.")
+        source_doc.save(docx_path)
+        return True
+
+    monkeypatch.setattr(docx_tools, "convert_pdf_to_docx", fake_pdf_to_docx)
+
+    assert update_docx_resume_from_log(user_id, task_id) is True
+
+    optimized_doc = docx.Document(str(workspace_dir / "optimized_resume.docx"))
+    optimized_text = "\n".join(paragraph.text for paragraph in optimized_doc.paragraphs)
+    assert "Built reliable FastAPI APIs." in optimized_text
+
+
 def test_docx_template_fingerprint_detects_lost_media_and_relationships(tmp_path):
     import re
     import zipfile
@@ -606,6 +641,8 @@ def test_api_download_rejects_lossy_docx_fallback(tmp_path, monkeypatch):
     workspace_dir = Path(get_safe_workspace_path(user_id, task_id, "optimized_resume.docx")).parent
     with open(workspace_dir / "optimized_resume.docx", "w") as f:
         f.write("fake docx content")
+    with open(workspace_dir / "optimized_resume.pdf", "wb") as f:
+        f.write(b"%PDF-1.4\n% fake optimized pdf\n")
     with open(workspace_dir / "modification_log.json", "w", encoding="utf-8") as f:
         json.dump([{"section_name": "项目经历", "original": "旧内容", "new": "新内容", "reason": "匹配 JD"}], f, ensure_ascii=False)
 
@@ -617,8 +654,17 @@ def test_api_download_rejects_lossy_docx_fallback(tmp_path, monkeypatch):
     assert "application/vnd.openxmlformats-officedocument.wordprocessingml.document" in resp_docx_success.headers["content-type"]
     assert "optimized_my_resume.docx" in resp_docx_success.headers["content-disposition"]
 
+    resp_pdf_success = client.get(
+        f"/api/agent/resume/tasks/{task_id}/download?format=pdf",
+        headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp_pdf_success.status_code == 200
+    assert "application/pdf" in resp_pdf_success.headers["content-type"]
+    assert "optimized_my_resume.pdf" in resp_pdf_success.headers["content-disposition"]
+
     resp_list = client.get("/api/agent/resume/tasks", headers={"Authorization": f"Bearer {token}"})
     assert resp_list.status_code == 200
     listed_task = resp_list.json()["tasks"][0]
     assert listed_task["hasDocx"] is True
+    assert listed_task["hasPdf"] is True
     assert listed_task["modificationLog"][0]["section_name"] == "项目经历"

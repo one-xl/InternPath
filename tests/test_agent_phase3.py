@@ -93,7 +93,7 @@ def test_agent_answer_remember_saves_section_preference(tmp_path, monkeypatch):
         }),
     )
 
-    with patch("backend.agents.orchestrator.Orchestrator.run_orchestration", new_callable=MagicMock):
+    with patch("backend.main.enqueue_job", new_callable=MagicMock):
         resp = client.post(
             f"/api/agent/resume/tasks/{task_id}/answer",
             headers={"Authorization": f"Bearer {token}"},
@@ -145,7 +145,7 @@ def test_agent_answer_skip_does_not_save_preference_but_records_turn(tmp_path, m
         }),
     )
 
-    with patch("backend.agents.orchestrator.Orchestrator.run_orchestration", new_callable=MagicMock):
+    with patch("backend.main.enqueue_job", new_callable=MagicMock):
         resp = client.post(
             f"/api/agent/resume/tasks/{task_id}/answer",
             headers={"Authorization": f"Bearer {token}"},

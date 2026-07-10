@@ -173,6 +173,8 @@ def test_agent_optimize_reuses_matching_completed_task(tmp_path, monkeypatch):
             "jd_text": "招聘 Python 后端实习生，\n要求熟悉 FastAPI。",
             "config_id": None,
             "is_co_pilot": False,
+            "executionMode": "pipeline",
+            "toolCallingMode": "auto",
         },
     )
 
@@ -327,6 +329,8 @@ def test_agent_optimize_reuses_legacy_completed_task_without_plan(tmp_path, monk
             "jd_text": "Backend intern role requiring\nFastAPI and SQL.",
             "config_id": None,
             "is_co_pilot": False,
+            "executionMode": "pipeline",
+            "toolCallingMode": "auto",
         },
     )
 
@@ -395,6 +399,8 @@ def test_agent_optimize_reuses_bootstrap_pending_task(tmp_path, monkeypatch):
             "jd_text": jd_text,
             "config_id": "cfg-1",
             "is_co_pilot": True,
+            "executionMode": "pipeline",
+            "toolCallingMode": "auto",
         },
     )
 

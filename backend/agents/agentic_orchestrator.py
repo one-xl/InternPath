@@ -26,7 +26,7 @@ class AgenticOrchestrator(Orchestrator):
         user_id: Any,
         config_id: Optional[str],
         is_co_pilot: bool = True,
-        tool_calling_mode: str = "auto",
+        tool_calling_mode: str = "native_responses",
     ) -> None:
         self.logs = []
         self.current_status = "RUNNING"
@@ -42,8 +42,8 @@ class AgenticOrchestrator(Orchestrator):
             if config_id is None:
                 config_id = plan_data.get("config_id")
 
-            normalized_tool_mode = str(tool_calling_mode or "auto").strip().lower().replace("-", "_")
-            effective_tool_mode = "native_responses" if normalized_tool_mode == "native_responses" else "json_action"
+            normalized_tool_mode = str(tool_calling_mode or "native_responses").strip().lower().replace("-", "_")
+            effective_tool_mode = "json_action" if normalized_tool_mode == "json_action" else "native_responses"
             plan_data["effective_tool_calling_mode"] = effective_tool_mode
             self._save_plan(task_id, user_id, plan_data, normalized_tool_mode, "RUNNING")
             self.log_step(
@@ -184,6 +184,20 @@ class AgenticOrchestrator(Orchestrator):
                 loop_metrics["skipped_duplicate_finalize"] = False
                 loop_metrics["manual_finalize_ok"] = bool(finalize_result.get("ok"))
                 loop_metrics["manual_finalize_duration_ms"] = int((time.perf_counter() - finalize_started_at) * 1000)
+                self.log_step(
+                    task_id,
+                    user_id,
+                    "tool_response" if finalize_result.get("ok") else "error",
+                    "Forced finalize_resume_artifacts completed." if finalize_result.get("ok") else "Forced finalize_resume_artifacts failed.",
+                    finalize_result,
+                    stage="tool_result",
+                    agent="AgenticToolLoop",
+                    duration_ms=int(finalize_result.get("duration_ms") or 0),
+                    status="completed" if finalize_result.get("ok") else "failed",
+                    error_type="" if finalize_result.get("ok") else "ToolExecutionError",
+                )
+                if not finalize_result.get("ok"):
+                    raise RuntimeError(str(finalize_result.get("error") or "finalize_resume_artifacts failed."))
             plan_data["agentic_metrics"] = loop_metrics
             final_resume_md = self._read_final_markdown(user_id, task_id, resume_text)
             self.current_status = "COMPLETED"
@@ -243,7 +257,7 @@ class AgenticOrchestrator(Orchestrator):
         task_id: str,
         user_id: Any,
         plan_data: dict[str, Any] | None = None,
-        tool_calling_mode: str = "auto",
+        tool_calling_mode: str = "native_responses",
     ):
         last_tool_call: dict[str, Any] = {}
 
@@ -481,7 +495,7 @@ class AgenticOrchestrator(Orchestrator):
         status: str,
     ) -> None:
         plan_data["bootstrap_only"] = bool(plan_data.get("bootstrap_only", True))
-        plan_data["execution_mode"] = "agentic"
+        plan_data["execution_mode"] = str(getattr(self, "execution_mode", "agentic") or "agentic")
         plan_data["tool_calling_mode"] = tool_calling_mode if tool_calling_mode in {"auto", "json_action", "native_responses"} else "auto"
         plan_data["agentic_status"] = status
         plan_data.setdefault("steps", [])

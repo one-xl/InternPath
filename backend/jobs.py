@@ -63,6 +63,8 @@ def _append_agent_resume_runtime_log(
     error_type: str = "",
 ) -> None:
     db = Database()
+    if not hasattr(db, "get_agent_resume_task"):
+        return
     task = db.get_agent_resume_task(user_id, task_id)
     if not task:
         return
@@ -233,8 +235,9 @@ def run_agent_resume_orchestration_job(
     user_id: Any,
     config_id: str | None,
     is_co_pilot: bool,
-    execution_mode: str = "pipeline",
-    tool_calling_mode: str = "auto",
+    execution_mode: str = "agentic",
+    tool_calling_mode: str = "native_responses",
+    resume_payload: dict[str, Any] | None = None,
 ) -> None:
     from backend.agents.tools.hitl_tool import HumanInteractionRequired
 
@@ -276,31 +279,51 @@ def run_agent_resume_orchestration_job(
             },
         )
         try:
-            normalized_execution_mode = str(execution_mode or "pipeline").strip().lower().replace("-", "_")
-            normalized_tool_calling_mode = str(tool_calling_mode or "auto").strip().lower().replace("-", "_")
+            normalized_execution_mode = str(execution_mode or "agentic").strip().lower().replace("-", "_")
+            normalized_tool_calling_mode = str(tool_calling_mode or "native_responses").strip().lower().replace("-", "_")
             if normalized_execution_mode == "agentic":
-                from backend.agents.agentic_orchestrator import AgenticOrchestrator
+                from backend.agents.langgraph_orchestrator import LangGraphAgenticOrchestrator
 
-                asyncio.run(
-                    AgenticOrchestrator().run_orchestration(
-                        task_id=task_id,
-                        user_id=user_id,
-                        config_id=config_id,
-                        is_co_pilot=is_co_pilot,
-                        tool_calling_mode=normalized_tool_calling_mode,
+                orchestrator = LangGraphAgenticOrchestrator()
+                if resume_payload is not None:
+                    asyncio.run(
+                        orchestrator.resume_orchestration(
+                            task_id=task_id,
+                            user_id=user_id,
+                            resume_payload=resume_payload,
+                        )
                     )
-                )
+                else:
+                    asyncio.run(
+                        orchestrator.run_orchestration(
+                            task_id=task_id,
+                            user_id=user_id,
+                            config_id=config_id,
+                            is_co_pilot=is_co_pilot,
+                            tool_calling_mode=normalized_tool_calling_mode,
+                        )
+                    )
             else:
-                from backend.agents.orchestrator import Orchestrator
+                from backend.agents.langgraph_orchestrator import LangGraphPipelineOrchestrator
 
-                asyncio.run(
-                    Orchestrator().run_orchestration(
-                        task_id=task_id,
-                        user_id=user_id,
-                        config_id=config_id,
-                        is_co_pilot=is_co_pilot,
+                orchestrator = LangGraphPipelineOrchestrator()
+                if resume_payload is not None:
+                    asyncio.run(
+                        orchestrator.resume_orchestration(
+                            task_id=task_id,
+                            user_id=user_id,
+                            resume_payload=resume_payload,
+                        )
                     )
-                )
+                else:
+                    asyncio.run(
+                        orchestrator.run_orchestration(
+                            task_id=task_id,
+                            user_id=user_id,
+                            config_id=config_id,
+                            is_co_pilot=is_co_pilot,
+                        )
+                    )
         except HumanInteractionRequired as exc:
             Database().update_agent_resume_task_status(
                 task_id=task_id,

@@ -6,14 +6,29 @@
 - API detail: `GET /api/agent/resume/tasks/{task_id}`
 - API answer: `POST /api/agent/resume/tasks/{task_id}/answer`
 - Worker job: `run_agent_resume_orchestration_job`
-- Runtime coordinator: `Orchestrator.run_orchestration`
+- Background analysis Agent step: `run_background_resume_analysis(..., enable_agent_resume=True)`
+- Runtime coordinator: `LangGraphAgenticOrchestrator` by default; `LangGraphPipelineOrchestrator` provides a LangGraph-native `json_action` compatibility mode.
 
-The API creates an `agent_resume_tasks` row, initializes a bootstrap execution plan, and enqueues the RQ job. The worker runs the Orchestrator and updates the same task row as stages progress.
+The API creates an `agent_resume_tasks` row, initializes a bootstrap execution plan, and enqueues the RQ job. The worker runs the LangGraph coordinator and updates the same task row as stages progress. Background resume analysis uses the same LangGraph agentic coordinator when `enable_agent_resume` is enabled.
+
+## LangGraph Scope
+
+LangGraph is used only where it improves orchestration clarity and resumability:
+
+- Default resume Agent mode (`agentic`) runs a graph of `load_task`, `prepare_workspace`, `run_agent_loop`, and `finalize_task`.
+- Explicit `pipeline` mode runs the same LangGraph state machine with `json_action`; it no longer calls the legacy deterministic `Orchestrator.run_orchestration` runtime.
+- Background resume analysis with Agent resume rewriting calls `LangGraphAgenticOrchestrator`, not the legacy deterministic coordinator.
+- AI Service workflow execution uses LangGraph inside `WorkflowEngine`, while preserving the existing node interface and workflow logs.
+- Auth, download, model config, file metadata, and ordinary CRUD APIs remain plain FastAPI handlers because graph orchestration would add ceremony without improving behavior.
+
+`agent_resume_tasks` remains the business source of truth. `LANGGRAPH_CHECKPOINTER=postgres` is the default so `interrupt()` checkpoints survive RQ job boundaries and worker restarts. `memory` is reserved for isolated tests.
+
+See `docs/langgraph-migration.md` for the current migration boundary and the API paths that intentionally remain non-graph FastAPI handlers.
 
 ## State Machine
 
 - `PENDING`: task row exists and waits for a worker.
-- `RUNNING`: Orchestrator is actively processing the task.
+- `RUNNING`: LangGraph is actively processing the task.
 - `WAITING_FOR_HUMAN`: dialog mode paused at a specific step and wrote an assistant turn.
 - `COMPLETED`: final Markdown is stored and downloads are available.
 - `FAILED`: a fatal model, schema, storage, or generation error stopped the task.
@@ -32,7 +47,7 @@ Execution steps use `PENDING`, `RUNNING`, `COMPLETED`, or `SKIPPED`. `SKIPPED` s
 - `evidence_scope`
 - `consumed_at`
 
-The answer API writes a `user` turn and keeps `human_answer` only as a compatibility field. Orchestrator consumes only unconsumed `user` turns whose `step_index` matches the current step, then marks those turns consumed. This prevents answers for one step from leaking into later steps.
+The answer API writes a step-scoped `user` turn, keeps `human_answer` only as a compatibility field, and sends the current answer as a LangGraph resume payload. The worker calls `Command(resume=...)` on the existing task thread, and the resumed Agent model input includes that verified answer. `step_index` keeps the durable conversation timeline scoped to the question that produced it.
 
 ## Schemas
 
@@ -68,7 +83,7 @@ Main namespaces:
 
 ## Tool Modules
 
-Orchestrator imports tools through `backend/agents/tools/`:
+LangGraph coordinators import tools through `backend/agents/tools/`:
 
 - `workspace_tools.py`: workspace path and file IO
 - `resume_section_tools.py`: section extraction, replacement, diff generation

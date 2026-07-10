@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import zipfile
 from typing import Any, Optional
 from xml.etree import ElementTree as ET
@@ -351,6 +352,131 @@ def convert_docx_to_pdf(user_id: Any, task_id: str, docx_path: str, pdf_dir: str
     return False
 
 
+def _word_automation_pids() -> set[int]:
+    if os.name != "nt":
+        return set()
+    try:
+        result = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                (
+                    "Get-CimInstance Win32_Process -Filter \"name = 'WINWORD.EXE'\" "
+                    "| Where-Object { $_.CommandLine -like '*Automation*Embedding*' } "
+                    "| ForEach-Object { $_.ProcessId }"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return set()
+    pids: set[int] = set()
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            pids.add(int(line))
+        except ValueError:
+            continue
+    return pids
+
+
+def _kill_processes(process_ids: set[int]) -> None:
+    for pid in process_ids:
+        try:
+            subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, text=True, timeout=5)
+        except Exception:
+            pass
+
+
+def convert_pdf_to_docx(user_id: Any, task_id: str, pdf_path: str, docx_path: str) -> bool:
+    """
+    Convert an original PDF resume into an editable DOCX using Microsoft Word.
+    The downstream replacement guard still decides whether the generated DOCX
+    is usable; this function only materializes the editable source.
+    """
+    report_path = get_safe_workspace_path(user_id, task_id, "pdf_to_docx_conversion.json")
+    report = {
+        "ok": False,
+        "source": pdf_path,
+        "target": docx_path,
+        "converter": "microsoft_word_com",
+        "error": "",
+    }
+    if not os.path.exists(pdf_path):
+        report["error"] = "original_resume.pdf was not found."
+        with open(report_path, "w", encoding="utf-8") as f:
+            json.dump(report, f, ensure_ascii=False, indent=2)
+        return False
+
+    before_pids = _word_automation_pids()
+    timeout_seconds = max(5, int(os.getenv("INTERNPATH_PDF_TO_DOCX_TIMEOUT_SECONDS", "45") or "45"))
+    worker_script = r"""
+import os
+import sys
+
+pdf_path = sys.argv[1]
+docx_path = sys.argv[2]
+
+import pythoncom
+import win32com.client
+
+os.makedirs(os.path.dirname(docx_path), exist_ok=True)
+pythoncom.CoInitialize()
+word = None
+document = None
+try:
+    word = win32com.client.DispatchEx("Word.Application")
+    word.Visible = False
+    word.DisplayAlerts = 0
+    document = word.Documents.Open(
+        os.path.abspath(pdf_path),
+        ConfirmConversions=False,
+        ReadOnly=True,
+        AddToRecentFiles=False,
+        Visible=False,
+    )
+    document.SaveAs2(os.path.abspath(docx_path), FileFormat=16)
+finally:
+    if document is not None:
+        document.Close(False)
+    if word is not None:
+        word.Quit()
+    pythoncom.CoUninitialize()
+"""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", worker_script, pdf_path, docx_path],
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+        report["ok"] = result.returncode == 0 and os.path.exists(docx_path)
+        if not report["ok"]:
+            report["error"] = (
+                result.stderr.strip()
+                or result.stdout.strip()
+                or "Microsoft Word did not produce original_resume.docx."
+            )
+    except subprocess.TimeoutExpired:
+        report["error"] = f"Microsoft Word PDF import timed out after {timeout_seconds} seconds."
+        _kill_processes(_word_automation_pids() - before_pids)
+    except Exception as exc:
+        report["error"] = str(exc)
+
+    with open(report_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+    if report["ok"]:
+        print(f"[PDF_TO_DOCX] Converted PDF source to editable DOCX at {docx_path}")
+    else:
+        print(f"[PDF_TO_DOCX] Failed to convert PDF source: {report['error']}")
+    return bool(report["ok"])
+
+
 _WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _VML_NS = "urn:schemas-microsoft-com:vml"
 
@@ -536,6 +662,10 @@ def update_docx_resume_from_log(user_id: Any, task_id: str) -> bool:
     opt_docx_path = get_safe_workspace_path(user_id, task_id, "optimized_resume.docx")
     mod_log_path = get_safe_workspace_path(user_id, task_id, "modification_log.json")
 
+    if not os.path.exists(orig_docx_path):
+        orig_pdf_path = get_safe_workspace_path(user_id, task_id, "original_resume.pdf")
+        if os.path.exists(orig_pdf_path):
+            convert_pdf_to_docx(user_id, task_id, orig_pdf_path, orig_docx_path)
     if not os.path.exists(orig_docx_path):
         print(f"[DOCX_REPLACE] original_resume.docx not found at {orig_docx_path}. Skipping high-fidelity replacement.")
         _remove_unverified_docx(opt_docx_path)

@@ -598,7 +598,7 @@ def run_background_resume_analysis(
             import os
             from config import Config
             from backend.agents.tools.workspace_tools import get_safe_workspace_path
-            from backend.agents.orchestrator import Orchestrator
+            from backend.agents.langgraph_orchestrator import LangGraphAgenticOrchestrator
 
             workspace_path = os.path.join(Config.USER_DB_DIR, "workspaces", f"user_{user_id}", f"task_{record_id}")
 
@@ -623,6 +623,8 @@ def run_background_resume_analysis(
                     "bootstrap_only": True,
                     "config_id": chat_config_id,
                     "is_co_pilot": False,
+                    "execution_mode": "agentic",
+                    "tool_calling_mode": "native_responses",
                     "steps": [],
                     "cache_stats": {
                         "hits": 0,
@@ -635,11 +637,12 @@ def run_background_resume_analysis(
 
             import asyncio
             asyncio.run(
-                Orchestrator().run_orchestration(
+                LangGraphAgenticOrchestrator().run_orchestration(
                     task_id=record_id,
                     user_id=user_id,
                     config_id=chat_config_id,
                     is_co_pilot=False,
+                    tool_calling_mode="native_responses",
                 )
             )
 

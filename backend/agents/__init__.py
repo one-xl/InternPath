@@ -8,6 +8,12 @@ from backend.agents.resume_copywriter import ResumeCopywriter
 
 
 def __getattr__(name: str):
+    if name == "LangGraphAgenticOrchestrator":
+        from backend.agents.langgraph_orchestrator import LangGraphAgenticOrchestrator
+        return LangGraphAgenticOrchestrator
+    if name == "LangGraphPipelineOrchestrator":
+        from backend.agents.langgraph_orchestrator import LangGraphPipelineOrchestrator
+        return LangGraphPipelineOrchestrator
     if name == "Orchestrator":
         from backend.agents.orchestrator import Orchestrator
         return Orchestrator
@@ -17,6 +23,8 @@ __all__ = [
     "BaseAgent",
     "HRCritic",
     "JobDecoder",
+    "LangGraphAgenticOrchestrator",
+    "LangGraphPipelineOrchestrator",
     "ResumeCopywriter",
     "Orchestrator"
 ]

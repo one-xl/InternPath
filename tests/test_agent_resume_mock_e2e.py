@@ -58,10 +58,12 @@ def test_agent_resume_mock_api_e2e_auto_dialog_cache_and_download(tmp_path, monk
                 user_id=user_id,
                 status="WAITING_FOR_HUMAN",
                 pending_question="请补充项目量化数据？",
-                execution_plan=json.dumps({
-                    "config_id": kwargs.get("config_id"),
-                    "is_co_pilot": True,
-                    "steps": [
+                    execution_plan=json.dumps({
+                        "config_id": kwargs.get("config_id"),
+                        "is_co_pilot": True,
+                        "execution_mode": kwargs.get("execution_mode"),
+                        "tool_calling_mode": kwargs.get("tool_calling_mode"),
+                        "steps": [
                         {
                             "step_index": 1,
                             "section_index": 0,
@@ -90,10 +92,12 @@ def test_agent_resume_mock_api_e2e_auto_dialog_cache_and_download(tmp_path, monk
             optimized_resume_md="# 优化后的简历\n\n项目经历\n- 负责开发 InternPath 简历优化工作台。",
             pending_question="",
             human_answer="",
-            execution_plan=json.dumps({
-                "config_id": kwargs.get("config_id"),
-                "is_co_pilot": is_co_pilot,
-                "steps": [],
+                execution_plan=json.dumps({
+                    "config_id": kwargs.get("config_id"),
+                    "is_co_pilot": is_co_pilot,
+                    "execution_mode": kwargs.get("execution_mode"),
+                    "tool_calling_mode": kwargs.get("tool_calling_mode"),
+                    "steps": [],
                 "cache_stats": {
                     "hits": 1,
                     "misses": 1,

@@ -162,6 +162,7 @@ interface AgentTask {
   updated_at: string;
   modification_diff_md: string;
   has_docx: boolean;
+  has_pdf: boolean;
   modification_log: ModificationItem[];
   pending_question?: string;
   human_answer?: string;
@@ -313,10 +314,8 @@ function friendlyProcessLabel(value?: string | number | null): string {
     .replace(/段落改写/g, "段落调整")
     .replace(/JD 解码/g, "岗位要求读取")
     .replace(/执行计划/g, "处理计划")
-    .replace(/AI/g, "")
-    .replace(/大模型/g, "生成服务")
-    .replace(/模型调用/g, "生成次数")
-    .replace(/模型/g, "生成配置")
+    .replace(/model_stream_delta/gi, "模型流式输出")
+    .replace(/worker_heartbeat/gi, "后台心跳")
     .replace(/local_reuse/gi, "本地复用")
     .replace(/LocalReuse/g, "本地复用")
     .replace(/缓存/g, "复用")
@@ -456,6 +455,42 @@ function isModelStreamLog(log: AgentLog): boolean {
 
 function isWorkerHeartbeatLog(log: AgentLog): boolean {
   return String(log.stage || "") === "worker_heartbeat";
+}
+
+function isToolCallLog(log: AgentLog): boolean {
+  return log.type === "tool_call" || String(log.stage || "") === "tool_call";
+}
+
+function isToolResultLog(log: AgentLog): boolean {
+  return log.type === "tool_response" || String(log.stage || "") === "tool_result";
+}
+
+function buildToolRunStats(logs: AgentLog[]): {
+  toolCalls: number;
+  successfulToolResults: number;
+  failedToolResults: number;
+  toolNames: string[];
+} {
+  const toolNames: string[] = [];
+  let toolCalls = 0;
+  let successfulToolResults = 0;
+  let failedToolResults = 0;
+
+  logs.forEach((log) => {
+    if (isToolCallLog(log)) {
+      toolCalls += 1;
+      const toolName = getLogToolName(log);
+      if (toolName && !toolNames.includes(toolName)) toolNames.push(toolName);
+    }
+    if (isToolResultLog(log)) {
+      const detail = detailAsRecord(log.detail);
+      const ok = detail.ok === undefined ? log.type !== "error" : Boolean(detail.ok);
+      if (ok) successfulToolResults += 1;
+      else failedToolResults += 1;
+    }
+  });
+
+  return { toolCalls, successfulToolResults, failedToolResults, toolNames };
 }
 
 function formatCount(value: number): string {
@@ -940,13 +975,13 @@ function toNumber(value: unknown): number {
 }
 
 function normalizeAgentExecutionMode(value: unknown): AgentExecutionMode {
-  return String(value || "").trim().toLowerCase().replace("-", "_") === "agentic" ? "agentic" : "pipeline";
+  return String(value || "").trim().toLowerCase().replace("-", "_") === "pipeline" ? "pipeline" : "agentic";
 }
 
 function normalizeAgentToolCallingMode(value: unknown): AgentToolCallingMode {
   const normalized = String(value || "").trim().toLowerCase().replace("-", "_");
   if (normalized === "json_action" || normalized === "native_responses") return normalized;
-  return "auto";
+  return "native_responses";
 }
 
 function parseCacheStats(raw: any): CacheStats {
@@ -1094,6 +1129,7 @@ function mapTaskFromApi(task: any): AgentTask {
     updated_at: task.updatedAt,
     modification_diff_md: task.modificationDiffMd || "",
     has_docx: Boolean(task.hasDocx),
+    has_pdf: Boolean(task.hasPdf),
     modification_log: Array.isArray(task.modificationLog)
       ? task.modificationLog
         .map(normalizeModificationItem)
@@ -1160,6 +1196,7 @@ function mergeAgentTask(current: AgentTask | null, next: AgentTask): AgentTask {
     modification_log: next.modification_log.length ? next.modification_log : current.modification_log,
     conversation_turns: next.conversation_turns.length ? next.conversation_turns : current.conversation_turns,
     has_docx: next.has_docx || current.has_docx,
+    has_pdf: next.has_pdf || current.has_pdf,
     event_stream_meta: next.event_stream_meta.snapshotBuildMs || next.event_stream_meta.pollIntervalMs
       ? next.event_stream_meta
       : current.event_stream_meta,
@@ -1239,8 +1276,8 @@ export function AgentResumePage() {
   const [conversationPanelOpen, setConversationPanelOpen] = useState(false);
   const [terminalFilter, setTerminalFilter] = useState<TerminalFilter>("all");
   const [runMode, setRunMode] = useState<AgentRunMode>("auto");
-  const [executionMode, setExecutionMode] = useState<AgentExecutionMode>("pipeline");
-  const [toolCallingMode, setToolCallingMode] = useState<AgentToolCallingMode>("json_action");
+  const [executionMode, setExecutionMode] = useState<AgentExecutionMode>("agentic");
+  const [toolCallingMode, setToolCallingMode] = useState<AgentToolCallingMode>("native_responses");
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [slashOpen, setSlashOpen] = useState(false);
   const [reviewStatus, setReviewStatus] = useState("准备投递");
@@ -1622,6 +1659,7 @@ export function AgentResumePage() {
           updated_at: new Date().toISOString(),
           modification_diff_md: "",
           has_docx: false,
+          has_pdf: false,
           modification_log: [],
           execution_plan: "",
           execution_mode: normalizeAgentExecutionMode(data.executionMode || executionMode),
@@ -1816,6 +1854,7 @@ export function AgentResumePage() {
   const providerCacheHitRate = providerCacheChecks > 0 ? Math.round((providerCacheStats.hits / providerCacheChecks) * 100) : providerCacheStats.hitRate;
   const recentProviderCacheItems = providerCacheStats.items.slice(-4).reverse();
   const processLogs = useMemo(() => buildVisibleProcessLogs(activeTask?.logs || []), [activeTask?.logs]);
+  const toolRunStats = useMemo(() => buildToolRunStats(activeTask?.logs || []), [activeTask?.logs]);
   const agentProgress = useMemo(() => buildAgentProgress(activeTask), [activeTask]);
   const lastFailureLogIndex = useMemo(() => {
     if (activeTask?.status !== "FAILED") return -1;
@@ -2109,8 +2148,18 @@ export function AgentResumePage() {
 
               <section className="agent-panel agent-process-stream" aria-label="Agent 执行过程">
                 <div className="agent-process-head">
-                  <strong>过程</strong>
-                  <span>{activeTask.status === "RUNNING" ? "实时流式更新" : "最近步骤"}</span>
+                  <div>
+                    <strong>过程</strong>
+                    <span>{activeTask.status === "RUNNING" ? "实时流式更新" : "最近步骤"}</span>
+                  </div>
+                  <div className="agent-process-head-stats" aria-label="Agent 工具调用摘要">
+                    <em>{toolRunStats.toolCalls > 0 ? `已运行 ${toolRunStats.toolCalls} 个工具/命令` : "等待工具调用"}</em>
+                    {toolRunStats.successfulToolResults > 0 && <em>成功 {toolRunStats.successfulToolResults}</em>}
+                    {toolRunStats.failedToolResults > 0 && <em className="is-failed">失败 {toolRunStats.failedToolResults}</em>}
+                    {toolRunStats.toolNames.slice(0, 2).map((toolName) => (
+                      <em key={toolName}>{friendlyProcessLabel(toolName)}</em>
+                    ))}
+                  </div>
                 </div>
                 <div className="agent-process-list">
                   {processLogs.length === 0 && (
@@ -2245,7 +2294,7 @@ export function AgentResumePage() {
                       <button type="button" onClick={() => void handleCopyMarkdown()}>{copiedTarget === "resume" ? "已复制" : "复制 MD"}</button>
                       <a href={`/api/agent/resume/tasks/${activeTask.task_id}/download`}>MD</a>
                       {activeTask.has_docx && <a href={`/api/agent/resume/tasks/${activeTask.task_id}/download?format=docx`}>DOCX</a>}
-                      {activeTask.has_docx && <a href={`/api/agent/resume/tasks/${activeTask.task_id}/download?format=pdf`}>PDF</a>}
+                      {activeTask.has_pdf && <a href={`/api/agent/resume/tasks/${activeTask.task_id}/download?format=pdf`}>PDF</a>}
                     </div>
                   )}
                 </div>

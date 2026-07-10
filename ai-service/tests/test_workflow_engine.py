@@ -44,6 +44,8 @@ def test_workflow_engine_runs_nodes_in_order():
 
     result = engine.run(state)
 
+    assert engine.backend == "langgraph"
+    assert engine._graph is not None
     assert result.data["items"] == ["a", "b"]
     assert [log["status"] for log in result.workflow_logs] == ["SUCCESS", "SUCCESS"]
 

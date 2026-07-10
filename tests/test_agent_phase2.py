@@ -511,10 +511,10 @@ def test_agent_resume_turns_are_step_scoped(tmp_path, monkeypatch):
 
 def test_agent_resume_job_pauses_on_hitl(monkeypatch):
     from backend import jobs
-    import backend.agents.orchestrator as orchestrator_module
+    import backend.agents.langgraph_orchestrator as langgraph_module
     from backend.agents.tools.hitl_tool import HumanInteractionRequired
 
-    class _FakeOrchestrator:
+    class _FakeLangGraphPipelineOrchestrator:
         async def run_orchestration(self, **kwargs):
             raise HumanInteractionRequired("请补充项目量化结果？")
 
@@ -548,7 +548,7 @@ def test_agent_resume_job_pauses_on_hitl(monkeypatch):
 
     updates = []
     fake_redis = _FakeRedis()
-    monkeypatch.setattr(orchestrator_module, "Orchestrator", lambda: _FakeOrchestrator())
+    monkeypatch.setattr(langgraph_module, "LangGraphPipelineOrchestrator", lambda: _FakeLangGraphPipelineOrchestrator())
     monkeypatch.setattr(jobs, "Database", lambda: _FakeDatabase())
     monkeypatch.setattr(jobs, "get_redis_connection", lambda: fake_redis)
     monkeypatch.setattr(jobs, "log_event", lambda **kwargs: None)
@@ -558,6 +558,8 @@ def test_agent_resume_job_pauses_on_hitl(monkeypatch):
         user_id=99,
         config_id=None,
         is_co_pilot=True,
+        execution_mode="pipeline",
+        tool_calling_mode="auto",
     )
 
     assert updates == [
@@ -624,9 +626,9 @@ def test_agent_resume_job_single_flight_skips_duplicate(monkeypatch):
 
 def test_agent_resume_job_lock_has_ttl(monkeypatch):
     from backend import jobs
-    import backend.agents.orchestrator as orchestrator_module
+    import backend.agents.langgraph_orchestrator as langgraph_module
 
-    class _FakeOrchestrator:
+    class _FakeLangGraphPipelineOrchestrator:
         async def run_orchestration(self, **kwargs):
             calls.append(kwargs)
 
@@ -654,7 +656,7 @@ def test_agent_resume_job_lock_has_ttl(monkeypatch):
 
     calls = []
     fake_redis = _FakeRedis()
-    monkeypatch.setattr(orchestrator_module, "Orchestrator", lambda: _FakeOrchestrator())
+    monkeypatch.setattr(langgraph_module, "LangGraphPipelineOrchestrator", lambda: _FakeLangGraphPipelineOrchestrator())
     monkeypatch.setattr(jobs, "get_redis_connection", lambda: fake_redis)
     monkeypatch.setattr(jobs, "log_event", lambda **kwargs: None)
     monkeypatch.setattr(Config, "RQ_JOB_TIMEOUT_SECONDS", 1800)
@@ -664,6 +666,8 @@ def test_agent_resume_job_lock_has_ttl(monkeypatch):
         user_id=99,
         config_id=None,
         is_co_pilot=False,
+        execution_mode="pipeline",
+        tool_calling_mode="auto",
     )
 
     assert len(calls) == 1

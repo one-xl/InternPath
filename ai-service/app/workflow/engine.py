@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import time
-from typing import Protocol
+from typing import Protocol, TypedDict
+
+from langgraph.graph import END, START, StateGraph
 
 from app.workflow.logs import make_workflow_log
 from app.workflow.state import WorkflowState
@@ -22,12 +24,37 @@ class WorkflowNode(Protocol):
     def output_summary(self, state: WorkflowState) -> str: ...
 
 
+class _WorkflowGraphState(TypedDict):
+    workflow_state: WorkflowState
+
+
 class WorkflowEngine:
     def __init__(self, nodes: list[WorkflowNode]):
         self.nodes = nodes
+        self.backend = "langgraph"
+        self._graph = self._build_graph(nodes) if nodes else None
 
     def run(self, state: WorkflowState) -> WorkflowState:
-        for node in self.nodes:
+        if self._graph is None:
+            return state
+        result = self._graph.invoke({"workflow_state": state})
+        return result["workflow_state"]
+
+    def _build_graph(self, nodes: list[WorkflowNode]):
+        graph = StateGraph(_WorkflowGraphState)
+        previous = START
+        for index, node in enumerate(nodes):
+            graph_node_name = f"{index:02d}_{node.node_name}"
+            graph.add_node(graph_node_name, self._runner_for(node))
+            graph.add_edge(previous, graph_node_name)
+            previous = graph_node_name
+        graph.add_edge(previous, END)
+        return graph.compile(name="internpath_ai_service_workflow")
+
+    @staticmethod
+    def _runner_for(node: WorkflowNode):
+        def run_node(graph_state: _WorkflowGraphState) -> _WorkflowGraphState:
+            state = graph_state["workflow_state"]
             started = time.perf_counter()
             input_summary = safe_summary(lambda: node.input_summary(state))
             try:
@@ -44,7 +71,8 @@ class WorkflowEngine:
                 )
             except Exception as exc:
                 duration_ms = int((time.perf_counter() - started) * 1000)
-                status = "FAILED" if node.critical else "WARNING"
+                is_critical = getattr(node, "critical", True)
+                status = "FAILED" if is_critical else "WARNING"
                 state.workflow_logs.append(
                     make_workflow_log(
                         node_name=node.node_name,
@@ -55,11 +83,13 @@ class WorkflowEngine:
                         error=str(exc),
                     )
                 )
-                if node.critical:
+                if is_critical:
                     state.failed = True
                     state.error = str(exc)
                     raise WorkflowExecutionError(str(exc)) from exc
-        return state
+            return {"workflow_state": state}
+
+        return run_node
 
 
 def safe_summary(fn) -> str:

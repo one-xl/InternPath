@@ -314,6 +314,138 @@ def test_background_analysis_success(test_env):
     assert updated_user.generation_limit == 4
 
 
+def test_background_analysis_agent_resume_uses_langgraph(test_env, monkeypatch):
+    db = test_env["db"]
+    mock_analyzer = test_env["analyzer"]
+    mock_service = test_env["service"]
+    bg_analyzer_module = test_env["background_analyzer"]
+
+    user_id = db.create_user(username="test_user_bg_langgraph", password="secure_password123")
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET generation_limit = 5, role = 'user' WHERE id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+    resume_file_id = "mock-resume-langgraph"
+    parsed_resume = {
+        "file": {
+            "id": resume_file_id,
+            "name": "resume.pdf",
+            "size": 1234,
+            "type": "application/pdf",
+        },
+        "cleanedText": "Python backend developer. Experienced in FastAPI, MySQL and Redis.",
+        "rawText": "Python backend developer. Experienced in FastAPI, MySQL and Redis.",
+        "chunks": [
+            {
+                "id": "chunk-langgraph-1",
+                "content": "Experienced python developer using FastAPI and Django.",
+                "section": "experience",
+            }
+        ],
+    }
+    db.save_user_resume(
+        user_id=user_id,
+        resume_id=resume_file_id,
+        file_name="resume.pdf",
+        file_size=1234,
+        file_type="application/pdf",
+        parsed_resume=parsed_resume,
+    )
+
+    mock_chat_client = MagicMock()
+    mock_chat_client.chat = MagicMock()
+    mock_chat_client.chat.completions = MockChatCompletions()
+    mock_analyzer._client.return_value = (
+        mock_chat_client,
+        "resolved-chat-config-id",
+        "mock-provider",
+        "mock-model",
+    )
+    mock_service._resolve_embedding_config.return_value = (
+        "mock-emb-provider",
+        "mock-emb-model",
+        None,
+        None,
+    )
+    mock_service.get_embedding_for_text.return_value = [0.1] * 128
+
+    record_id = "test-record-bg-langgraph"
+    draft_data = {
+        "jdText": "Python backend software engineer. Must have 3+ years of Python experience. Location Beijing.",
+        "candidateMaterial": "None",
+    }
+    db.save_analysis_record(
+        user_id=user_id,
+        status="pending",
+        result_json={
+            "id": record_id,
+            "createdAt": "2026-06-07T16:00:00",
+            "draft": draft_data,
+            "status": "pending",
+            "progressStep": 0,
+            "enable_agent_resume": True,
+        },
+        input_json=draft_data,
+        record_id=record_id,
+    )
+
+    calls = []
+
+    class _FakeLangGraphAgenticOrchestrator:
+        async def run_orchestration(self, **kwargs):
+            calls.append(kwargs)
+            from backend.agents.tools.workspace_tools import tool_write_file
+
+            tool_write_file(kwargs["user_id"], kwargs["task_id"], "optimized_resume.md", "LangGraph optimized resume")
+            db.update_agent_resume_task_status(
+                task_id=kwargs["task_id"],
+                user_id=kwargs["user_id"],
+                status="COMPLETED",
+                optimized_resume_md="LangGraph optimized resume",
+            )
+
+    import backend.agents.langgraph_orchestrator as langgraph_module
+
+    monkeypatch.setattr(
+        langgraph_module,
+        "LangGraphAgenticOrchestrator",
+        lambda: _FakeLangGraphAgenticOrchestrator(),
+    )
+
+    bg_analyzer_module.run_background_resume_analysis(
+        user_id=user_id,
+        record_id=record_id,
+        draft_data=draft_data,
+        resume_file_id=resume_file_id,
+        embedding_config_id="emb-cfg-langgraph",
+        chat_config_id="chat-cfg-langgraph",
+        enable_agent_resume=True,
+    )
+
+    assert calls == [
+        {
+            "task_id": record_id,
+            "user_id": user_id,
+            "config_id": "chat-cfg-langgraph",
+            "is_co_pilot": False,
+            "tool_calling_mode": "native_responses",
+        }
+    ]
+
+    task = db.get_agent_resume_task(user_id, record_id)
+    assert task["status"] == "COMPLETED"
+    plan = json.loads(task["execution_plan"])
+    assert plan["execution_mode"] == "agentic"
+    assert plan["tool_calling_mode"] == "native_responses"
+
+    record = db.get_analysis_record(user_id, record_id)
+    assert record["status"] == "watching"
+    assert record["optimized_resume_md"] == "LangGraph optimized resume"
+    assert any(step["id"] == "agent_resume" and step["status"] == "success" for step in record["steps"])
+
+
 def test_background_analysis_repairs_legacy_generic_resume_chunks(test_env):
     db = test_env["db"]
     mock_analyzer = test_env["analyzer"]

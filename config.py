@@ -71,6 +71,8 @@ class Config:
     RQ_QUEUE_NAME: str = os.getenv("RQ_QUEUE_NAME", "internpath-default").strip() or "internpath-default"
     RQ_JOB_TIMEOUT_SECONDS: int = get_int_env("RQ_JOB_TIMEOUT_SECONDS", 1800)
     RQ_RESULT_TTL_SECONDS: int = get_int_env("RQ_RESULT_TTL_SECONDS", 86400)
+    LANGGRAPH_CHECKPOINTER: str = os.getenv("LANGGRAPH_CHECKPOINTER", "postgres").strip().lower() or "postgres"
+    LANGGRAPH_POSTGRES_SETUP: bool = get_bool_env("LANGGRAPH_POSTGRES_SETUP", True)
     AGENT_CACHE_STORE: str = os.getenv("AGENT_CACHE_STORE", "file").strip() or "file"
     AGENT_CACHE_TTL_SECONDS: int = get_int_env("AGENT_CACHE_TTL_SECONDS", 86400 * 14)
     AGENT_CACHE_LOCK_TIMEOUT_SECONDS: int = get_int_env("AGENT_CACHE_LOCK_TIMEOUT_SECONDS", 10)

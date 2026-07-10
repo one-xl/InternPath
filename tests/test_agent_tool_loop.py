@@ -6,6 +6,7 @@ from backend.agents.tool_loop import ResponsesJsonActionModelTurn
 from backend.agents.tool_loop import ResponsesNativeToolModelTurn, ResponsesNativeTurnResult
 from backend.agents.schemas import extract_json_object
 from backend.agents.tool_registry import AgentToolContext, AgentToolRegistry
+from backend.agents.tools.hitl_tool import HumanInteractionRequired
 from backend.agents.tools.workspace_tools import tool_read_file, tool_write_file
 from config import Config
 
@@ -54,17 +55,27 @@ Plan summary: next I will rewrite the Projects section."""
 
 def test_json_action_loop_calls_tools_and_finishes(tmp_path, monkeypatch):
     monkeypatch.setattr(Config, "USER_DB_DIR", str(tmp_path))
-    loop = AgenticToolLoop(AgentToolRegistry(), max_turns=4)
+    monkeypatch.setattr("backend.agents.tool_registry.convert_docx_to_pdf", lambda *_args, **_kwargs: False)
+    import docx
+
+    loop = AgenticToolLoop(AgentToolRegistry(), max_turns=5)
     ctx = AgentToolContext(
         user_id="u1",
         task_id="t1",
         resume_text="Work Experience\nBuilt APIs",
         jd_text="Backend engineer",
     )
+    doc = docx.Document()
+    doc.add_paragraph("Work Experience")
+    doc.add_paragraph("Built APIs")
+    original_docx_path = tmp_path / "workspaces" / "user_u1" / "task_t1" / "original_resume.docx"
+    original_docx_path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(str(original_docx_path))
     replies = iter([
         '{"action":"call_tool","tool":"extract_resume_sections","arguments":{}}',
         '{"action":"call_tool","tool":"replace_resume_section","arguments":{"section_index":0,"new_content":"Work Experience\\nBuilt reliable backend APIs","reason":"backend JD"}}',
         '{"action":"call_tool","tool":"generate_modification_diff","arguments":{}}',
+        '{"action":"call_tool","tool":"finalize_resume_artifacts","arguments":{}}',
         '{"action":"final_answer","content":"done"}',
     ])
 
@@ -91,12 +102,12 @@ def test_json_action_loop_bootstraps_workspace_tools_before_model_turn(tmp_path,
     messages_seen = []
 
     def model_turn(messages):
-        messages_seen.append(messages)
+        messages_seen.append([dict(item) for item in messages])
         return '{"action":"final_answer","content":"done"}'
 
     result = loop.run_json_action_loop(ctx, model_turn)
 
-    assert result.status == "completed"
+    assert result.status == "max_turns"
     first_model_event_index = next(index for index, event in enumerate(result.events) if event["type"] == "model_turn_start")
     bootstrap_events = result.events[:first_model_event_index]
     assert any(event["type"] == "tool_call" and event["tool_name"] == "list_workspace_files" for event in bootstrap_events)
@@ -110,6 +121,11 @@ def test_json_action_loop_bootstraps_workspace_tools_before_model_turn(tmp_path,
     assert all(event.get("bootstrap") is True for event in bootstrap_events if event["type"] in {"tool_call", "tool_result"})
     assert "bootstrap_tool_results" in messages_seen[0][-1]["content"]
     assert "Projects" in tool_read_file(ctx.user_id, ctx.task_id, "resume_sections.json")
+    assert any(
+        event["type"] == "error"
+        and "replace_resume_section" in event["error"]
+        for event in result.events
+    )
 
 
 def test_json_action_loop_feedbacks_invalid_json_and_recovers(tmp_path, monkeypatch):
@@ -146,6 +162,46 @@ def test_json_action_loop_stops_at_max_turns(tmp_path, monkeypatch):
 
     assert result.status == "max_turns"
     assert result.error == "max_turns exceeded"
+
+
+def test_json_action_loop_returns_needs_human_instead_of_raising(tmp_path, monkeypatch):
+    monkeypatch.setattr(Config, "USER_DB_DIR", str(tmp_path))
+    question = "请补充项目的量化结果。"
+
+    class _Registry:
+        def list_tools(self, *, is_co_pilot=True):
+            return []
+
+        def execute(self, tool_name, arguments, _ctx):
+            if tool_name == "ask_user_for_fact":
+                raise HumanInteractionRequired(arguments["question"])
+            return {
+                "tool_name": tool_name,
+                "ok": True,
+                "result": {},
+                "error": "",
+                "duration_ms": 0,
+            }
+
+    loop = AgenticToolLoop(_Registry(), max_turns=1)
+    ctx = AgentToolContext(user_id="u1", task_id="t-hitl")
+
+    result = loop.run_json_action_loop(
+        ctx,
+        lambda _messages: json.dumps({
+            "action": "call_tool",
+            "tool": "ask_user_for_fact",
+            "arguments": {"question": question},
+        }, ensure_ascii=False),
+    )
+
+    assert result.status == "needs_human"
+    assert result.final_text == question
+    assert any(
+        event.get("type") == "tool_call"
+        and event.get("tool_name") == "ask_user_for_fact"
+        for event in result.events
+    )
 
 
 def test_json_action_loop_replays_failed_tool_before_model_turn(tmp_path, monkeypatch):
@@ -310,6 +366,9 @@ def test_json_action_loop_emits_provider_usage_from_model_turn(tmp_path, monkeyp
 def test_native_responses_loop_executes_function_call_and_continues(tmp_path, monkeypatch):
     monkeypatch.setattr(Config, "USER_DB_DIR", str(tmp_path))
     monkeypatch.setattr(Config, "OPENAI_PROMPT_CACHE_STABLE_PREFIX_ENABLED", True)
+    monkeypatch.setattr("backend.agents.tool_registry.convert_docx_to_pdf", lambda *_args, **_kwargs: False)
+    import docx
+
     client = MagicMock()
     client._internpath_prompt_cache_key = "agentic-cache-key"
     client._internpath_prompt_cache_retention = "24h"
@@ -322,8 +381,12 @@ def test_native_responses_loop_executes_function_call_and_continues(tmp_path, mo
                     "output": [
                         {
                             "type": "function_call",
-                            "name": "list_workspace_files",
-                            "arguments": "{}",
+                            "name": "replace_resume_section",
+                            "arguments": json.dumps({
+                                "section_index": 0,
+                                "new_content": "Projects\nBuilt reliable backend APIs",
+                                "reason": "Backend JD",
+                            }),
                             "call_id": "call_1",
                         }
                     ],
@@ -331,6 +394,27 @@ def test_native_responses_loop_executes_function_call_and_continues(tmp_path, mo
                         "input_tokens": 1400,
                         "output_tokens": 16,
                         "input_tokens_details": {"cached_tokens": 300},
+                    },
+                },
+            }
+        ],
+        [
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_finalize",
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "name": "finalize_resume_artifacts",
+                            "arguments": "{}",
+                            "call_id": "call_2",
+                        }
+                    ],
+                    "usage": {
+                        "input_tokens": 240,
+                        "output_tokens": 8,
+                        "input_tokens_details": {"cached_tokens": 180},
                     },
                 },
             }
@@ -359,6 +443,12 @@ def test_native_responses_loop_executes_function_call_and_continues(tmp_path, mo
     ]
     loop = AgenticToolLoop(AgentToolRegistry(), max_turns=3)
     ctx = AgentToolContext(user_id="u-native", task_id="t-native", resume_text="Projects\nBuilt APIs", jd_text="Backend")
+    original_docx_path = tmp_path / "workspaces" / "user_u-native" / "task_t-native" / "original_resume.docx"
+    original_docx_path.parent.mkdir(parents=True, exist_ok=True)
+    doc = docx.Document()
+    doc.add_paragraph("Projects")
+    doc.add_paragraph("Built APIs")
+    doc.save(str(original_docx_path))
     model_turn = ResponsesNativeToolModelTurn(
         client,
         "gpt-test",
@@ -369,7 +459,7 @@ def test_native_responses_loop_executes_function_call_and_continues(tmp_path, mo
 
     assert result.status == "completed"
     assert result.final_text == "done"
-    assert client.responses.create.call_count == 2
+    assert client.responses.create.call_count == 3
     first_kwargs = client.responses.create.call_args_list[0].kwargs
     assert first_kwargs["model"] == "gpt-test"
     assert first_kwargs["stream"] is True
@@ -381,9 +471,15 @@ def test_native_responses_loop_executes_function_call_and_continues(tmp_path, mo
     assert second_kwargs["input"][0]["type"] == "function_call_output"
     assert second_kwargs["input"][0]["call_id"] == "call_1"
     tool_output = json.loads(second_kwargs["input"][0]["output"])
-    assert tool_output["tool_name"] == "list_workspace_files"
+    assert tool_output["tool_name"] == "replace_resume_section"
     assert tool_output["ok"] is True
-    assert any(event["type"] == "tool_call" and event["tool_name"] == "list_workspace_files" for event in result.events)
+    third_kwargs = client.responses.create.call_args_list[2].kwargs
+    assert third_kwargs["previous_response_id"] == "resp_finalize"
+    finalize_output = json.loads(third_kwargs["input"][0]["output"])
+    assert finalize_output["tool_name"] == "finalize_resume_artifacts"
+    assert finalize_output["ok"] is True
+    assert any(event["type"] == "tool_call" and event["tool_name"] == "replace_resume_section" for event in result.events)
+    assert any(event["type"] == "tool_call" and event["tool_name"] == "finalize_resume_artifacts" for event in result.events)
     assert any(event["type"] == "model_stream_delta" and event["content"] == "done" for event in result.events)
     assert any(event["type"] == "provider_usage" and event["providerEndpointMode"] == "responses" for event in result.events)
     client.chat.completions.create.assert_not_called()
@@ -392,7 +488,7 @@ def test_native_responses_loop_executes_function_call_and_continues(tmp_path, mo
 def test_native_responses_loop_records_and_reuses_failed_model_input(tmp_path, monkeypatch):
     monkeypatch.setattr(Config, "USER_DB_DIR", str(tmp_path))
     loop = AgenticToolLoop(AgentToolRegistry(), max_turns=2)
-    ctx = AgentToolContext(user_id="u-native-retry", task_id="t-native-retry", resume_text="Resume", jd_text="JD")
+    ctx = AgentToolContext(user_id="u-native-retry", task_id="t-native-retry")
 
     class FailingNativeTurn:
         last_provider_usage = {}

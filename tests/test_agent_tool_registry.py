@@ -116,3 +116,14 @@ def test_registry_extract_replace_and_diff(tmp_path, monkeypatch):
 
     raw_log = tool_write_file(ctx.user_id, ctx.task_id, "probe.json", json.dumps({"ok": True}))
     assert raw_log
+
+
+def test_finalize_resume_artifacts_rejects_missing_modification_log(tmp_path, monkeypatch):
+    monkeypatch.setattr(Config, "USER_DB_DIR", str(tmp_path))
+    registry = AgentToolRegistry()
+    ctx = AgentToolContext(user_id="u1", task_id="no-edits", resume_text="Projects\nBuilt APIs", jd_text="Backend")
+
+    result = registry.execute("finalize_resume_artifacts", {}, ctx)
+
+    assert result["ok"] is False
+    assert "modification_log.json" in result["error"]

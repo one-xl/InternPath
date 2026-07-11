@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from backend.agents.base import BaseAgent
+from backend.resume_advisor.verification import verify_suggestion_facts
 
 
 def _call_text_llm(openai_client: Any, model_id: str, messages: list[dict[str, Any]], temperature: float) -> str:
@@ -87,39 +87,24 @@ def check_resume_fact_integrity(
     optimized_content: str,
     evidence_text: str = "",
 ) -> dict[str, Any]:
-    evidence = "\n".join([original_content or "", evidence_text or ""])
-    optimized = optimized_content or ""
-
-    def tokens(pattern: str, text: str) -> set[str]:
-        return {m.group(0).strip() for m in re.finditer(pattern, text, flags=re.IGNORECASE)}
-
-    quantitative_pattern = (
-        r"(?<![A-Za-z0-9])(?:\d+(?:\.\d+)?\s*(?:%|％|倍|x|X|ms|毫秒|秒|分钟|小时|天|周|月|年|"
-        r"人|次|个|万|亿|k|K|w|W|QPS|TPS|DAU|MAU|PV|UV|GB|MB|KB|元|¥|\$))"
+    result = verify_suggestion_facts(
+        original_text=original_content or "",
+        proposed_text=optimized_content or "",
+        resume_evidence_texts=[evidence_text] if evidence_text else [],
     )
-    date_pattern = r"(?:20\d{2}|19\d{2})(?:[./年-]\s?(?:0?[1-9]|1[0-2])(?:月)?)?"
-    org_pattern = r"[\u4e00-\u9fa5A-Za-z0-9·&（）()]{2,32}(?:大学|学院|公司|集团|银行|证券|科技|实验室|研究院)"
-
-    checks = [
-        ("新增量化指标", quantitative_pattern),
-        ("新增日期", date_pattern),
-        ("新增机构名称", org_pattern),
+    legacy_labels = {
+        "quantitative": "新增量化指标",
+        "date": "新增日期",
+        "organization": "新增机构名称",
+    }
+    issues = [
+        f"{legacy_labels[issue.category]}: {issue.claim}" if issue.category in legacy_labels else issue.message
+        for issue in result.fact_issues
     ]
-
-    issues: list[str] = []
-    for label, pattern in checks:
-        evidence_tokens = tokens(pattern, evidence)
-        optimized_tokens = tokens(pattern, optimized)
-        additions = sorted(token for token in optimized_tokens if token not in evidence_tokens)
-        if additions:
-            issues.append(f"{label}: {', '.join(additions[:6])}")
-
-    missing_dates = sorted(token for token in tokens(date_pattern, original_content or "") if token not in optimized)
-    if missing_dates:
-        issues.append(f"原始日期被删除: {', '.join(missing_dates[:6])}")
-
     return {
-        "ok": not issues,
+        "ok": result.is_supported,
         "issues": issues,
         "message": "；".join(issues),
+        "status": result.status,
+        "factIssues": [issue.model_dump() for issue in result.fact_issues],
     }

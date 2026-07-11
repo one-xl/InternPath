@@ -123,6 +123,7 @@ def test_agent_resume_mock_api_e2e_auto_dialog_cache_and_download(tmp_path, monk
         headers=headers,
         json={
             "resume_id": resume_id,
+            "legacy_mode": True,
             "jd_text": "招聘 Python 后端实习生，要求熟悉 FastAPI。",
             "config_id": None,
             "is_co_pilot": False,
@@ -141,6 +142,7 @@ def test_agent_resume_mock_api_e2e_auto_dialog_cache_and_download(tmp_path, monk
         headers=headers,
         json={
             "resume_id": resume_id,
+            "legacy_mode": True,
             "jd_text": "招聘 Python 后端实习生，\n要求熟悉 FastAPI。",
             "config_id": None,
             "is_co_pilot": False,
@@ -159,6 +161,7 @@ def test_agent_resume_mock_api_e2e_auto_dialog_cache_and_download(tmp_path, monk
         headers=headers,
         json={
             "resume_id": resume_id,
+            "legacy_mode": True,
             "jd_text": "招聘 Agent 平台工程师，要求能解释项目结果。",
             "config_id": None,
             "is_co_pilot": True,

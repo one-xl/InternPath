@@ -1,7 +1,7 @@
 [Unit]
 Description=InternPath FastAPI Service
-After=network.target postgresql.service redis-server.service internpath-ai.service internpath-worker.service
-Wants=postgresql.service redis-server.service internpath-ai.service internpath-worker.service
+After=network.target postgresql.service redis-server.service internpath-ai.service internpath-worker.service internpath-advisor-worker.service
+Wants=postgresql.service redis-server.service internpath-ai.service internpath-worker.service internpath-advisor-worker.service
 
 [Service]
 Type=simple

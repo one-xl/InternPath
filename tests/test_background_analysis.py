@@ -386,6 +386,7 @@ def test_background_analysis_agent_resume_uses_langgraph(test_env, monkeypatch):
             "status": "pending",
             "progressStep": 0,
             "enable_agent_resume": True,
+            "legacy_artifact_mode": True,
         },
         input_json=draft_data,
         record_id=record_id,
@@ -422,6 +423,7 @@ def test_background_analysis_agent_resume_uses_langgraph(test_env, monkeypatch):
         embedding_config_id="emb-cfg-langgraph",
         chat_config_id="chat-cfg-langgraph",
         enable_agent_resume=True,
+        legacy_artifact_mode=True,
     )
 
     assert calls == [

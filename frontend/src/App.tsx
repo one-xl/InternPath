@@ -15,7 +15,7 @@ import { ResultPage } from "./pages/ResultPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { LoginPage } from "./pages/LoginPage";
 import { AdminPage } from "./pages/AdminPage";
-import { AgentResumePage } from "./pages/AgentResumePage";
+import { ResumeAdvisorPage } from "./pages/ResumeAdvisorPage";
 import { createEmptyDraft } from "./services/mockAnalysis";
 import type { ApplicationStatus, HistoryRecord } from "./types/analysis";
 import type { JobDraft } from "./types/job";
@@ -603,6 +603,10 @@ export default function App() {
             onMarkApplied={() => markCurrent("applied")}
             onAbandon={() => markCurrent("abandoned")}
             onUpdateResult={analysis.setExistingResult}
+            onOpenResumeAdvisor={(context) => {
+              sessionStorage.setItem("internpath:resume-advisor-launch", JSON.stringify(context));
+              setActivePage("agent-resume");
+            }}
           />
         )}
         {activePage === "history" && (
@@ -646,7 +650,7 @@ export default function App() {
           <AdminPage />
         )}
         {activePage === "agent-resume" && (
-          <AgentResumePage />
+          <ResumeAdvisorPage />
         )}
       </AppShell>
     </ErrorBoundary>

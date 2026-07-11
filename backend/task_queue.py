@@ -27,9 +27,9 @@ def get_redis_connection() -> Redis:
     return redis
 
 
-def get_queue() -> Queue:
+def get_queue(queue_name: str | None = None) -> Queue:
     return Queue(
-        Config.RQ_QUEUE_NAME,
+        (queue_name or Config.RQ_QUEUE_NAME).strip() or Config.RQ_QUEUE_NAME,
         connection=get_redis_connection(),
         default_timeout=Config.RQ_JOB_TIMEOUT_SECONDS,
     )
@@ -39,9 +39,10 @@ def enqueue_job(
     func: Callable[..., Any],
     *args: Any,
     job_id: str | None = None,
+    queue_name: str | None = None,
     **kwargs: Any,
 ):
-    queue = get_queue()
+    queue = get_queue(queue_name)
     return queue.enqueue(
         func,
         *args,

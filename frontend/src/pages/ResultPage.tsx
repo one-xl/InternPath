@@ -22,6 +22,7 @@ interface ResultPageProps {
   onMarkApplied: () => void;
   onAbandon: () => void;
   onUpdateResult: (result: AnalysisResult) => void;
+  onOpenResumeAdvisor: (context: { resumeId?: string; jdText?: string }) => void;
 }
 
 const taskStatusLabels: Record<string, string> = {
@@ -260,7 +261,8 @@ export function ResultPage({
   onCopyAdvice,
   onMarkApplied,
   onAbandon,
-  onUpdateResult
+  onUpdateResult,
+  onOpenResumeAdvisor,
 }: ResultPageProps) {
   const [activeEvidenceChunk, setActiveEvidenceChunk] = useState<any | null>(null);
   const [activeTab, setActiveTab] = useState<"analysis" | "diff" | "preview">("analysis");
@@ -284,16 +286,10 @@ export function ResultPage({
 
   const currentEditItem = result?.modification_log?.[selectedEditIdx];
 
-  // Auto-pop iOS-style optimization modal
+  // New analysis results should not trigger legacy artifact generation.
   useEffect(() => {
-    if (result && result.matchScore < 85 && result.resumeAdvice && result.resumeAdvice.length > 0 && !result.optimized_resume_md) {
-      if (autoPromptedRef.current !== result.id) {
-        autoPromptedRef.current = result.id;
-        setShowOptimizeModal(true);
-      }
-    } else {
-      setShowOptimizeModal(false);
-    }
+    autoPromptedRef.current = result?.id || null;
+    setShowOptimizeModal(false);
   }, [result]);
 
   // Sync edit text with selected paragraph
@@ -367,49 +363,9 @@ export function ResultPage({
     return () => clearInterval(intervalId);
   }, [activeTaskId, result?.id, onUpdateResult]);
 
-  const handleStartOptimize = async () => {
-    if (!result || !result.resumeFile) return;
-    setShowOptimizeModal(false);
-    setIsOptimizing(true);
-    setShowConsole(true);
-
-    try {
-      const res = await fetch("/api/agent/resume/optimize", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          resume_id: result.resumeFile.id,
-          jd_text: result.draft.jdText,
-          config_id: null,
-          task_id: result.id
-        })
-      });
-      if (!res.ok) {
-        const error = await res.json();
-        throw new Error(error.detail || "启动简历优化失败");
-      }
-
-      const data = await res.json();
-      setActiveTaskId(data.taskId);
-      setActiveTask({
-        task_id: data.taskId,
-        status: "PENDING",
-        resume_id: result.resumeFile.id,
-        original_resume_name: result.resumeFile.name,
-        jd_text: result.draft.jdText,
-        logs: [],
-        optimized_resume_md: "",
-        error_message: "",
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        modification_diff_md: "",
-        has_docx: false,
-        modification_log: []
-      });
-    } catch (err: any) {
-      alert(err.message || "请求失败");
-      setIsOptimizing(false);
-    }
+  const handleStartOptimize = () => {
+    if (!result) return;
+    onOpenResumeAdvisor({ resumeId: result.resumeFile?.id, jdText: result.draft?.jdText });
   };
 
   const handleSaveEdit = async () => {
@@ -539,7 +495,7 @@ export function ResultPage({
                   boxShadow: "var(--shadow-sm)"
                 }}
               >
-                优化这份简历
+                与简历 Agent 讨论
               </button>
             )}
             {isOptimizing && (
@@ -618,7 +574,7 @@ export function ResultPage({
       )}
 
       {activeTab === "diff" && (
-        <Card title="简历修改对照" description="基于岗位 JD 和简历差距逐段调整，并保留修改理由。双击右侧修改后段落可直接编辑。">
+        <Card title="旧版简历修改对照" description="这是历史下载型任务留下的只读对照；新的修改请进入简历 Agent 会话。">
           <div style={{
             display: "grid",
             gridTemplateColumns: "300px 1fr",
@@ -681,7 +637,7 @@ export function ResultPage({
                 <>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--line)", paddingBottom: "12px" }}>
                     <h4 style={{ margin: 0, fontSize: "16px", fontWeight: "700" }}>{currentEditItem.section_name}</h4>
-                    <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>双击右侧内容进入编辑模式</span>
+                    <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>历史记录只读</span>
                   </div>
 
                   {currentEditItem.reason && (
@@ -789,7 +745,6 @@ export function ResultPage({
                         </div>
                       ) : (
                         <div
-                          onDoubleClick={() => setIsEditing(true)}
                           style={{
                             flex: 1,
                             background: "rgba(16, 185, 129, 0.04)",
@@ -801,9 +756,8 @@ export function ResultPage({
                             color: "var(--success)",
                             whiteSpace: "pre-wrap",
                             wordBreak: "break-all",
-                            cursor: "pointer"
+                            cursor: "default"
                           }}
-                          title="双击进行编辑"
                         >
                           {currentEditItem.new}
                         </div>
@@ -825,7 +779,7 @@ export function ResultPage({
         <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--surface)", border: "1px solid var(--line)", padding: "12px 18px", borderRadius: "12px" }}>
             <span style={{ fontSize: "14px", fontWeight: "600", color: "var(--text-muted)" }}>
-              优化简历已生成，支持以下操作：
+              历史任务生成的文件产物（只读）：
             </span>
             <div style={{ display: "flex", gap: "10px" }}>
               <button

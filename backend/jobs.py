@@ -216,6 +216,7 @@ def run_background_resume_analysis_job(
     embedding_config_id: str | None = None,
     chat_config_id: str | None = None,
     enable_agent_resume: bool = False,
+    legacy_artifact_mode: bool = False,
 ) -> None:
     from backend.background_analyzer import run_background_resume_analysis
 
@@ -227,6 +228,7 @@ def run_background_resume_analysis_job(
         embedding_config_id=embedding_config_id,
         chat_config_id=chat_config_id,
         enable_agent_resume=enable_agent_resume,
+        legacy_artifact_mode=legacy_artifact_mode,
     )
 
 
@@ -339,6 +341,28 @@ def run_agent_resume_orchestration_job(
             )
     finally:
         _release_agent_task_lock(redis, task_id, run_id)
+
+
+def run_resume_advisor_session_job(
+    run_id: str,
+    user_id: Any,
+    session_id: str,
+    resume_payload: dict[str, Any] | None = None,
+) -> None:
+    """RQ entry point for one durable ResumeAdvisor run."""
+    from backend.resume_advisor import ResumeAdvisorModule
+    from backend.resume_advisor.session_module import resolve_advisor_model
+
+    module = ResumeAdvisorModule(Database(), model_provider=resolve_advisor_model)
+    if resume_payload is not None:
+        module.resume_session(
+            user_id=user_id,
+            session_id=session_id,
+            run_id=run_id,
+            resume_payload=resume_payload,
+        )
+    else:
+        module.run_session(user_id=user_id, session_id=session_id, run_id=run_id)
 
 
 def worker_healthcheck() -> dict[str, str]:

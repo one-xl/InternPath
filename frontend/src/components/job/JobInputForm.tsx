@@ -207,24 +207,6 @@ export function JobInputForm({
 
         <div className="form-right-col">
           <ModelConfigHint embeddingConfig={activeEmbeddingConfig} chatConfig={activeChatConfig} onGoSettings={onGoSettings} />
-          <Card title="简历定向优化" description="在岗位分析时同步生成一版面向该岗位的简历修改建议。">
-            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-              <label style={{ display: "flex", alignItems: "flex-start", gap: "10px", cursor: "pointer", padding: "4px 0" }}>
-                <input
-                  type="checkbox"
-                  checked={draft.enableAgentResume || false}
-                  onChange={(e) => onChange({ enableAgentResume: e.target.checked })}
-                  style={{ marginTop: "4px" }}
-                />
-                <span style={{ fontSize: "13px", lineHeight: "1.4", color: "var(--text-main)" }}>
-                  <strong style={{ display: "block", marginBottom: "4px", color: "var(--text)" }}>同步生成投递版简历</strong>
-                  <span style={{ color: "var(--text-muted)", fontSize: "12px" }}>
-                    根据岗位要求梳理差距、调整段落并核对事实依据，生成优化版简历与修改对照，并提供多格式下载。
-                  </span>
-                </span>
-              </label>
-            </div>
-          </Card>
           {sidePanel}
         </div>
       </div>

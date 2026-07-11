@@ -295,6 +295,7 @@ def test_agent_resume_e2e():
     # 3. Trigger Optimize Task
     optimize_payload = {
         "resume_id": resume_id,
+        "legacy_mode": True,
         "jd_text": "招聘 React 前端开发工程师，熟悉 AI Agent 看板。",
         "config_id": None,
         "is_co_pilot": False,

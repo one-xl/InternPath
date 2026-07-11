@@ -12,7 +12,7 @@ echo "=============================================="
 SERVICE_NAME="internpath"
 if systemctl list-unit-files | grep -q "${SERVICE_NAME}.service"; then
     echo "[Systemd Service Mode Detected]"
-    for unit in "${SERVICE_NAME}-worker" "${SERVICE_NAME}-ai" "${SERVICE_NAME}"; do
+    for unit in "${SERVICE_NAME}-advisor-worker" "${SERVICE_NAME}-worker" "${SERVICE_NAME}-ai" "${SERVICE_NAME}"; do
         if systemctl list-unit-files | grep -q "${unit}.service"; then
             echo "Stopping ${unit} service..."
             sudo systemctl stop "${unit}"
@@ -40,6 +40,7 @@ stop_pid_file() {
 }
 
 stop_pid_file "logs/rq-worker.pid" "RQ worker"
+stop_pid_file "logs/rq-advisor-worker.pid" "Advisor RQ worker"
 stop_pid_file "logs/backend.pid" "FastAPI backend"
 stop_pid_file "logs/ai-service.pid" "AI service"
 

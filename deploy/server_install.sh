@@ -140,6 +140,9 @@ fi
 if ! grep -q "^RQ_QUEUE_NAME=" "$PERSISTENT_ENV_FILE" 2>/dev/null; then
   echo "RQ_QUEUE_NAME=internpath-default" >> "$PERSISTENT_ENV_FILE"
 fi
+if ! grep -q "^RQ_ADVISOR_QUEUE_NAME=" "$PERSISTENT_ENV_FILE" 2>/dev/null; then
+  echo "RQ_ADVISOR_QUEUE_NAME=internpath-advisor" >> "$PERSISTENT_ENV_FILE"
+fi
 if ! grep -q "^RQ_JOB_TIMEOUT_SECONDS=" "$PERSISTENT_ENV_FILE" 2>/dev/null; then
   echo "RQ_JOB_TIMEOUT_SECONDS=1800" >> "$PERSISTENT_ENV_FILE"
 fi
@@ -156,8 +159,8 @@ chmod 600 "$PERSISTENT_ENV_FILE"
 cat >/etc/systemd/system/${SERVICE_NAME}.service <<EOF
 [Unit]
 Description=InternPath FastAPI Service
-After=network.target postgresql.service redis-server.service ${SERVICE_NAME}-ai.service ${SERVICE_NAME}-worker.service
-Wants=postgresql.service redis-server.service ${SERVICE_NAME}-ai.service ${SERVICE_NAME}-worker.service
+After=network.target postgresql.service redis-server.service ${SERVICE_NAME}-ai.service ${SERVICE_NAME}-worker.service ${SERVICE_NAME}-advisor-worker.service
+Wants=postgresql.service redis-server.service ${SERVICE_NAME}-ai.service ${SERVICE_NAME}-worker.service ${SERVICE_NAME}-advisor-worker.service
 
 [Service]
 Type=simple
@@ -232,7 +235,40 @@ WorkingDirectory=${APP_DIR}
 EnvironmentFile=${PERSISTENT_ENV_FILE}
 Environment=HOME=${APP_DIR}
 Environment=XDG_CACHE_HOME=${APP_DIR}/.cache
-ExecStart=${APP_DIR}/.venv/bin/python -m backend.rq_worker
+ExecStart=${APP_DIR}/.venv/bin/python -m backend.rq_worker --queues internpath-default
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+LockPersonality=true
+RestrictRealtime=true
+ReadWritePaths=${APP_DIR}
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat >/etc/systemd/system/${SERVICE_NAME}-advisor-worker.service <<EOF
+[Unit]
+Description=InternPath Resume Advisor RQ Worker Autoscaler
+After=network.target postgresql.service redis-server.service ${SERVICE_NAME}-ai.service
+Wants=postgresql.service redis-server.service ${SERVICE_NAME}-ai.service
+
+[Service]
+Type=simple
+User=${APP_USER}
+Group=${APP_USER}
+WorkingDirectory=${APP_DIR}
+EnvironmentFile=${PERSISTENT_ENV_FILE}
+Environment=HOME=${APP_DIR}
+Environment=XDG_CACHE_HOME=${APP_DIR}/.cache
+ExecStart=${APP_DIR}/.venv/bin/python -m backend.advisor_autoscaler --queue internpath-advisor
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
@@ -255,13 +291,16 @@ systemctl daemon-reload
 systemctl enable "${SERVICE_NAME}"
 systemctl enable "${SERVICE_NAME}-ai"
 systemctl enable "${SERVICE_NAME}-worker"
+systemctl enable "${SERVICE_NAME}-advisor-worker"
 # Always restart so new code from deploy is picked up (enable --now does not restart a running unit).
 systemctl restart "${SERVICE_NAME}-ai"
 systemctl restart "${SERVICE_NAME}-worker"
+systemctl restart "${SERVICE_NAME}-advisor-worker"
 systemctl restart "${SERVICE_NAME}"
 systemctl --no-pager --full status "${SERVICE_NAME}"
 systemctl --no-pager --full status "${SERVICE_NAME}-ai"
 systemctl --no-pager --full status "${SERVICE_NAME}-worker"
+systemctl --no-pager --full status "${SERVICE_NAME}-advisor-worker"
 
 echo
 echo "InternPath is expected on port ${APP_PORT}."

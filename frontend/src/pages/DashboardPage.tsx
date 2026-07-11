@@ -61,7 +61,7 @@ export function DashboardPage({ records, latestResult, profile, onNewAnalysis, o
           <div className="workflow-card" onClick={() => onNavigate("agent-resume")}>
             <span className="workflow-step-num">04 定向优化</span>
             <h4 className="workflow-step-title">定向优化</h4>
-            <p className="workflow-step-desc">进入「简历定向优化」，调整简历段落，下载 DOCX 简历和修改对照表。</p>
+            <p className="workflow-step-desc">进入「简历定向优化」，逐段核验证据、复制建议，并手动修改原简历。</p>
           </div>
           <div className="workflow-card" onClick={() => onNavigate("history")}>
             <span className="workflow-step-num">05 求职归档</span>

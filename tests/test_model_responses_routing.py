@@ -117,13 +117,14 @@ def test_provider_cache_usage_extracts_responses_cached_tokens():
         "usage": {
             "input_tokens": 100,
             "output_tokens": 20,
-            "input_tokens_details": {"cached_tokens": 64},
+            "input_tokens_details": {"cached_tokens": 64, "cache_write_tokens": 32},
         }
     })
 
     assert stats["providerCacheAvailable"] is True
     assert stats["providerCacheHit"] is True
     assert stats["providerCachedTokens"] == 64
+    assert stats["providerCacheWriteTokens"] == 32
     assert stats["providerInputTokens"] == 100
 
 
@@ -217,17 +218,73 @@ def test_responses_stream_retries_without_prompt_cache_when_provider_rejects_fie
     assert first_kwargs["prompt_cache_key"] == "cache-key"
     assert first_kwargs["prompt_cache_retention"] == "24h"
     assert second_kwargs["stream"] is True
-    assert "prompt_cache_key" not in second_kwargs
+    assert second_kwargs["prompt_cache_key"] == "cache-key"
     assert "prompt_cache_retention" not in second_kwargs
     client.chat.completions.create.assert_not_called()
 
     stats = BaseAgent.pop_provider_cache_usage(client)
     assert stats["providerEndpointMode"] == "responses"
     assert stats["providerStream"] is True
-    assert stats["providerPromptCacheKey"] == ""
+    assert stats["providerPromptCacheKey"] == "cache-key"
     assert stats["providerPromptCacheRetention"] == ""
-    assert stats["providerPromptCacheDisabledReason"] == "provider_rejected_prompt_cache_fields"
+    assert stats["providerPromptCacheDisabledReason"] == "provider_rejected_prompt_cache_retention"
     assert stats["providerInputTokens"] == 1200
+
+
+def test_responses_stream_only_forwards_typed_output_text_deltas():
+    client = MagicMock()
+    client.responses.create.return_value = [
+        {"type": "response.output_text.delta", "delta": "真实"},
+        {"type": "response.function_call_arguments.delta", "delta": '{"query":"hidden"}'},
+        {"type": "response.reasoning.delta", "delta": "private reasoning"},
+        {"type": "response.refusal.delta", "delta": "private refusal"},
+        {"type": "response.output_text.delta", "delta": "回复"},
+        {"type": "response.output_text.done", "text": "真实回复"},
+        {"type": "response.completed", "response": {"output_text": "真实回复"}},
+    ]
+    deltas: list[str] = []
+
+    result = BaseAgent._collect_responses_stream_sync(
+        client,
+        {"model": "gpt-test", "input": "ping"},
+        on_delta=deltas.append,
+        model="gpt-test",
+        namespace="resume_copywriter",
+    )
+
+    assert result == "真实回复"
+    assert deltas == ["真实", "回复"]
+    stats = BaseAgent.pop_provider_cache_usage(client)
+    assert isinstance(stats["providerFirstTokenMs"], int)
+
+
+def test_responses_stream_drops_cache_key_only_after_retention_retry_also_fails():
+    client = MagicMock()
+    client.responses.create.side_effect = [
+        FakeProviderStatusError(400, {"error": {"message": "unsupported prompt_cache_retention"}}),
+        FakeProviderStatusError(400, {"error": {"message": "unsupported prompt_cache_key"}}),
+        [{"type": "response.output_text.delta", "delta": "ok"}],
+    ]
+
+    result = BaseAgent._collect_responses_stream_sync(
+        client,
+        {
+            "model": "gpt-test",
+            "input": "ping",
+            "prompt_cache_key": "cache-key",
+            "prompt_cache_retention": "24h",
+        },
+        model="gpt-test",
+        namespace="resume_copywriter",
+    )
+
+    assert result == "ok"
+    assert client.responses.create.call_count == 3
+    assert client.responses.create.call_args_list[1].kwargs["prompt_cache_key"] == "cache-key"
+    assert "prompt_cache_retention" not in client.responses.create.call_args_list[1].kwargs
+    assert "prompt_cache_key" not in client.responses.create.call_args_list[2].kwargs
+    stats = BaseAgent.pop_provider_cache_usage(client)
+    assert stats["providerPromptCacheDisabledReason"] == "provider_rejected_prompt_cache_key"
 
 
 def test_responses_stream_does_not_retry_without_prompt_cache_fields():
@@ -248,3 +305,13 @@ def test_responses_stream_does_not_retry_without_prompt_cache_fields():
     assert client.responses.create.call_count == 1
     assert client.responses.create.call_args.kwargs["stream"] is True
     client.chat.completions.create.assert_not_called()
+
+
+def test_responses_instructions_start_with_the_stable_cache_prefix():
+    result = BaseAgent._messages_to_responses_args([
+        {"role": "system", "content": "Agent-specific stable instructions."},
+        {"role": "user", "content": "Dynamic user input."},
+    ])
+
+    assert result["instructions"].startswith("[InternPath 稳定工作协议")
+    assert result["instructions"].index("[InternPath 稳定工作协议") < result["instructions"].index("Agent-specific stable instructions.")

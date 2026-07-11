@@ -1616,6 +1616,7 @@ export function AgentResumePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           resume_id: selectedResumeId,
+          legacy_mode: true,
           jd_text: jdText.trim(),
           config_id: selectedConfigId || null,
           is_co_pilot: runMode === "copilot",

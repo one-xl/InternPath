@@ -41,6 +41,22 @@ def test_agent_cache_key_changes_when_prompt_hash_changes(tmp_path):
     assert key_one != key_two
 
 
+def test_agent_cache_key_ignores_prompt_absolute_location(tmp_path):
+    first_dir = tmp_path / "first-install"
+    second_dir = tmp_path / "second-install"
+    first_dir.mkdir()
+    second_dir.mkdir()
+    first_prompt = first_dir / "resume_copywriter.md"
+    second_prompt = second_dir / "resume_copywriter.md"
+    first_prompt.write_text("same prompt content", encoding="utf-8")
+    second_prompt.write_text("same prompt content", encoding="utf-8")
+
+    key_one = build_cache_key("resume_advisor_draft_v1", "same input", prompt_files=[str(first_prompt)])
+    key_two = build_cache_key("resume_advisor_draft_v1", "same input", prompt_files=[str(second_prompt)])
+
+    assert key_one == key_two
+
+
 def test_file_agent_cache_store_respects_ttl(tmp_path):
     store = FileAgentCacheStore(base_dir=str(tmp_path / "cache"), ttl_seconds=0)
     store.set("ttl-unit", "key", {"ok": True})
@@ -170,6 +186,7 @@ def test_agent_optimize_reuses_matching_completed_task(tmp_path, monkeypatch):
         headers={"Authorization": f"Bearer {token}"},
         json={
             "resume_id": resume_id,
+            "legacy_mode": True,
             "jd_text": "招聘 Python 后端实习生，\n要求熟悉 FastAPI。",
             "config_id": None,
             "is_co_pilot": False,
@@ -326,6 +343,7 @@ def test_agent_optimize_reuses_legacy_completed_task_without_plan(tmp_path, monk
         headers={"Authorization": f"Bearer {token}"},
         json={
             "resume_id": resume_id,
+            "legacy_mode": True,
             "jd_text": "Backend intern role requiring\nFastAPI and SQL.",
             "config_id": None,
             "is_co_pilot": False,
@@ -396,6 +414,7 @@ def test_agent_optimize_reuses_bootstrap_pending_task(tmp_path, monkeypatch):
         headers={"Authorization": f"Bearer {token}"},
         json={
             "resume_id": resume_id,
+            "legacy_mode": True,
             "jd_text": jd_text,
             "config_id": "cfg-1",
             "is_co_pilot": True,

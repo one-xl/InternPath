@@ -1,6 +1,6 @@
 # InternPath
 
-InternPath 是面向个人求职决策的工作台，用于分析岗位 JD、评估匹配度、沉淀历史分析，并通过 Agent 工作流优化简历。
+InternPath 是面向个人求职决策的工作台，用于分析岗位 JD、评估匹配度、沉淀历史分析，并通过持续对话的 Resume Advisor 逐段优化简历。
 
 ## 技术栈
 
@@ -58,6 +58,12 @@ docker compose up -d
 
 - Email: `admin@example.com`
 - Password: `ChangeMe123!`
+
+## 简历定向优化
+
+“简历定向优化”是对话式会话，不会生成或回写 DOCX/PDF。选择简历版本、粘贴 JD 后，Advisor 会一次处理一个有证据支持的问题：缺少事实时追问，建议通过事实和质量门后才可接受并复制。用户在原文件中手动粘贴，只有点击“我满意了，结束本次优化”才会关闭会话。
+
+旧版下载型任务保留只读下载兼容；新任务必须通过 Resume Advisor 创建。
 
 ## 手动启动
 

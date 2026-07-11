@@ -11,7 +11,7 @@ WorkingDirectory=/opt/internpath
 EnvironmentFile=/opt/internpath/.env
 Environment=HOME=/opt/internpath
 Environment=XDG_CACHE_HOME=/opt/internpath/.cache
-ExecStart=/opt/internpath/.venv/bin/python -m backend.rq_worker
+ExecStart=/opt/internpath/.venv/bin/python -m backend.rq_worker --queues internpath-default
 Restart=always
 RestartSec=5
 NoNewPrivileges=true

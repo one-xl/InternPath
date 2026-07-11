@@ -37,6 +37,9 @@ if (Test-Path $EnvFile) {
         }
     }
 }
+if (-not $env:RQ_ADVISOR_QUEUE_NAME) {
+    $env:RQ_ADVISOR_QUEUE_NAME = "internpath-advisor"
+}
 
 # PostgreSQL configuration. Runtime requires PostgreSQL + pgvector; no SQLite runtime mode is supported.
 $PgBin = if ($env:INTERNPATH_PG_BIN) {
@@ -246,6 +249,9 @@ function Start-InternPath {
     $workerLog = Join-Path $LogRoot "rq-worker.log"
     $workerErrorLog = Join-Path $LogRoot "rq-worker.error.log"
     $workerPidFile = Join-Path $LogRoot "rq-worker.pid"
+    $advisorWorkerLog = Join-Path $LogRoot "rq-advisor-worker.log"
+    $advisorWorkerErrorLog = Join-Path $LogRoot "rq-advisor-worker.error.log"
+    $advisorWorkerPidFile = Join-Path $LogRoot "rq-advisor-worker.pid"
     $webLog = Join-Path $LogRoot "frontend.log"
     $pythonInvocation = Get-PythonInvocation
 
@@ -359,12 +365,26 @@ function Start-InternPath {
     } else {
         $workerProcess = Start-BackgroundPythonModule `
             -Module "backend.rq_worker" `
-            -Arguments @() `
+            -Arguments @("--queues", $env:RQ_QUEUE_NAME) `
             -WorkingDirectory $ProjectRoot `
             -LogFile $workerLog `
             -ErrorLogFile $workerErrorLog
         Set-Content -Path $workerPidFile -Value $workerProcess.Id
         Write-Host "Started RQ worker for queue '$($env:RQ_QUEUE_NAME)' (PID: $($workerProcess.Id))."
+    }
+
+    if (Test-PidFileProcess -PidFile $advisorWorkerPidFile) {
+        $advisorWorkerPid = Get-Content $advisorWorkerPidFile | Select-Object -First 1
+        Write-Host "Advisor RQ worker already appears to be running (PID: $advisorWorkerPid, queue: $env:RQ_ADVISOR_QUEUE_NAME)."
+    } else {
+        $advisorWorkerProcess = Start-BackgroundPythonModule `
+            -Module "backend.advisor_autoscaler" `
+            -Arguments @("--queue", $env:RQ_ADVISOR_QUEUE_NAME) `
+            -WorkingDirectory $ProjectRoot `
+            -LogFile $advisorWorkerLog `
+            -ErrorLogFile $advisorWorkerErrorLog
+        Set-Content -Path $advisorWorkerPidFile -Value $advisorWorkerProcess.Id
+        Write-Host "Started elastic Advisor worker supervisor for queue '$($env:RQ_ADVISOR_QUEUE_NAME)' (PID: $($advisorWorkerProcess.Id))."
     }
 
     if (Test-PortBusy -Port $BackendPort) {
@@ -393,6 +413,8 @@ function Start-InternPath {
 
 function Stop-InternPath {
     $workerPidFile = Join-Path $LogRoot "rq-worker.pid"
+    $advisorWorkerPidFile = Join-Path $LogRoot "rq-advisor-worker.pid"
+    Stop-PidFileProcess -PidFile $advisorWorkerPidFile -Name "Advisor RQ worker"
     Stop-PidFileProcess -PidFile $workerPidFile -Name "RQ worker"
     Stop-PortProcess -Port $WebPort -Name "Web app"
     Stop-PortProcess -Port $BackendPort -Name "Backend API"
@@ -452,6 +474,14 @@ function Show-InternPathStatus {
         Write-Host "RQ worker: running (PID: $workerPid)"
     } else {
         Write-Host "RQ worker: stopped"
+    }
+
+    $advisorWorkerPidFile = Join-Path $LogRoot "rq-advisor-worker.pid"
+    if (Test-PidFileProcess -PidFile $advisorWorkerPidFile) {
+        $advisorWorkerPid = Get-Content $advisorWorkerPidFile | Select-Object -First 1
+        Write-Host "Advisor RQ worker: running (PID: $advisorWorkerPid)"
+    } else {
+        Write-Host "Advisor RQ worker: stopped"
     }
 
     if (Test-PortBusy -Port $AiPort) {

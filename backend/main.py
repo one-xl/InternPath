@@ -38,7 +38,11 @@ from backend.jobs import (
     run_agent_resume_orchestration_job,
     run_async_analysis_job,
     run_background_resume_analysis_job,
+    run_resume_advisor_session_job,
 )
+from backend.resume_advisor import ResumeAdvisorModule
+from backend.resume_advisor.router import build_resume_advisor_router
+from backend.resume_advisor.session_module import resolve_advisor_model
 from backend.task_queue import enqueue_job
 from backend.docx_boundary_check import DocxBoundaryCheckConfig, check_docx_file_boundaries
 from service import CareerPathAIService
@@ -102,6 +106,7 @@ class BackgroundAnalysisStartRequest(BaseModel):
     embedding_config_id: Optional[str] = None
     chat_config_id: Optional[str] = None
     enable_agent_resume: bool = False
+    legacy_artifact_mode: bool = False
 
 
 class TailorFormFieldsRequest(BaseModel):
@@ -223,6 +228,7 @@ class AgentOptimizeResumeRequest(BaseModel):
     executionMode: Optional[str] = None
     tool_calling_mode: Optional[str] = None
     toolCallingMode: Optional[str] = None
+    legacy_mode: bool = False
 
     def normalized_execution_mode(self) -> AgentExecutionMode:
         return normalize_agent_execution_mode(
@@ -764,7 +770,8 @@ def serialize_agent_task_summary(
     stream_preview_md = read_agent_stream_preview(user_id, task_id)
     artifacts = {"hasDocx": False, "hasPdf": False}
     modification_log: list[dict[str, Any]] = []
-    if include_artifacts and user_id is not None and task_id:
+    is_legacy_artifact = str(task.get("interaction_mode") or "artifact_legacy") == "artifact_legacy"
+    if include_artifacts and is_legacy_artifact and user_id is not None and task_id:
         try:
             from backend.agents.tools.workspace_tools import get_safe_workspace_path, tool_read_file
 
@@ -778,6 +785,7 @@ def serialize_agent_task_summary(
 
     return {
         "taskId": task.get("task_id"),
+        "interactionMode": task.get("interaction_mode") or "artifact_legacy",
         "traceId": trace_id,
         "status": task.get("status"),
         "resumeId": task.get("resume_id"),
@@ -1453,7 +1461,7 @@ def create_app(
         return repaired
 
     def current_user_id(
-        session_id: Optional[str] = Cookie(default=None),
+        session_cookie: Optional[str] = Cookie(default=None, alias="session_id"),
         authorization: str = Header(default="")
     ) -> Any:
         # Bearer token takes priority over cookie
@@ -1463,7 +1471,7 @@ def create_app(
             if scheme.lower() == "bearer" and bearer_token:
                 token = bearer_token
         if not token:
-            token = session_id
+            token = session_cookie
 
         if not token:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="登录状态无效，请重新登录。")
@@ -1492,6 +1500,31 @@ def create_app(
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="该账号已被停用，请联系管理员。")
 
         return user_id
+
+
+    def enqueue_resume_advisor_run(
+        run_id: str,
+        user_id: Any,
+        session_id: str,
+        *,
+        resume_payload: dict[str, Any] | None = None,
+    ) -> None:
+        enqueue_job(
+            run_resume_advisor_session_job,
+            run_id=run_id,
+            user_id=user_id,
+            session_id=session_id,
+            resume_payload=resume_payload,
+            job_id=run_id if resume_payload is None else f"{run_id}-resume-{uuid4().hex}",
+            queue_name=Config.RQ_ADVISOR_QUEUE_NAME,
+        )
+
+    resume_advisor_module = ResumeAdvisorModule(
+        state.auth_db,
+        enqueue_run=enqueue_resume_advisor_run,
+        model_provider=resolve_advisor_model,
+    )
+    app.include_router(build_resume_advisor_router(resume_advisor_module, current_user_id))
 
 
 
@@ -1623,26 +1656,32 @@ def create_app(
         file: UploadFile = File(...),
         user_id: Any = Depends(current_user_id)
     ) -> dict[str, Any]:
-        # Check if a resume with the same file name already exists in the database
-        existing_resumes = await asyncio.to_thread(state.auth_db.list_user_resumes, user_id)
-        existing_resume = None
-        existing_resume_id = ""
-        for r in existing_resumes:
-            if r.get("name") == file.filename:
-                # Find this existing resume
-                existing_resume = await asyncio.to_thread(state.auth_db.get_user_resume, user_id, r.get("id"))
-                if existing_resume:
-                    existing_resume_id = str(r.get("id") or existing_resume.get("file", {}).get("id") or "")
-                    break
+        content = await file.read()
+        if len(content) > 10 * 1024 * 1024:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="上传文件过大，请压缩后重新上传。")
 
+        content_hash = hashlib.sha256(content).hexdigest()
+        existing_resume = await asyncio.to_thread(
+            state.auth_db.find_user_resume_by_content_hash,
+            user_id,
+            content_hash,
+        )
         if existing_resume:
+            await asyncio.to_thread(
+                state.auth_db.restore_user_resume_by_content_hash,
+                user_id,
+                content_hash,
+            )
+            existing_resume_id = str(
+                existing_resume.get("file", {}).get("id") or ""
+            )
             existing_resume = await asyncio.to_thread(
                 ensure_resume_sections,
                 user_id,
                 existing_resume_id,
                 existing_resume,
             )
-            print(f"[UPLOAD] Found existing resume with same filename '{file.filename}', reusing it.")
+            print(f"[UPLOAD] Reused existing resume version with matching content hash for '{file.filename}'.")
             existing_resume_id = str(existing_resume.get("file", {}).get("id") or existing_resume_id)
             state.resume_store[existing_resume_id] = {
                 "parsed_resume": existing_resume,
@@ -1652,10 +1691,6 @@ def create_app(
                 "resumeFile": existing_resume["file"],
                 "parsedResume": existing_resume,
             }
-
-        content = await file.read()
-        if len(content) > 10 * 1024 * 1024:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="上传文件过大，请压缩后重新上传。")
 
         try:
             parsed_resume = await asyncio.to_thread(parse_resume, file.filename or "resume", file.content_type or "", content)
@@ -1671,7 +1706,8 @@ def create_app(
                 file_name=parsed_resume["file"]["name"],
                 file_size=parsed_resume["file"]["size"],
                 file_type=parsed_resume["file"]["type"],
-                parsed_resume=parsed_resume
+                parsed_resume=parsed_resume,
+                content_hash=content_hash,
             )
         except Exception as e:
             print(f"[ERROR] Failed to save resume to DB: {e}")
@@ -2809,6 +2845,11 @@ def create_app(
         payload: BackgroundAnalysisStartRequest,
         user_id: Any = Depends(current_user_id)
     ) -> dict[str, Any]:
+        if payload.enable_agent_resume and not payload.legacy_artifact_mode:
+            raise HTTPException(
+                status_code=status.HTTP_410_GONE,
+                detail="自动生成下载型简历已退役。请在分析完成后进入简历定向优化会话。",
+            )
         user = state.auth_db.get_user_by_id(user_id)
         if user and user.role != "admin":
             if user.generation_limit is None or user.generation_limit <= 0:
@@ -2856,6 +2897,7 @@ def create_app(
             payload.embedding_config_id,
             payload.chat_config_id,
             payload.enable_agent_resume,
+            payload.legacy_artifact_mode,
             job_id=payload.record_id,
         )
 
@@ -3089,6 +3131,11 @@ def create_app(
         payload: AgentOptimizeResumeRequest,
         user_id: Any = Depends(current_user_id)
     ) -> dict[str, Any]:
+        if not payload.legacy_mode:
+            raise HTTPException(
+                status_code=status.HTTP_410_GONE,
+                detail="下载型简历任务已退役。请通过 /api/agent/resume/sessions 创建对话式优化会话。",
+            )
         request_started_at = time.perf_counter()
         # 1. 鏍￠獙绠€鍘嗘槸鍚﹀瓨鍦?
         resume_data = state.auth_db.get_user_resume(user_id, payload.resume_id)
@@ -3916,6 +3963,11 @@ def create_app(
         user_id: Any = Depends(current_user_id)
     ):
         task = state.auth_db.get_agent_resume_task(user_id, task_id)
+        if task and str(task.get("interaction_mode") or "artifact_legacy") != "artifact_legacy":
+            raise HTTPException(
+                status_code=status.HTTP_410_GONE,
+                detail="对话式简历会话不生成下载文件，请复制已核验建议后手动修改原简历。",
+            )
         if not task or not task.get("optimized_resume_md"):
             raise HTTPException(status_code=404, detail="鏈壘鍒扮畝鍘嗗唴瀹规垨浠诲姟灏氭湭瀹屾垚")
 
@@ -4046,9 +4098,16 @@ def create_app(
         payload: SaveAgentResumeEditRequest,
         user_id: Any = Depends(current_user_id)
     ) -> dict[str, Any]:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="在线回写简历已退役。历史产物仅支持只读下载；请在对话式简历顾问中复制建议后手动修改原文件。",
+        )
+
         task = state.auth_db.get_agent_resume_task(user_id, task_id)
         if not task:
             raise HTTPException(status_code=404, detail="未找到对应的简历优化任务。")
+        if str(task.get("interaction_mode") or "artifact_legacy") != "artifact_legacy":
+            raise HTTPException(status_code=410, detail="对话式简历会话不支持原地回写文件，请复制建议后手动修改原简历。")
 
         from backend.agents.tools.workspace_tools import get_safe_workspace_path, tool_read_file, tool_write_file
         from backend.agents.tools.docx_tools import convert_docx_to_pdf, update_docx_resume_from_log

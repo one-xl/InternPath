@@ -308,9 +308,12 @@ def run_background_resume_analysis(
     resume_file_id: str,
     embedding_config_id: Optional[str] = None,
     chat_config_id: Optional[str] = None,
-    enable_agent_resume: bool = False
+    enable_agent_resume: bool = False,
+    legacy_artifact_mode: bool = False,
 ) -> None:
     try:
+        if enable_agent_resume and not legacy_artifact_mode:
+            raise RuntimeError("自动生成下载型简历已退役，请使用 ResumeAdvisor 会话。")
         # Step 1: Validate input
         update_background_progress(user_id, record_id, "validate", "running")
 

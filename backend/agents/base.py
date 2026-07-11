@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import re
+import time
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Optional, List, Dict
 
@@ -176,6 +177,11 @@ class BaseAgent(ABC):
             ("prompt_cache_miss_tokens",),
             ("cache_creation_input_tokens",),
         ])
+        cache_write_tokens, has_write = cls._first_usage_number(usage, [
+            ("prompt_tokens_details", "cache_write_tokens"),
+            ("input_tokens_details", "cache_write_tokens"),
+            ("cache_write_tokens",),
+        ])
         input_tokens, _has_input = cls._first_usage_number(usage, [
             ("prompt_tokens",),
             ("input_tokens",),
@@ -188,12 +194,13 @@ class BaseAgent(ABC):
             ("total_tokens",),
         ])
 
-        available = has_cached or has_miss
+        available = has_cached or has_miss or has_write
         return {
             "providerCacheAvailable": available,
             "providerCacheHit": (cached_tokens > 0) if available else None,
             "providerCachedTokens": cached_tokens if available else 0,
             "providerCacheMissTokens": cache_miss_tokens if available else 0,
+            "providerCacheWriteTokens": cache_write_tokens if available else 0,
             "providerInputTokens": input_tokens,
             "providerOutputTokens": output_tokens,
             "providerTotalTokens": total_tokens or (input_tokens + output_tokens),
@@ -217,6 +224,24 @@ class BaseAgent(ABC):
         if openai_client is not None:
             setattr(openai_client, "_internpath_last_provider_cache", None)
             setattr(openai_client, "_internpath_last_provider_request", None)
+            setattr(openai_client, "_internpath_provider_request_started_at", None)
+            setattr(openai_client, "_internpath_provider_first_token_ms", None)
+
+    @staticmethod
+    def _mark_provider_first_token(openai_client: Any) -> None:
+        if openai_client is None:
+            return
+        current = getattr(openai_client, "_internpath_provider_first_token_ms", None)
+        if isinstance(current, (int, float)) and not isinstance(current, bool):
+            return
+        started_at = getattr(openai_client, "_internpath_provider_request_started_at", None)
+        if not isinstance(started_at, (int, float)) or isinstance(started_at, bool):
+            return
+        setattr(
+            openai_client,
+            "_internpath_provider_first_token_ms",
+            max(0, int((time.monotonic() - started_at) * 1000)),
+        )
 
     @staticmethod
     def pop_provider_cache_usage(openai_client: Any) -> Dict[str, Any]:
@@ -231,6 +256,9 @@ class BaseAgent(ABC):
             merged.update(request_info)
         if isinstance(stats, dict):
             merged.update(stats)
+        first_token_ms = getattr(openai_client, "_internpath_provider_first_token_ms", None)
+        if isinstance(first_token_ms, (int, float)) and not isinstance(first_token_ms, bool):
+            merged["providerFirstTokenMs"] = max(0, int(first_token_ms))
         return merged
 
     @staticmethod
@@ -247,6 +275,8 @@ class BaseAgent(ABC):
     ) -> None:
         if openai_client is None:
             return
+        setattr(openai_client, "_internpath_provider_request_started_at", time.monotonic())
+        setattr(openai_client, "_internpath_provider_first_token_ms", None)
         setattr(openai_client, "_internpath_last_provider_request", {
             "providerEndpointMode": endpoint_mode,
             "providerStream": bool(stream),
@@ -329,6 +359,12 @@ class BaseAgent(ABC):
 
     @classmethod
     def _extract_response_delta(cls, event: Any) -> str:
+        event_type = cls._get_attr_or_key(event, "type")
+        if isinstance(event_type, str) and event_type:
+            if event_type != "response.output_text.delta":
+                return ""
+            delta = cls._get_attr_or_key(event, "delta")
+            return delta if isinstance(delta, str) else ""
         delta = cls._get_attr_or_key(event, "delta")
         if isinstance(delta, str):
             return delta
@@ -400,7 +436,7 @@ class BaseAgent(ABC):
             except Exception:
                 stable_prefix_enabled = True
             if stable_prefix_enabled:
-                instruction_text = f"{instruction_text}\n\n{cls.RESPONSES_PROMPT_CACHE_PREAMBLE.strip()}"
+                instruction_text = f"{cls.RESPONSES_PROMPT_CACHE_PREAMBLE.strip()}\n\n{instruction_text}"
 
         return {
             "instructions": instruction_text,
@@ -585,6 +621,7 @@ class BaseAgent(ABC):
         except TypeError:
             content = self._extract_stream_delta(stream)
             if content:
+                self._mark_provider_first_token(self.openai_client)
                 on_delta(content)
             return content
 
@@ -595,6 +632,7 @@ class BaseAgent(ABC):
             if not delta:
                 continue
             chunks.append(delta)
+            self._mark_provider_first_token(self.openai_client)
             on_delta(delta)
         return "".join(chunks)
 
@@ -694,32 +732,70 @@ class BaseAgent(ABC):
         try:
             stream = openai_client.responses.create(**stream_kwargs)
         except Exception as exc:
-            has_prompt_cache_fields = "prompt_cache_key" in stream_kwargs or "prompt_cache_retention" in stream_kwargs
+            has_prompt_cache_fields = any(
+                key in stream_kwargs
+                for key in ("prompt_cache_key", "prompt_cache_retention", "prompt_cache_options")
+            )
             if not has_prompt_cache_fields or not cls._should_retry_responses_without_prompt_cache(exc):
                 raise
 
             fallback_kwargs = copy.deepcopy(stream_kwargs)
-            fallback_kwargs.pop("prompt_cache_key", None)
-            fallback_kwargs.pop("prompt_cache_retention", None)
-            cls._remember_provider_request(
-                openai_client,
-                endpoint_mode="responses",
-                stream=True,
-                model=str(model or fallback_kwargs.get("model") or ""),
-                namespace=namespace,
-                prompt_cache_key="",
-                prompt_cache_retention="",
-                prompt_cache_disabled_reason="provider_rejected_prompt_cache_fields",
-            )
-            try:
-                stream = openai_client.responses.create(**fallback_kwargs)
-            except Exception as retry_exc:
-                raise exc from retry_exc
+            has_retention_fields = "prompt_cache_retention" in fallback_kwargs or "prompt_cache_options" in fallback_kwargs
+            if has_retention_fields:
+                fallback_kwargs.pop("prompt_cache_retention", None)
+                fallback_kwargs.pop("prompt_cache_options", None)
+                cls._remember_provider_request(
+                    openai_client,
+                    endpoint_mode="responses",
+                    stream=True,
+                    model=str(model or fallback_kwargs.get("model") or ""),
+                    namespace=namespace,
+                    prompt_cache_key=str(fallback_kwargs.get("prompt_cache_key") or ""),
+                    prompt_cache_retention="",
+                    prompt_cache_disabled_reason="provider_rejected_prompt_cache_retention",
+                )
+                try:
+                    stream = openai_client.responses.create(**fallback_kwargs)
+                except Exception as retention_exc:
+                    if "prompt_cache_key" not in fallback_kwargs or not cls._should_retry_responses_without_prompt_cache(retention_exc):
+                        raise retention_exc from exc
+                    fallback_kwargs.pop("prompt_cache_key", None)
+                    cls._remember_provider_request(
+                        openai_client,
+                        endpoint_mode="responses",
+                        stream=True,
+                        model=str(model or fallback_kwargs.get("model") or ""),
+                        namespace=namespace,
+                        prompt_cache_key="",
+                        prompt_cache_retention="",
+                        prompt_cache_disabled_reason="provider_rejected_prompt_cache_key",
+                    )
+                    try:
+                        stream = openai_client.responses.create(**fallback_kwargs)
+                    except Exception as retry_exc:
+                        raise retry_exc from retention_exc
+            else:
+                fallback_kwargs.pop("prompt_cache_key", None)
+                cls._remember_provider_request(
+                    openai_client,
+                    endpoint_mode="responses",
+                    stream=True,
+                    model=str(model or fallback_kwargs.get("model") or ""),
+                    namespace=namespace,
+                    prompt_cache_key="",
+                    prompt_cache_retention="",
+                    prompt_cache_disabled_reason="provider_rejected_prompt_cache_key",
+                )
+                try:
+                    stream = openai_client.responses.create(**fallback_kwargs)
+                except Exception as retry_exc:
+                    raise retry_exc from exc
 
         if cls._looks_like_complete_response(stream):
             cls._remember_provider_cache_usage(openai_client, stream)
             content = cls._extract_response_text(stream)
             if content and on_delta:
+                cls._mark_provider_first_token(openai_client)
                 on_delta(content)
             return {"text": content, "response": stream}
         try:
@@ -729,6 +805,7 @@ class BaseAgent(ABC):
             content = cls._extract_response_text(stream)
             if content:
                 if on_delta:
+                    cls._mark_provider_first_token(openai_client)
                     on_delta(content)
             return {"text": content, "response": stream}
 
@@ -745,12 +822,14 @@ class BaseAgent(ABC):
                 continue
             chunks.append(delta)
             if on_delta:
+                cls._mark_provider_first_token(openai_client)
                 on_delta(delta)
         text = "".join(chunks)
         if text:
             return {"text": text, "response": completed_response}
         if completed_text:
             if on_delta:
+                cls._mark_provider_first_token(openai_client)
                 on_delta(completed_text)
             return {"text": completed_text, "response": completed_response}
         return {"text": "", "response": completed_response}

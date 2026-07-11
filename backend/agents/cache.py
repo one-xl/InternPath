@@ -27,6 +27,9 @@ CACHE_NAMESPACE_VERSIONS: dict[str, str] = {
     "resume_hr_critic_v2": "hr-critic-v3",
     "resume_hallucination_check_v2": "hallucination-v3",
     "layout_audit_v2": "layout-audit-v3",
+    "resume_advisor_jd_decode_v1": "resume-advisor-jd-v1",
+    "resume_advisor_draft_v1": "resume-advisor-draft-v1",
+    "resume_advisor_quality_v1": "resume-advisor-quality-v1",
 }
 
 _PROMPT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompts")
@@ -34,6 +37,9 @@ PROMPT_FILES_BY_NAMESPACE: dict[str, list[str]] = {
     "job_decode_v2": [os.path.join(_PROMPT_DIR, "job_decoder.md")],
     "resume_section_rewrite_v2": [os.path.join(_PROMPT_DIR, "resume_copywriter.md")],
     "resume_hr_critic_v2": [os.path.join(_PROMPT_DIR, "hr_critic.md")],
+    "resume_advisor_jd_decode_v1": [os.path.join(_PROMPT_DIR, "job_decoder.md")],
+    "resume_advisor_draft_v1": [os.path.join(_PROMPT_DIR, "resume_copywriter.md")],
+    "resume_advisor_quality_v1": [os.path.join(_PROMPT_DIR, "hr_critic.md")],
 }
 
 
@@ -58,8 +64,9 @@ def stable_cache_payload(value: Any) -> Any:
 def _hash_files(paths: Sequence[str]) -> str:
     digest = hashlib.sha256()
     has_content = False
-    for path in sorted(str(p) for p in paths if p):
-        digest.update(path.encode("utf-8"))
+    resolved_paths = [str(path) for path in paths if path]
+    for path in sorted(resolved_paths, key=lambda value: (os.path.basename(value), value)):
+        digest.update(os.path.basename(path).encode("utf-8"))
         if os.path.exists(path):
             has_content = True
             with open(path, "rb") as f:
@@ -67,7 +74,7 @@ def _hash_files(paths: Sequence[str]) -> str:
                     digest.update(chunk)
         else:
             digest.update(b"<missing>")
-    return digest.hexdigest() if has_content or paths else "no-prompt-file"
+    return digest.hexdigest() if has_content or resolved_paths else "no-prompt-file"
 
 
 def build_cache_key(

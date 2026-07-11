@@ -53,6 +53,7 @@ class ResumeCopywriter(BaseAgent):
         goal: str,
         user_id: str = "default",
         on_delta: Optional[Callable[[str], None]] = None,
+        preference_rules: Optional[list[str]] = None,
     ) -> str:
         """
         深度重构指定的简历段落。
@@ -70,9 +71,13 @@ class ResumeCopywriter(BaseAgent):
         self.reset_context(user_id=user_id, query="")
 
         # 检索当前用户针对此模块的历史偏好与 Few-shot 规则
-        from backend.memory.preference_db import PreferenceDB
-        pref_db = PreferenceDB()
-        preferences = pref_db.get_preferences(user_id, section_name)
+        if preference_rules is None:
+            from backend.memory.preference_db import PreferenceDB
+
+            pref_db = PreferenceDB()
+            preferences = pref_db.get_preferences(user_id, section_name)
+        else:
+            preferences = [str(item).strip() for item in preference_rules if str(item).strip()]
 
         user_preference_prompt = ""
         if preferences:

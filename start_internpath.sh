@@ -24,6 +24,7 @@ fi
 BACKEND_PORT="${INTERNPATH_BACKEND_PORT:-${PORT:-8787}}"
 AI_PORT="${INTERNPATH_AI_PORT:-8000}"
 RQ_QUEUE_NAME="${RQ_QUEUE_NAME:-internpath-default}"
+RQ_ADVISOR_QUEUE_NAME="${RQ_ADVISOR_QUEUE_NAME:-internpath-advisor}"
 
 if [ -z "${DATABASE_URL:-}" ]; then
     echo "Error: DATABASE_URL is required. InternPath runs on PostgreSQL + pgvector only."
@@ -61,7 +62,7 @@ if systemctl list-unit-files | grep -q "${SERVICE_NAME}.service"; then
         sudo systemctl start redis || echo "Warning: Failed to start redis service. It might already be running."
     fi
 
-    for unit in "${SERVICE_NAME}" "${SERVICE_NAME}-ai" "${SERVICE_NAME}-worker"; do
+    for unit in "${SERVICE_NAME}" "${SERVICE_NAME}-ai" "${SERVICE_NAME}-worker" "${SERVICE_NAME}-advisor-worker"; do
         if systemctl list-unit-files | grep -q "${unit}.service"; then
             echo "Starting ${unit} service..."
             sudo systemctl start "${unit}"
@@ -83,7 +84,7 @@ if systemctl list-unit-files | grep -q "${SERVICE_NAME}.service"; then
     echo "=============================================="
     echo "  InternPath started successfully!"
     echo "  URL: http://<your-server-ip>:$PORT"
-    echo "  Logs: journalctl -u ${SERVICE_NAME} -u ${SERVICE_NAME}-ai -u ${SERVICE_NAME}-worker -f"
+    echo "  Logs: journalctl -u ${SERVICE_NAME} -u ${SERVICE_NAME}-ai -u ${SERVICE_NAME}-worker -u ${SERVICE_NAME}-advisor-worker -f"
     echo "=============================================="
 else
     # 3. Manual Local Linux Run (without systemd)
@@ -117,9 +118,14 @@ else
     echo $AI_SERVICE_PID > logs/ai-service.pid
 
     echo "Starting RQ worker for queue '$RQ_QUEUE_NAME'..."
-    nohup python -m backend.rq_worker > logs/rq-worker.log 2>&1 &
+    nohup python -m backend.rq_worker --queues "$RQ_QUEUE_NAME" > logs/rq-worker.log 2>&1 &
     WORKER_PID=$!
     echo $WORKER_PID > logs/rq-worker.pid
+
+    echo "Starting elastic Advisor worker supervisor for queue '$RQ_ADVISOR_QUEUE_NAME'..."
+    nohup python -m backend.advisor_autoscaler --queue "$RQ_ADVISOR_QUEUE_NAME" > logs/rq-advisor-worker.log 2>&1 &
+    ADVISOR_WORKER_PID=$!
+    echo $ADVISOR_WORKER_PID > logs/rq-advisor-worker.pid
 
     echo "Starting FastAPI backend natively..."
     nohup python -m uvicorn backend.main:app --host 0.0.0.0 --port "$BACKEND_PORT" > logs/backend.log 2>&1 &
@@ -128,8 +134,8 @@ else
 
     echo "=============================================="
     echo "  InternPath started in background."
-    echo "  Backend PID: $BACKEND_PID | AI PID: $AI_SERVICE_PID | Worker PID: $WORKER_PID"
+    echo "  Backend PID: $BACKEND_PID | AI PID: $AI_SERVICE_PID | Worker PID: $WORKER_PID | Advisor Worker PID: $ADVISOR_WORKER_PID"
     echo "  URL: http://127.0.0.1:$BACKEND_PORT"
-    echo "  Logs: tail -f logs/backend.log logs/ai-service.log logs/rq-worker.log"
+    echo "  Logs: tail -f logs/backend.log logs/ai-service.log logs/rq-worker.log logs/rq-advisor-worker.log"
     echo "=============================================="
 fi

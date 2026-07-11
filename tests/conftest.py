@@ -26,12 +26,15 @@ def ensure_event_loop():
 @pytest.fixture(autouse=True)
 def isolate_rq_queue(monkeypatch):
     queue_name = f"internpath-test-{uuid4().hex}"
+    advisor_queue_name = f"internpath-advisor-test-{uuid4().hex}"
     monkeypatch.setattr(Config, "RQ_QUEUE_NAME", queue_name)
+    monkeypatch.setattr(Config, "RQ_ADVISOR_QUEUE_NAME", advisor_queue_name)
     yield
     if not Config.REDIS_URL:
         return
     try:
         redis = Redis.from_url(Config.REDIS_URL)
         Queue(queue_name, connection=redis).empty()
+        Queue(advisor_queue_name, connection=redis).empty()
     except RedisError:
         return

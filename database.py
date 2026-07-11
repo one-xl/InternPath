@@ -977,6 +977,9 @@ class Database:
             if not self._column_exists(cursor, "agent_preferences", col_name):
                 cursor.execute(f"ALTER TABLE agent_preferences ADD COLUMN {col_name} {col_type};")
 
+        from backend.migrations.resume_advisor import run_resume_advisor_migrations
+
+        run_resume_advisor_migrations(cursor)
         conn.commit()
         conn.close()
 
@@ -1641,7 +1644,8 @@ class Database:
             """
             SELECT task_id, user_id, trace_id, status, resume_id, original_resume_name,
                    jd_text, workspace_path, logs, optimized_resume_md, error_message,
-                   created_at, updated_at, pending_question, human_answer, execution_plan
+                   created_at, updated_at, pending_question, human_answer, execution_plan,
+                   interaction_mode
             FROM agent_resume_tasks
             WHERE task_id = ? AND user_id = ?
             """,
@@ -1668,6 +1672,7 @@ class Database:
             "pending_question": row[13],
             "human_answer": row[14],
             "execution_plan": row[15],
+            "interaction_mode": row[16],
         }
 
     def list_user_agent_resume_tasks(self, user_id: Any) -> list[dict]:
@@ -1677,7 +1682,7 @@ class Database:
             """
             SELECT task_id, user_id, trace_id, status, resume_id, original_resume_name,
                    jd_text, workspace_path, logs, optimized_resume_md, error_message,
-                   created_at, updated_at
+                   created_at, updated_at, interaction_mode
             FROM agent_resume_tasks
             WHERE user_id = ?
             ORDER BY created_at DESC
@@ -1702,6 +1707,7 @@ class Database:
                 "error_message": row[10],
                 "created_at": row[11],
                 "updated_at": row[12],
+                "interaction_mode": row[13],
             })
         return tasks
 
@@ -1725,7 +1731,8 @@ class Database:
             f"""
             SELECT task_id, user_id, trace_id, status, resume_id, original_resume_name,
                    jd_text, workspace_path, logs, optimized_resume_md, error_message,
-                   created_at, updated_at, pending_question, human_answer, execution_plan
+                   created_at, updated_at, pending_question, human_answer, execution_plan,
+                   interaction_mode
             FROM agent_resume_tasks
             WHERE user_id = ?
               {resume_clause}
@@ -1756,6 +1763,7 @@ class Database:
                 "pending_question": row[13],
                 "human_answer": row[14],
                 "execution_plan": row[15],
+                "interaction_mode": row[16],
             })
         return tasks
 
@@ -4984,31 +4992,59 @@ class Database:
         finally:
             conn.close()
 
-    def save_user_resume(self, user_id: Any, resume_id: str, file_name: str, file_size: int, file_type: str, parsed_resume: dict) -> None:
+    def save_user_resume(
+        self,
+        user_id: Any,
+        resume_id: str,
+        file_name: str,
+        file_size: int,
+        file_type: str,
+        parsed_resume: dict,
+        *,
+        content_hash: Optional[str] = None,
+    ) -> None:
         conn = self.get_connection()
         cursor = conn.cursor()
         try:
             user_key = str(user_id)
             parsed_json_str = json.dumps(parsed_resume)
+            normalized_hash = str(
+                content_hash
+                or parsed_resume.get("contentHash")
+                or (parsed_resume.get("file") or {}).get("contentHash")
+                or hashlib.sha256(parsed_json_str.encode("utf-8")).hexdigest()
+            )
             if self.is_postgres:
                 cursor.execute("SELECT 1 FROM resumes WHERE id = %s AND user_id = %s", (resume_id, user_key))
                 row = cursor.fetchone()
                 if row is not None:
                     cursor.execute(
-                        "UPDATE resumes SET file_name = %s, file_size = %s, file_type = %s, parsed_json = %s::jsonb, updated_at = CURRENT_TIMESTAMP WHERE id = %s AND user_id = %s",
-                        (file_name, file_size, file_type, parsed_json_str, resume_id, user_key)
+                        "UPDATE resumes SET file_name = %s, file_size = %s, file_type = %s, content_hash = %s, parsed_json = %s::jsonb, deleted_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = %s AND user_id = %s",
+                        (file_name, file_size, file_type, normalized_hash, parsed_json_str, resume_id, user_key)
                     )
                 else:
                     cursor.execute(
-                        "INSERT INTO resumes (id, user_id, file_name, file_size, file_type, parsed_json) VALUES (%s, %s, %s, %s, %s, %s::jsonb)",
-                        (resume_id, user_key, file_name, file_size, file_type, parsed_json_str)
+                        "SELECT id, version_no FROM resumes WHERE user_id = %s AND file_name = %s ORDER BY version_no DESC, created_at DESC LIMIT 1",
+                        (user_key, file_name),
+                    )
+                    previous_version = cursor.fetchone()
+                    parent_resume_id = previous_version[0] if previous_version else None
+                    version_no = int(previous_version[1] or 0) + 1 if previous_version else 1
+                    if parent_resume_id:
+                        cursor.execute(
+                            "UPDATE resumes SET is_current = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = %s AND user_id = %s",
+                            (parent_resume_id, user_key),
+                        )
+                    cursor.execute(
+                        "INSERT INTO resumes (id, user_id, file_name, file_size, file_type, content_hash, parent_resume_id, version_no, is_current, parsed_json) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, TRUE, %s::jsonb)",
+                        (resume_id, user_key, file_name, file_size, file_type, normalized_hash, parent_resume_id, version_no, parsed_json_str)
                     )
             else:
                 cursor.execute("SELECT 1 FROM resumes WHERE id = ? AND user_id = ?", (resume_id, user_id))
                 row = cursor.fetchone()
                 if row is not None:
                     cursor.execute(
-                        "UPDATE resumes SET file_name = ?, file_size = ?, file_type = ?, parsed_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?",
+                        "UPDATE resumes SET file_name = ?, file_size = ?, file_type = ?, parsed_json = ?, deleted_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?",
                         (file_name, file_size, file_type, parsed_json_str, resume_id, user_id)
                     )
                 else:
@@ -5023,18 +5059,58 @@ class Database:
         finally:
             conn.close()
 
+    def find_user_resume_by_content_hash(self, user_id: Any, content_hash: str) -> Optional[dict]:
+        """Return the immutable resume version with the same uploaded bytes for this user."""
+        normalized_hash = str(content_hash or "").strip()
+        if not normalized_hash:
+            return None
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT parsed_json FROM resumes WHERE user_id = %s AND content_hash = %s ORDER BY updated_at DESC LIMIT 1",
+                (str(user_id), normalized_hash),
+            )
+            row = cursor.fetchone()
+            return safe_json_load(row[0]) if row else None
+        finally:
+            conn.close()
+
+    def restore_user_resume_by_content_hash(self, user_id: Any, content_hash: str) -> Optional[dict]:
+        """Restore a soft-deleted immutable version when identical bytes are uploaded again."""
+        normalized_hash = str(content_hash or "").strip()
+        if not normalized_hash:
+            return None
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            if self.is_postgres:
+                cursor.execute(
+                    "UPDATE resumes SET deleted_at = NULL, is_current = TRUE, updated_at = CURRENT_TIMESTAMP WHERE user_id = %s AND content_hash = %s",
+                    (str(user_id), normalized_hash),
+                )
+            else:
+                cursor.execute(
+                    "UPDATE resumes SET deleted_at = NULL, is_current = 1, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND content_hash = ?",
+                    (user_id, normalized_hash),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+        return self.find_user_resume_by_content_hash(user_id, normalized_hash)
+
     def list_user_resumes(self, user_id: Any) -> List[dict]:
         conn = self.get_connection()
         cursor = conn.cursor()
         try:
             if self.is_postgres:
                 cursor.execute(
-                    "SELECT id, file_name, file_size, file_type, created_at, updated_at FROM resumes WHERE user_id = %s ORDER BY created_at DESC",
+                    "SELECT id, file_name, file_size, file_type, content_hash, version_no, is_current, created_at, updated_at FROM resumes WHERE user_id = %s AND deleted_at IS NULL ORDER BY created_at DESC",
                     (str(user_id),)
                 )
             else:
                 cursor.execute(
-                    "SELECT id, file_name, file_size, file_type, created_at, updated_at FROM resumes WHERE user_id = ? ORDER BY created_at DESC",
+                    "SELECT id, file_name, file_size, file_type, content_hash, version_no, is_current, created_at, updated_at FROM resumes WHERE user_id = ? AND deleted_at IS NULL ORDER BY created_at DESC",
                     (user_id,)
                 )
             rows = cursor.fetchall()
@@ -5045,8 +5121,11 @@ class Database:
                     "name": r[1],
                     "size": r[2],
                     "type": r[3],
-                    "createdAt": safe_datetime(r[4]).isoformat() if r[4] else None,
-                    "updatedAt": safe_datetime(r[5]).isoformat() if r[5] else None,
+                    "contentHash": r[4],
+                    "versionNo": r[5],
+                    "isCurrent": bool(r[6]),
+                    "createdAt": safe_datetime(r[7]).isoformat() if r[7] else None,
+                    "updatedAt": safe_datetime(r[8]).isoformat() if r[8] else None,
                 })
             return resumes
         except Exception as e:
@@ -5085,12 +5164,12 @@ class Database:
         try:
             if self.is_postgres:
                 cursor.execute(
-                    "DELETE FROM resumes WHERE id = %s AND user_id = %s",
+                    "UPDATE resumes SET deleted_at = CURRENT_TIMESTAMP, is_current = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = %s AND user_id = %s",
                     (resume_id, str(user_id))
                 )
             else:
                 cursor.execute(
-                    "DELETE FROM resumes WHERE id = ? AND user_id = ?",
+                    "UPDATE resumes SET deleted_at = CURRENT_TIMESTAMP, is_current = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?",
                     (resume_id, user_id)
                 )
             conn.commit()

@@ -787,6 +787,7 @@ def test_agent_optimize_accepts_agentic_mode_fields(tmp_path, monkeypatch):
         headers={"Authorization": f"Bearer {token}"},
         json={
             "resume_id": resume_id,
+            "legacy_mode": True,
             "jd_text": "Backend internship requiring FastAPI, LLM workflow, and resume automation experience.",
             "config_id": None,
             "is_co_pilot": True,
@@ -868,6 +869,7 @@ def test_agent_optimize_defaults_to_agentic_native_responses(tmp_path, monkeypat
         headers={"Authorization": f"Bearer {token}"},
         json={
             "resume_id": resume_id,
+            "legacy_mode": True,
             "jd_text": "Backend internship requiring FastAPI, LLM workflow, and resume automation experience.",
             "is_co_pilot": True,
         },

@@ -232,7 +232,8 @@ export function useJobAnalysis() {
           resume_file_id: input.resumeFile.id,
           embedding_config_id: input.embeddingConfig.id,
           chat_config_id: input.chatConfig.id,
-          enable_agent_resume: input.draft.enableAgentResume || false,
+          // New analysis never launches the legacy artifact generator. Resume work starts in ResumeAdvisor.
+          enable_agent_resume: false,
         })
       });
 

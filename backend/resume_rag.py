@@ -7,15 +7,21 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from document_parser import DocumentParseError, extract_docx_structure, extract_pdf_structure
+from document_parser import (
+    DocumentParseError,
+    extract_docx_structure,
+    extract_pdf_structure,
+    extract_text_from_txt_bytes,
+)
 
 
 SUPPORTED_TYPES = {
     "application/pdf": ".pdf",
     "application/msword": ".doc",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "text/plain": ".txt",
 }
-SUPPORTED_EXTENSIONS = {".pdf", ".doc", ".docx"}
+SUPPORTED_EXTENSIONS = {".pdf", ".doc", ".docx", ".txt"}
 MAX_FILE_SIZE = 10 * 1024 * 1024
 STRUCTURED_RESUME_PARSER_VERSION = "v2"
 SKILL_KEYWORDS = [
@@ -225,7 +231,20 @@ def validate_resume_upload(file_name: str, content_type: str, data: bytes) -> No
     mime_allowed = content_type in SUPPORTED_TYPES
     extension_allowed = suffix in SUPPORTED_EXTENSIONS
     if not mime_allowed and not extension_allowed:
-        raise DocumentParseError("仅支持 PDF、DOC、DOCX 格式")
+        raise DocumentParseError("仅支持 PDF、DOC、DOCX、TXT 格式")
+
+
+def _extract_txt_structure(data: bytes) -> list[dict[str, Any]]:
+    text = extract_text_from_txt_bytes(data)
+    return [
+        {
+            "kind": "paragraph",
+            "text": line,
+            "locator": {"paragraphIndex": index},
+        }
+        for index, raw_line in enumerate(text.splitlines())
+        if (line := raw_line.strip())
+    ]
 
 
 def parse_resume(file_name: str, content_type: str, data: bytes) -> dict[str, Any]:
@@ -235,10 +254,12 @@ def parse_resume(file_name: str, content_type: str, data: bytes) -> dict[str, An
         source_records = extract_pdf_structure(data)
     elif suffix == ".docx":
         source_records = extract_docx_structure(data)
+    elif suffix == ".txt":
+        source_records = _extract_txt_structure(data)
     elif suffix == ".doc":
         raise DocumentParseError("DOC 格式无法可靠解析，请转换为 DOCX 或 PDF 后上传")
     else:
-        raise DocumentParseError("仅支持 PDF、DOC、DOCX 格式")
+        raise DocumentParseError("仅支持 PDF、DOC、DOCX、TXT 格式")
 
     source_records = normalize_resume_source_records(source_records)
     raw_text = "\n".join(str(record.get("text") or "") for record in source_records).strip()

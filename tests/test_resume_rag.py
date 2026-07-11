@@ -241,6 +241,19 @@ def test_parse_resume_builds_docx_markdown_and_chunks_from_native_structure():
     assert parsed["chunks"][0]["sourceBlockIds"]
 
 
+def test_parse_resume_supports_plain_text_uploads():
+    parsed = parse_resume(
+        "resume.txt",
+        "text/plain",
+        "项目经历\n负责 FastAPI 接口开发\n技能\nPython / Redis".encode("utf-8"),
+    )
+
+    assert parsed["parser"]["sourceFormat"] == "txt"
+    assert parsed["rawText"] == "项目经历\n负责 FastAPI 接口开发\n技能\nPython / Redis"
+    assert "## 项目经历" in parsed["structuredMarkdown"]
+    assert any(block["text"] == "Python / Redis" for block in parsed["blocks"])
+
+
 def test_docx_duplicate_paragraphs_are_merged_before_markdown_preview_and_rag():
     data = _docx_bytes(
         """<?xml version="1.0" encoding="UTF-8"?>

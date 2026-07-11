@@ -2,9 +2,10 @@ const SUPPORTED_MIME_TYPES = new Set([
   "application/pdf",
   "application/msword",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "text/plain",
 ]);
 
-const SUPPORTED_EXTENSIONS = new Set([".pdf", ".doc", ".docx"]);
+const SUPPORTED_EXTENSIONS = new Set([".pdf", ".doc", ".docx", ".txt"]);
 export const RESUME_MAX_FILE_SIZE = 10 * 1024 * 1024;
 
 export function formatFileSize(size: number): string {
@@ -25,7 +26,7 @@ export function validateResumeFile(file: File): string | null {
   const extension = getFileExtension(file.name);
   const mimeAllowed = SUPPORTED_MIME_TYPES.has(file.type);
   const extensionAllowed = SUPPORTED_EXTENSIONS.has(extension);
-  if (!mimeAllowed && !extensionAllowed) return "仅支持 PDF、DOC、DOCX 格式";
+  if (!mimeAllowed && !extensionAllowed) return "仅支持 PDF、DOC、DOCX、TXT 格式";
 
   return null;
 }

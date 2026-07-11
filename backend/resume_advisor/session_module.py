@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import time
+from threading import Lock
 from typing import Any, Callable
 
+from config import Config
 from database import Database
 
 from .langgraph import LangGraphResumeAdvisor
@@ -10,13 +13,28 @@ from .verification import review_suggestion_quality, verify_suggestion_facts
 
 
 _QUESTION_PREFIXES = ("为什么", "为何", "怎么", "如何", "能否", "可以", "解释")
+_ADVISOR_MODEL_CACHE: dict[str, tuple[float, Any, str]] = {}
+_ADVISOR_MODEL_CACHE_LOCK = Lock()
+
+
+def _resolve_advisor_model_uncached(user_id: Any) -> tuple[Any, str]:
+    from ai_analyzer import AIAnalyzer
+
+    client, _config_id, _provider, model_id = AIAnalyzer()._client(user_id, None, True)
+    return client, model_id
 
 
 def resolve_advisor_model(user_id: Any) -> tuple[Any, str]:
     """Resolve the user's configured chat model for optional specialist review."""
-    from ai_analyzer import AIAnalyzer
-
-    client, _config_id, _provider, model_id = AIAnalyzer()._client(user_id, None, True)
+    cache_key = str(user_id)
+    now = time.monotonic()
+    with _ADVISOR_MODEL_CACHE_LOCK:
+        cached = _ADVISOR_MODEL_CACHE.get(cache_key)
+        if cached and now - cached[0] < Config.ADVISOR_MODEL_CLIENT_TTL_SECONDS:
+            return cached[1], cached[2]
+    client, model_id = _resolve_advisor_model_uncached(user_id)
+    with _ADVISOR_MODEL_CACHE_LOCK:
+        _ADVISOR_MODEL_CACHE[cache_key] = (time.monotonic(), client, model_id)
     return client, model_id
 
 

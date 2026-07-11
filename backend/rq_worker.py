@@ -29,8 +29,13 @@ def main(argv: list[str] | None = None) -> None:
         raise RuntimeError("REDIS_URL is required to start the InternPath RQ worker.")
     redis = Redis.from_url(Config.REDIS_URL)
     redis.ping()
+    queue_names = parse_queue_names(args.queues)
+    if Config.RQ_ADVISOR_QUEUE_NAME in queue_names:
+        from backend.jobs import warm_resume_advisor_worker
+
+        warm_resume_advisor_worker()
     worker_class = SimpleWorker if os.name == "nt" else Worker
-    worker = worker_class(parse_queue_names(args.queues), connection=redis, name=args.name.strip() or None)
+    worker = worker_class(queue_names, connection=redis, name=args.name.strip() or None)
     worker.work()
 
 

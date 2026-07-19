@@ -13,6 +13,10 @@ export function SessionSidebar({
   starting,
   onUpload,
   uploading,
+  onDeleteResume,
+  deletingResumeId,
+  onDeleteSession,
+  deletingSessionId,
 }: {
   sessions: AdvisorSession[];
   selectedSessionId: string | null;
@@ -26,7 +30,13 @@ export function SessionSidebar({
   starting: boolean;
   onUpload: (file: File) => void;
   uploading: boolean;
+  onDeleteResume: (resumeId: string) => void;
+  deletingResumeId: string | null;
+  onDeleteSession: (sessionId: string) => void;
+  deletingSessionId: string | null;
 }) {
+  const selectedResume = resumes.find((resume) => resume.id === selectedResumeId);
+
   return (
     <aside className="resume-advisor-sidebar">
       <h2>开始新会话</h2>
@@ -41,6 +51,17 @@ export function SessionSidebar({
           ))}
         </select>
       </label>
+      <div className="resume-advisor-resume-actions">
+        <button
+          type="button"
+          className="resume-advisor-danger-button"
+          aria-label={`删除所选简历：${selectedResume?.name || "当前简历"}`}
+          disabled={!selectedResumeId || deletingResumeId === selectedResumeId}
+          onClick={() => onDeleteResume(selectedResumeId)}
+        >
+          {deletingResumeId === selectedResumeId ? "正在删除简历…" : "删除所选简历"}
+        </button>
+      </div>
       <label className="resume-advisor-upload">
         上传新的简历版本
         <input
@@ -65,17 +86,29 @@ export function SessionSidebar({
 
       <div className="resume-advisor-session-list">
         <h2>历史会话</h2>
-        {sessions.map((session) => (
-          <button
-            type="button"
-            key={session.id}
-            className={session.id === selectedSessionId ? "selected" : ""}
-            onClick={() => onSelect(session.id)}
-          >
-            <strong>{session.title || "简历定向优化"}</strong>
-            <span>{session.sessionStatus === "SATISFIED" ? "已满意结束" : session.sessionStatus}</span>
-          </button>
-        ))}
+        <div className="resume-advisor-session-items">
+          {sessions.map((session) => (
+            <div className="resume-advisor-session-row" key={session.id}>
+              <button
+                type="button"
+                className={`resume-advisor-session-button${session.id === selectedSessionId ? " selected" : ""}`}
+                onClick={() => onSelect(session.id)}
+              >
+                <strong>{session.title || "简历定向优化"}</strong>
+                <span>{session.sessionStatus === "SATISFIED" ? "已满意结束" : session.sessionStatus}</span>
+              </button>
+              <button
+                type="button"
+                className="resume-advisor-danger-button resume-advisor-delete-session"
+                aria-label={`删除会话：${session.title || "简历定向优化"}`}
+                disabled={deletingSessionId === session.id}
+                onClick={() => onDeleteSession(session.id)}
+              >
+                {deletingSessionId === session.id ? "删除中…" : "删除"}
+              </button>
+            </div>
+          ))}
+        </div>
       </div>
     </aside>
   );

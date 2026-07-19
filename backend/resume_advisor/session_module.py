@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from threading import Lock
 from typing import Any, Callable
+from uuid import uuid4
 
 from config import Config
 from database import Database
@@ -45,12 +46,14 @@ class ResumeAdvisorModule:
         self,
         db: Database,
         *,
-        enqueue_run: Callable[..., None] | None = None,
+        enqueue_run: Callable[..., str | None] | None = None,
+        cancel_enqueued_run: Callable[[str], bool] | None = None,
         repository: ResumeAdvisorRepository | None = None,
         model_provider: Callable[[Any], tuple[Any, str]] | None = None,
     ):
         self.repository = repository or ResumeAdvisorRepository(db)
         self.enqueue_run = enqueue_run
+        self.cancel_enqueued_run = cancel_enqueued_run
         self.graph = LangGraphResumeAdvisor(self.repository, model_provider=model_provider)
 
     def start_session(
@@ -116,14 +119,6 @@ class ResumeAdvisorModule:
         if session["sessionStatus"] in {"SATISFIED", "ARCHIVED"}:
             raise ValueError("该会话已结束或归档，不能继续发送消息。")
 
-        duplicate = self.repository.find_turn_by_client_message(user_id, session_id, client_message_id)
-        if duplicate:
-            return {"duplicate": True, "message": duplicate, "runId": duplicate.get("runId")}
-
-        active_run = self.repository.get_active_run(user_id, session_id)
-        if active_run and active_run.get("status") in {"QUEUED", "RUNNING"}:
-            raise ValueError("上一条消息仍在处理中，请等待本轮回复后再发送。")
-
         open_question_key = self._latest_question_key(user_id=user_id, session_id=session_id)
         inferred_fact_reply = (
             message_kind == "text"
@@ -131,15 +126,19 @@ class ResumeAdvisorModule:
             and not self._looks_like_question(content)
         )
         effective_message_kind = "fact" if inferred_fact_reply else message_kind
-        message = self.repository.append_turn(
+        run_message = self.repository.append_message_and_reserve_run(
             user_id=user_id,
             session_id=session_id,
-            role="user",
             content=content,
             message_kind=effective_message_kind,
             client_message_id=client_message_id,
             payload={"remember": remember, "inferredFactReply": inferred_fact_reply},
         )
+        if run_message["duplicate"]:
+            message = run_message["message"]
+            return {"duplicate": True, "message": message, "runId": message.get("runId")}
+        message = run_message["message"]
+        run = run_message["run"]
         if effective_message_kind == "fact":
             self.repository.record_fact(
                 user_id=user_id,
@@ -148,19 +147,17 @@ class ResumeAdvisorModule:
                 claim_value=content,
                 source_type="user_message",
                 source_id=message["id"],
-                status="confirmed",
+                status="denied" if self._is_fact_denial(content) else "confirmed",
                 scope="global" if remember else "session",
             )
-        if "没有" in content or "跳过" in content:
-            self.repository.record_fact(
+        if message_kind == "preference" and remember:
+            from backend.memory.preference_db import PreferenceDB
+
+            PreferenceDB(db=self.repository.db).save_preference(
                 user_id=user_id,
-                session_id=session_id,
-                claim_key=open_question_key or "user_declined_fact",
-                claim_value=content,
-                source_type="user_message",
-                source_id=message["id"],
-                status="denied",
-                scope="global" if remember else "session",
+                section_name="resume_advisor",
+                preference_text=content,
+                source_task_id=session_id,
             )
         self.repository.append_event(
             user_id=user_id,
@@ -169,7 +166,12 @@ class ResumeAdvisorModule:
             message_id=message["id"],
             payload={"messageKind": effective_message_kind},
         )
-        run = self._create_or_resume_run(user_id=user_id, session_id=session_id, message_id=message["id"])
+        self._enqueue(
+            run["id"],
+            user_id,
+            session_id,
+            resume_payload={"messageId": message["id"]} if run.get("resumed") else None,
+        )
         return {"duplicate": False, "message": message, "run": run}
 
     def _latest_question_key(self, *, user_id: Any, session_id: str) -> str:
@@ -188,6 +190,10 @@ class ResumeAdvisorModule:
     def _looks_like_question(content: str) -> bool:
         text = content.strip()
         return text.endswith(("?", "？")) or text.startswith(_QUESTION_PREFIXES)
+
+    @staticmethod
+    def _is_fact_denial(content: str) -> bool:
+        return "没有" in content or "跳过" in content
 
     def review_suggestion(
         self,
@@ -237,14 +243,27 @@ class ResumeAdvisorModule:
             self._ensure_suggestion_is_copyable(user_id=user_id, suggestion=suggestion)
         self.repository.update_suggestion_status(user_id, suggestion_id, status)
         session_id = suggestion["sessionId"]
-        message = self.repository.append_turn(
-            user_id=user_id,
-            session_id=session_id,
-            role="user",
-            content=feedback or action,
-            message_kind="text",
-            payload={"suggestionId": suggestion_id, "action": action},
-        )
+        run = None
+        if action in {"applied", "needs_revision", "rejected"}:
+            run_message = self.repository.append_message_and_reserve_run(
+                user_id=user_id,
+                session_id=session_id,
+                content=feedback or action,
+                message_kind="text",
+                client_message_id=f"suggestion-{suggestion_id}-{action}-{uuid4().hex}",
+                payload={"suggestionId": suggestion_id, "action": action},
+            )
+            message = run_message["message"]
+            run = run_message["run"]
+        else:
+            message = self.repository.append_turn(
+                user_id=user_id,
+                session_id=session_id,
+                role="user",
+                content=feedback or action,
+                message_kind="text",
+                payload={"suggestionId": suggestion_id, "action": action},
+            )
         self.repository.append_event(
             user_id=user_id,
             session_id=session_id,
@@ -253,9 +272,13 @@ class ResumeAdvisorModule:
             suggestion_id=suggestion_id,
             payload={"action": action},
         )
-        run = None
-        if action in {"applied", "needs_revision", "rejected"}:
-            run = self._create_or_resume_run(user_id=user_id, session_id=session_id, message_id=message["id"])
+        if run is not None:
+            self._enqueue(
+                run["id"],
+                user_id,
+                session_id,
+                resume_payload={"messageId": message["id"]} if run.get("resumed") else None,
+            )
         return {"suggestion": self.repository.get_suggestion(user_id, suggestion_id), "run": run}
 
     def _ensure_suggestion_is_copyable(self, *, user_id: Any, suggestion: dict[str, Any]) -> None:
@@ -322,6 +345,42 @@ class ResumeAdvisorModule:
         self.repository.update_session(user_id, session_id, session_status="ARCHIVED", archived=True)
         return self.repository.get_session(user_id, session_id) or {}
 
+    def delete_session(self, *, user_id: Any, session_id: str) -> dict[str, Any]:
+        if not self.repository.delete_session(user_id=user_id, session_id=session_id):
+            raise LookupError("未找到简历优化会话。")
+        return {"ok": True}
+
+    def cancel_run(self, *, user_id: Any, session_id: str, run_id: str) -> dict[str, Any]:
+        result = self.repository.cancel_run(user_id=user_id, session_id=session_id, run_id=run_id)
+        if result.get("alreadyCancelled") or self.cancel_enqueued_run is None:
+            return result
+        run = self.repository.get_run(user_id=user_id, run_id=run_id)
+        rq_job_id = str((run or {}).get("rqJobId") or "")
+        if not rq_job_id:
+            return result
+        try:
+            result["rqCancellationRequested"] = bool(self.cancel_enqueued_run(rq_job_id))
+        except Exception:
+            # The durable cancellation flag remains authoritative if Redis is unavailable.
+            result["rqCancellationRequested"] = False
+        return result
+
+    def list_memory(self, *, user_id: Any) -> dict[str, Any]:
+        return {
+            "facts": self.repository.list_global_facts(user_id),
+            "preferences": self.repository.db.list_agent_preference_records(user_id),
+        }
+
+    def revoke_memory_fact(self, *, user_id: Any, fact_id: str) -> dict[str, Any]:
+        if not self.repository.revoke_global_fact(user_id=user_id, fact_id=fact_id):
+            raise LookupError("未找到可撤销的长期事实。")
+        return {"ok": True}
+
+    def delete_memory_preference(self, *, user_id: Any, preference_id: str) -> dict[str, Any]:
+        if not self.repository.db.delete_agent_preference(user_id, preference_id):
+            raise LookupError("未找到可删除的长期偏好。")
+        return {"ok": True}
+
     def get_snapshot(self, *, user_id: Any, session_id: str) -> dict[str, Any]:
         session = self.repository.get_session(user_id, session_id)
         if not session:
@@ -331,7 +390,7 @@ class ResumeAdvisorModule:
             "run": self.repository.get_active_run(user_id, session_id),
             "messages": self.repository.list_turns(user_id, session_id),
             "suggestions": self.repository.list_suggestions(user_id, session_id),
-            "facts": self.repository.list_confirmed_facts(user_id, session_id),
+            "facts": self.repository.list_session_facts(user_id, session_id),
         }
 
     def get_resume_view(self, *, user_id: Any, session_id: str) -> dict[str, Any]:
@@ -401,13 +460,13 @@ class ResumeAdvisorModule:
             raise
 
     def _create_or_resume_run(self, *, user_id: Any, session_id: str, message_id: str) -> dict[str, Any]:
-        active_run = self.repository.get_active_run(user_id, session_id)
-        if active_run and active_run.get("status") == "PAUSED":
-            self.repository.update_run(user_id=user_id, run_id=active_run["id"], status="RUNNING")
-            self._enqueue(active_run["id"], user_id, session_id, resume_payload={"messageId": message_id})
-            return active_run
-        run = self.repository.create_run(user_id=user_id, session_id=session_id, trigger_message_id=message_id)
-        self._enqueue(run["id"], user_id, session_id)
+        run = self.repository.reserve_run_for_message(user_id=user_id, session_id=session_id)
+        self._enqueue(
+            run["id"],
+            user_id,
+            session_id,
+            resume_payload={"messageId": message_id} if run.get("resumed") else None,
+        )
         return run
 
     def _enqueue(
@@ -429,4 +488,10 @@ class ResumeAdvisorModule:
             else:
                 self.run_session(user_id=user_id, session_id=session_id, run_id=run_id)
             return
-        self.enqueue_run(run_id, user_id, session_id, resume_payload=resume_payload)
+        rq_job_id = self.enqueue_run(run_id, user_id, session_id, resume_payload=resume_payload)
+        if rq_job_id:
+            self.repository.set_run_rq_job_id(
+                user_id=user_id,
+                run_id=run_id,
+                rq_job_id=str(rq_job_id),
+            )

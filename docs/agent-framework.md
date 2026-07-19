@@ -22,9 +22,9 @@
 
 Advisor 的原件预览由受鉴权的 `/resume-file` 提供：PDF 会使用原始页面文本坐标补充可验证的页码与 bbox；DOCX 在浏览器中使用惰性加载的 `docx-preview` 渲染，缺少可靠页级坐标时仍明确标记为近似定位。
 
-`AgentToolProfile.RESUME_ADVISOR` 只公开受领域约束的会话、定位、JD、证据、事实、质量、建议版本和状态转换工具：`get_resume_snapshot`、`get_resume_outline`、`locate_resume_blocks`、`get_analysis_context`、`parse_jd_requirements`、`retrieve_resume_evidence`、`list_confirmed_facts`、`list_resume_preferences`、`analyze_gap_queue`、`draft_resume_suggestion`、`verify_suggestion_facts`、`review_suggestion_quality`、`revise_resume_suggestion`、`record_user_fact`、`save_user_preference`、`request_user_input` 和 `evaluate_session_completion`。
+`AgentToolProfile.RESUME_ADVISOR` 只公开受领域约束的会话、定位、JD、证据、事实、质量、建议版本和状态转换工具。默认 Advisor 图不是任意工具循环：它通过 `ResumeAdvisorToolRuntime` 实际执行 JD 解析、事实核验和质量审核，并以统一的 `ok/data/error/meta` 契约记录 trace、耗时和幂等键；其余注册工具仅供受控扩展或兼容调用，不能由模型取得文件、Shell 或任意写入能力。
 
-所有 Advisor 工具使用 Pydantic 输入校验，并返回统一的 `ok/data/error/meta` 结构；`meta` 包含工具版本、trace ID、耗时、证据引用和幂等键。工具参数与结果预览默认脱敏。读工具可配置有限重试；追加/状态转换工具不自动重试，且写入用户事实或长期偏好必须在运行时提供显式用户确认。
+工具参数与结果预览默认脱敏。读工具有实际 deadline 和有限重试策略；追加/状态转换工具不自动重试。默认会话写入长期事实或偏好只能来自用户提交时的显式 `remember=true` 确认；这些记忆可通过 `/api/agent/resume/memory` 查询并撤销。运行中的会话可取消，取消意图会持久化为 `CANCELLED`，Graph 在模型和质量门边界停止后续副作用。
 
 `verify_suggestion_facts` 只接受原简历 block、当前会话已确认事实或显式保存的资料作为证据，JD 永远只表示岗位要求；`review_suggestion_quality` 在事实通过后执行本地质量门。两项门禁任一失败时不会写入可复制建议。若用户已配置模型，图会复用 `JobDecoder`、`ResumeCopywriter` 和 `HRCritic`；模型不可用时会明确降级为本地保守草拟与质量门。`write_workspace_file`、`replace_resume_section`、`finalize_resume_artifacts` 保留在 `artifact_legacy` profile，只服务历史任务。
 

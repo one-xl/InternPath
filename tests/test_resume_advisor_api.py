@@ -143,7 +143,18 @@ def test_resume_advisor_session_message_idempotency_and_explicit_finish(tmp_path
     session_id = started.json()["session"]["id"]
     assert queued[0]["queue_name"] == Config.RQ_ADVISOR_QUEUE_NAME
     repository = ResumeAdvisorRepository(auth_db)
-    repository.update_run(user_id=user_id, run_id=started.json()["run"]["id"], status="PAUSED")
+    initial_run_id = started.json()["run"]["id"]
+    cancelled = client.post(
+        f"/api/agent/resume/sessions/{session_id}/runs/{initial_run_id}/cancel",
+        headers=headers,
+    )
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "CANCELLED"
+    assert cancelled.json()["event"]["type"] == "run_cancelled"
+    assert client.post(
+        f"/api/agent/resume/sessions/{session_id}/runs/{initial_run_id}/cancel",
+        headers=headers,
+    ).status_code == 409
     initial_events = client.get(f"/api/agent/resume/sessions/{session_id}/events?afterSequence=0", headers=headers)
     assert initial_events.status_code == 200
     assert '"sequence": 1' in initial_events.text
@@ -290,9 +301,19 @@ def test_resume_advisor_session_message_idempotency_and_explicit_finish(tmp_path
     )
     assert global_fact_id in {fact["id"] for fact in repository.list_confirmed_facts(user_id, next_session["id"])}
 
+    next_run = repository.create_run(user_id=user_id, session_id=next_session["id"])
+    blocked_delete = client.delete(f"/api/agent/resume/sessions/{next_session['id']}", headers=headers)
+    assert blocked_delete.status_code == 409
+    repository.update_run(user_id=user_id, run_id=next_run["id"], status="PAUSED")
+
     finished = client.post(f"/api/agent/resume/sessions/{session_id}/finish", headers=headers, json={"confirmation": "satisfied"})
     assert finished.status_code == 200
     assert finished.json()["sessionStatus"] == "SATISFIED"
+
+    removed_session = client.delete(f"/api/agent/resume/sessions/{next_session['id']}", headers=headers)
+    assert removed_session.status_code == 200
+    assert removed_session.json() == {"ok": True}
+    assert next_session["id"] not in {item["id"] for item in client.get("/api/agent/resume/sessions", headers=headers).json()["sessions"]}
 
     deleted = client.delete("/api/resumes/resume-v1", headers=headers)
     assert deleted.status_code == 200
@@ -474,6 +495,32 @@ def test_resume_advisor_treats_free_form_reply_to_an_open_fact_question_as_evide
     facts = repository.list_confirmed_facts(user_id, session["id"])
     assert facts[-1]["claimKey"] == "requirement:redis"
     assert facts[-1]["claimValue"] == "我曾使用 Redis 缓存热点查询。"
+
+
+def test_resume_advisor_records_a_declined_fact_once_and_keeps_it_visible_to_the_next_run(tmp_path):
+    db = Database(str(tmp_path / "denied-fact.db"))
+    user_id = db.create_user("denied-fact@example.com", "password123")
+    repository = ResumeAdvisorRepository(db)
+    session = repository.create_session(user_id=user_id, resume_id="resume-1", resume_content_hash="e" * 64, jd_text="需要 Redis")
+    repository.append_turn(
+        user_id=user_id,
+        session_id=session["id"],
+        role="assistant",
+        content="你有 Redis 相关经验吗？",
+        message_kind="question",
+        payload={"questionKey": "requirement:redis"},
+    )
+    module = ResumeAdvisorModule(db, repository=repository, enqueue_run=lambda *_args, **_kwargs: None)
+
+    module.post_message(
+        user_id=user_id,
+        session_id=session["id"],
+        content="没有 Redis 相关真实经历。",
+        client_message_id="denied-fact-1",
+    )
+
+    facts = repository.list_session_facts(user_id, session["id"])
+    assert [(fact["claimKey"], fact["status"]) for fact in facts] == [("requirement:redis", "denied")]
 
 
 def test_resume_advisor_migration_is_repeatable(tmp_path):

@@ -13,7 +13,7 @@ SessionStatus = Literal[
     "ARCHIVED",
     "FAILED",
 ]
-RunStatus = Literal["QUEUED", "RUNNING", "PAUSED", "COMPLETED", "FAILED"]
+RunStatus = Literal["QUEUED", "RUNNING", "PAUSED", "COMPLETED", "FAILED", "CANCELLED"]
 SuggestionAction = Literal["accepted", "rejected", "needs_revision", "applied", "restore"]
 
 

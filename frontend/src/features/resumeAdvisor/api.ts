@@ -27,6 +27,7 @@ async function uploadResume(file: File): Promise<{ resumeFile: ResumeSummary }> 
 export const resumeAdvisorApi = {
   listResumes: async (): Promise<ResumeSummary[]> => (await request<{ resumes: ResumeSummary[] }>("/api/resumes")).resumes || [],
   uploadResume,
+  deleteResume: (resumeId: string) => request<{ ok: boolean }>(`/api/resumes/${encodeURIComponent(resumeId)}`, { method: "DELETE" }),
   listSessions: async (): Promise<AdvisorSession[]> => (await request<{ sessions: AdvisorSession[] }>("/api/agent/resume/sessions")).sessions || [],
   getSloDashboard: (): Promise<AdvisorSloDashboard> => request("/api/agent/resume/operations/slo"),
   getSnapshot: (sessionId: string): Promise<AdvisorSnapshot> => request(`/api/agent/resume/sessions/${encodeURIComponent(sessionId)}`),
@@ -47,4 +48,8 @@ export const resumeAdvisorApi = {
     method: "POST",
     body: JSON.stringify({ confirmation: "satisfied" }),
   }),
+  cancelRun: (sessionId: string, runId: string) => request<{ id: string; status: string }>(`/api/agent/resume/sessions/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(runId)}/cancel`, {
+    method: "POST",
+  }),
+  deleteSession: (sessionId: string) => request<{ ok: boolean }>(`/api/agent/resume/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" }),
 };

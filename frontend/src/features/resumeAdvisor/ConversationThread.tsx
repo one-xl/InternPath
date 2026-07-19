@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { AdvisorMessage, ResumeSuggestion } from "./types";
+import type { AdvisorFact, AdvisorMessage, ResumeSuggestion } from "./types";
 import { ResumeSuggestionCard } from "./ResumeSuggestionCard";
 import { AgentQuestionCard } from "./AgentQuestionCard";
 
@@ -32,6 +32,19 @@ function QualityGateMessage({ message }: { message: AdvisorMessage }) {
   );
 }
 
+function findActiveQuestionId(messages: AdvisorMessage[]): string | null {
+  let hasLaterUserMessage = false;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role === "user") {
+      hasLaterUserMessage = true;
+      continue;
+    }
+    if (!hasLaterUserMessage && message.messageKind === "question") return message.id;
+  }
+  return null;
+}
+
 export function ConversationThread({
   messages,
   suggestions,
@@ -39,6 +52,7 @@ export function ConversationThread({
   onFocusSuggestion,
   onQuestionAnswer,
   streamingContent = "",
+  facts = [],
 }: {
   messages: AdvisorMessage[];
   suggestions: ResumeSuggestion[];
@@ -46,8 +60,10 @@ export function ConversationThread({
   onFocusSuggestion: (suggestion: ResumeSuggestion) => void;
   onQuestionAnswer: (answer: string, remember: boolean) => Promise<void>;
   streamingContent?: string;
+  facts?: AdvisorFact[];
 }) {
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const activeQuestionId = findActiveQuestionId(messages);
   useEffect(() => {
     bottomRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" });
   }, [messages.length, streamingContent.length, suggestions.length]);
@@ -56,7 +72,7 @@ export function ConversationThread({
     <section className="resume-advisor-conversation" aria-label="简历顾问对话">
       {messages.map((message) => {
         const quality = (message.payload as QualityGatePayload).quality;
-        if (message.messageKind === "question") return <AgentQuestionCard key={message.id} message={message} onAnswer={onQuestionAnswer} />;
+        if (message.messageKind === "question") return <AgentQuestionCard key={message.id} message={message} active={message.id === activeQuestionId} onAnswer={onQuestionAnswer} />;
         if (quality && quality.is_passed === false) return <QualityGateMessage key={message.id} message={message} />;
         return <article key={message.id} className={`resume-advisor-message ${message.role === "user" ? "user" : "assistant"}`}>{message.content}</article>;
       })}
@@ -66,12 +82,23 @@ export function ConversationThread({
           suggestion={suggestion}
           onAction={(action, feedback) => onSuggestionAction(suggestion.id, action, feedback)}
           onFocus={() => onFocusSuggestion(suggestion)}
+          facts={facts}
         />
       ))}
       {streamingContent && (
         <article className="resume-advisor-message assistant streaming" aria-label="模型正在流式回复" aria-live="off">
           {streamingContent}<span className="resume-advisor-stream-caret" aria-hidden="true" />
         </article>
+      )}
+      {facts.length > 0 && (
+        <details className="resume-advisor-evidence">
+          <summary>已记录事实</summary>
+          <ul>
+            {facts.map((fact) => (
+              <li key={fact.id}>{fact.status === "denied" ? "明确不存在" : "已确认"} · {fact.claimValue}{fact.scope === "global" ? " · 长期" : " · 本次会话"}</li>
+            ))}
+          </ul>
+        </details>
       )}
       {!messages.length && <p className="muted">选择简历并粘贴 JD 后开始一轮可核验的逐段优化。</p>}
       <div ref={bottomRef} />

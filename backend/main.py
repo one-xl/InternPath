@@ -43,7 +43,7 @@ from backend.jobs import (
 from backend.resume_advisor import ResumeAdvisorModule
 from backend.resume_advisor.router import build_resume_advisor_router
 from backend.resume_advisor.session_module import resolve_advisor_model
-from backend.task_queue import enqueue_job
+from backend.task_queue import cancel_job, enqueue_job
 from backend.docx_boundary_check import DocxBoundaryCheckConfig, check_docx_file_boundaries
 from service import CareerPathAIService
 from config import Config
@@ -1508,20 +1508,23 @@ def create_app(
         session_id: str,
         *,
         resume_payload: dict[str, Any] | None = None,
-    ) -> None:
-        enqueue_job(
+    ) -> str:
+        job_id = run_id if resume_payload is None else f"{run_id}-resume-{uuid4().hex}"
+        job = enqueue_job(
             run_resume_advisor_session_job,
             run_id=run_id,
             user_id=user_id,
             session_id=session_id,
             resume_payload=resume_payload,
-            job_id=run_id if resume_payload is None else f"{run_id}-resume-{uuid4().hex}",
+            job_id=job_id,
             queue_name=Config.RQ_ADVISOR_QUEUE_NAME,
         )
+        return str(getattr(job, "id", job_id))
 
     resume_advisor_module = ResumeAdvisorModule(
         state.auth_db,
         enqueue_run=enqueue_resume_advisor_run,
+        cancel_enqueued_run=cancel_job,
         model_provider=resolve_advisor_model,
     )
     app.include_router(build_resume_advisor_router(resume_advisor_module, current_user_id))

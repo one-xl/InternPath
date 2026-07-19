@@ -17,6 +17,7 @@ class _Repository:
         self.facts = []
         self.session_status = "ACTIVE"
         self.run_status = "QUEUED"
+        self.cancelled = False
         self.run_created_at = datetime.now() - timedelta(milliseconds=180)
         self.run_started_at = datetime.now()
         self.telemetry: dict[str, object] = {}
@@ -26,6 +27,9 @@ class _Repository:
 
     def update_run(self, **kwargs):
         self.run_status = kwargs["status"]
+
+    def is_run_cancelled(self, **_kwargs):
+        return self.cancelled
 
     def get_run(self, **_kwargs):
         return {
@@ -101,6 +105,145 @@ def test_graph_creates_evidence_bound_copyable_suggestion_without_jd_as_fact():
     assert repository.run_status == "PAUSED"
 
 
+def test_graph_prioritizes_relevant_project_evidence_and_never_rewrites_personal_details():
+    repository = _Repository(
+        [
+            {
+                "id": "contact", "kind": "paragraph", "sectionId": "contact", "sectionName": "基本信息",
+                "itemLabel": "第 1 条", "text": "区泽康 15820246683 example@example.com", "textHash": "contact",
+                "locationLabel": "基本信息 > 第 1 条", "locatorConfidence": "high", "locator": {"sourceFormat": "docx"},
+            },
+            {
+                "id": "summary", "kind": "paragraph", "sectionId": "self_introduction", "sectionName": "自我评价",
+                "itemLabel": "第 1 条", "text": "区泽康", "textHash": "summary", "locationLabel": "自我评价 > 第 1 条",
+                "locatorConfidence": "approximate", "locator": {"sourceFormat": "docx"},
+            },
+            {
+                "id": "course", "kind": "paragraph", "sectionId": "coursework", "sectionName": "核心课程",
+                "itemLabel": "第 1 条", "text": "软件工程、数据库系统原理", "textHash": "course", "locationLabel": "核心课程 > 第 1 条",
+                "locatorConfidence": "approximate", "locator": {"sourceFormat": "docx"},
+            },
+            {
+                "id": "project", "kind": "bullet", "sectionId": "project_experience", "sectionName": "项目经历",
+                "itemLabel": "第 1 条", "text": "使用 FastAPI 开发实习管理接口", "textHash": "project", "locationLabel": "项目经历 > 第 1 条",
+                "locatorConfidence": "approximate", "locator": {"sourceFormat": "docx"},
+            },
+        ]
+    )
+
+    result = ResumeAdvisorGraph(repository).run(user_id="u1", session_id="session-1", run_id="run-priority")
+
+    assert result["status"] == "WAITING_FOR_USER"
+    assert repository.suggestions[0]["target"]["blockId"] == "project"
+    assert repository.suggestions[0]["target"]["sectionId"] == "project_experience"
+
+
+def test_graph_asks_for_missing_key_evidence_before_rewriting_an_unrelated_block():
+    repository = _Repository(
+        [
+            {
+                "id": "project", "kind": "bullet", "sectionId": "project_experience", "sectionName": "项目经历",
+                "itemLabel": "第 1 条", "text": "协助整理业务需求并编写测试用例", "textHash": "project",
+                "locationLabel": "项目经历 > 第 1 条", "locatorConfidence": "approximate", "locator": {"sourceFormat": "docx"},
+            }
+        ]
+    )
+
+    result = ResumeAdvisorGraph(repository).run(user_id="u1", session_id="session-1", run_id="run-gap")
+
+    assert result["status"] == "WAITING_FOR_USER"
+    assert repository.suggestions == []
+    assert repository.turns[-1]["message_kind"] == "question"
+    assert repository.turns[-1]["payload"]["questionKey"].startswith("requirement:")
+
+
+def test_graph_can_improve_coursework_in_a_docx_table_cell():
+    repository = _Repository(
+        [
+            {
+                "id": "course-table", "kind": "table_cell", "sectionId": "coursework", "sectionName": "核心课程",
+                "itemLabel": "第 1 条", "text": "Python Web 开发 | FastAPI 接口设计", "textHash": "course-table",
+                "locationLabel": "核心课程 > 第 1 条", "locatorConfidence": "high", "locator": {"sourceFormat": "docx", "tableIndex": 0},
+            }
+        ]
+    )
+
+    result = ResumeAdvisorGraph(repository).run(user_id="u1", session_id="session-1", run_id="run-course-table")
+
+    assert result["status"] == "WAITING_FOR_USER"
+    assert repository.suggestions[0]["target"]["blockId"] == "course-table"
+
+
+def test_graph_links_a_confirmed_user_fact_when_it_supports_the_rewrite(monkeypatch):
+    block = {
+        "id": "project", "kind": "bullet", "sectionId": "project_experience", "sectionName": "项目经历",
+        "itemLabel": "第 1 条", "text": "负责 FastAPI 接口开发", "textHash": "project",
+        "locationLabel": "项目经历 > 第 1 条", "locatorConfidence": "approximate", "locator": {"sourceFormat": "docx"},
+    }
+    repository = _Repository([block])
+    repository.facts = [{
+        "id": "fact-redis", "claimKey": "requirement:redis", "claimValue": "我曾使用 Redis 缓存热点查询。",
+        "status": "confirmed", "scope": "session",
+    }]
+    graph = ResumeAdvisorGraph(repository)
+    monkeypatch.setattr(graph, "_draft_copy", lambda _text: "• 使用 FastAPI 开发接口，并使用 Redis 缓存热点查询")
+
+    result = graph.run(user_id="u1", session_id="session-1", run_id="run-user-fact")
+
+    assert result["status"] == "WAITING_FOR_USER"
+    assert repository.suggestions[0]["factStatus"] == "supported"
+    assert repository.suggestions[0]["userFactIds"] == ["fact-redis"]
+
+
+def test_graph_stops_before_any_agent_action_when_the_run_was_cancelled():
+    repository = _Repository(
+        [
+            {
+                "id": "block-1", "kind": "bullet", "sectionId": "project_experience", "sectionName": "项目经历",
+                "itemLabel": "第 1 条", "text": "负责 FastAPI 接口开发", "textHash": "hash-1",
+                "locationLabel": "项目经历 > 第 1 条", "locatorConfidence": "approximate",
+                "locator": {"sourceFormat": "docx", "lineStart": 4, "lineEnd": 4},
+            }
+        ]
+    )
+    repository.cancelled = True
+
+    result = ResumeAdvisorGraph(repository).run(user_id="u1", session_id="session-1", run_id="run-cancelled")
+
+    assert result == {"status": "CANCELLED"}
+    assert repository.suggestions == []
+    assert repository.events[-1]["event_type"] == "run_cancelled"
+
+
+def test_graph_stops_before_model_call_when_cancellation_arrives_after_jd_parsing(monkeypatch):
+    repository = _Repository(
+        [
+            {
+                "id": "block-1", "kind": "bullet", "sectionId": "project_experience", "sectionName": "项目经历",
+                "itemLabel": "第 1 条", "text": "负责 FastAPI 接口开发", "textHash": "hash-1",
+                "locationLabel": "项目经历 > 第 1 条", "locatorConfidence": "approximate",
+                "locator": {"sourceFormat": "docx", "lineStart": 4, "lineEnd": 4},
+            }
+        ]
+    )
+
+    def cancel_after_jd_parse(**_kwargs):
+        repository.cancelled = True
+        return ["FastAPI"]
+
+    monkeypatch.setattr("backend.resume_advisor.graph.decode_jd_requirements", cancel_after_jd_parse)
+    monkeypatch.setattr(
+        ResumeAdvisorGraph,
+        "_draft_suggestion",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("model must not run after cancellation")),
+    )
+
+    result = ResumeAdvisorGraph(repository).run(user_id="u1", session_id="session-1", run_id="run-cancel-after-jd")
+
+    assert result == {"status": "CANCELLED"}
+    assert repository.suggestions == []
+
+
 def test_graph_publishes_real_model_deltas_before_the_final_suggestion(monkeypatch):
     repository = _Repository(
         [
@@ -169,7 +312,7 @@ def test_graph_publishes_real_model_deltas_before_the_final_suggestion(monkeypat
     assert first_payload["endToEndFirstTokenMs"] >= first_payload["queueMs"]
     assert first_payload["firstTokenSloMs"] == 10_000
     assert first_payload["firstTokenSloMet"] is True
-    assert repository.telemetry == {
+    assert {
         key: first_payload[key]
         for key in (
             "firstTokenMs",
@@ -179,11 +322,19 @@ def test_graph_publishes_real_model_deltas_before_the_final_suggestion(monkeypat
             "firstTokenSloMs",
             "firstTokenSloMet",
         )
-    }
+    }.items() <= repository.telemetry.items()
+    assert repository.telemetry["contextVersion"] == "advisor-context-v1"
+    assert repository.telemetry["contextChars"] > 0
     tool_calls = [event["payload"]["toolName"] for event in repository.events if event["event_type"] == "tool_call"]
     tool_results = [event["payload"]["toolName"] for event in repository.events if event["event_type"] == "tool_result"]
     assert tool_calls == ["extract_jd_requirements", "verify_suggestion_facts", "hr_quality_review"]
     assert tool_results == tool_calls
+    jd_result = next(
+        event for event in repository.events
+        if event["event_type"] == "tool_result" and event["payload"]["toolName"] == "extract_jd_requirements"
+    )
+    assert jd_result["payload"]["summary"]["requirementCount"] == 1
+    assert "requirements" not in jd_result["payload"]["summary"]
     provider_event = next(event for event in repository.events if event["event_type"] == "provider_usage")
     assert provider_event["payload"]["providerCacheHit"] is True
     assert provider_event["payload"]["providerCachedTokens"] == 128

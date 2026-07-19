@@ -31,6 +31,16 @@ export interface AdvisorMessage {
   payload: Record<string, unknown>;
 }
 
+export interface AdvisorFact {
+  id: string;
+  claimKey: string;
+  claimValue: string;
+  sourceType: string;
+  sourceId: string;
+  status: "confirmed" | "denied" | string;
+  scope: "session" | "global" | string;
+}
+
 export interface AdvisorRun {
   id: string;
   status: string;
@@ -100,6 +110,7 @@ export interface ResumeSuggestion {
   expectedImpact: string;
   jdRequirementIds: string[];
   resumeEvidenceBlockIds: string[];
+  userFactIds: string[];
   factStatus: "supported" | "needs_user" | "unsupported";
   factIssues: string[];
   status: SuggestionStatus;
@@ -110,6 +121,7 @@ export interface AdvisorSnapshot {
   run: AdvisorRun | null;
   messages: AdvisorMessage[];
   suggestions: ResumeSuggestion[];
+  facts: AdvisorFact[];
 }
 
 export interface AdvisorSloMetric {
@@ -130,4 +142,9 @@ export interface AdvisorSloDashboard {
     observedP95Ms?: number;
     thresholdMs?: number;
   }>;
+  health?: {
+    cancelledRuns: number;
+    failedRuns: number;
+    toolTimeoutRuns: number;
+  };
 }

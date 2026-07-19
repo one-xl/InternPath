@@ -5,6 +5,8 @@ from typing import Any, Callable
 
 from redis import Redis
 from rq import Queue
+from rq.command import send_stop_job_command
+from rq.job import Job
 
 from config import Config
 
@@ -52,3 +54,15 @@ def enqueue_job(
         result_ttl=Config.RQ_RESULT_TTL_SECONDS,
         failure_ttl=Config.RQ_RESULT_TTL_SECONDS,
     )
+
+
+def cancel_job(job_id: str | None) -> bool:
+    """Ask RQ to stop a queued or running job without changing business state."""
+    normalized_job_id = normalize_job_id(job_id)
+    if not normalized_job_id:
+        return False
+    connection = get_redis_connection()
+    job = Job.fetch(normalized_job_id, connection=connection)
+    job.cancel()
+    send_stop_job_command(connection, normalized_job_id)
+    return True

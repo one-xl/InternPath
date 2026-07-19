@@ -51,7 +51,7 @@ def test_agent_resume_job_defaults_to_agentic_native_responses(monkeypatch):
     monkeypatch.setattr(jobs, "log_event", lambda **_kwargs: None)
 
     jobs.run_agent_resume_orchestration_job(
-        task_id="task-agentic-default",
+        task_id="tatest-api-key",
         user_id=7,
         config_id="cfg-1",
         is_co_pilot=False,
@@ -61,7 +61,7 @@ def test_agent_resume_job_defaults_to_agentic_native_responses(monkeypatch):
         (
             "langgraph_agentic",
             {
-                "task_id": "task-agentic-default",
+                "task_id": "tatest-api-key",
                 "user_id": 7,
                 "config_id": "cfg-1",
                 "is_co_pilot": False,
@@ -185,7 +185,7 @@ def test_agent_resume_job_resumes_langgraph_checkpoint(monkeypatch):
     monkeypatch.setattr(jobs, "log_event", lambda **_kwargs: None)
 
     jobs.run_agent_resume_orchestration_job(
-        task_id="task-agentic-resume",
+        task_id="tatest-api-key",
         user_id=7,
         config_id="cfg-1",
         is_co_pilot=False,
@@ -198,7 +198,7 @@ def test_agent_resume_job_resumes_langgraph_checkpoint(monkeypatch):
         (
             "resume",
             {
-                "task_id": "task-agentic-resume",
+                "task_id": "tatest-api-key",
                 "user_id": 7,
                 "resume_payload": resume_payload,
             },
@@ -230,7 +230,7 @@ def test_agent_resume_job_resumes_pipeline_langgraph_checkpoint(monkeypatch):
     monkeypatch.setattr(jobs, "log_event", lambda **_kwargs: None)
 
     jobs.run_agent_resume_orchestration_job(
-        task_id="task-pipeline-resume",
+        task_id="tatest-api-key",
         user_id=7,
         config_id="cfg-1",
         is_co_pilot=False,
@@ -243,7 +243,7 @@ def test_agent_resume_job_resumes_pipeline_langgraph_checkpoint(monkeypatch):
         (
             "resume",
             {
-                "task_id": "task-pipeline-resume",
+                "task_id": "tatest-api-key",
                 "user_id": 7,
                 "resume_payload": resume_payload,
             },
@@ -452,7 +452,7 @@ def test_langgraph_pipeline_orchestrator_replaces_legacy_runtime(tmp_path, monke
     class _FakeDB:
         def __init__(self):
             self.task = {
-                "task_id": "task-langgraph-pipeline",
+                "task_id": "tatest-api-key",
                 "trace_id": "tr-langgraph-pipeline",
                 "resume_id": "resume-1",
                 "jd_text": "Backend internship requiring FastAPI.",
@@ -521,7 +521,7 @@ def test_langgraph_pipeline_orchestrator_replaces_legacy_runtime(tmp_path, monke
     orchestrator = langgraph_module.LangGraphPipelineOrchestrator(checkpointer=InMemorySaver())
     asyncio.run(
         orchestrator.run_orchestration(
-            task_id="task-langgraph-pipeline",
+            task_id="tatest-api-key",
             user_id="user-langgraph-pipeline",
             config_id=None,
             is_co_pilot=False,
@@ -556,7 +556,7 @@ def test_langgraph_agentic_orchestrator_resumes_native_human_interrupt(tmp_path,
     class _FakeDB:
         def __init__(self):
             self.task = {
-                "task_id": "task-langgraph-hitl",
+                "task_id": "tatest-api-key",
                 "trace_id": "tr-langgraph-hitl",
                 "resume_id": "resume-1",
                 "jd_text": "Backend internship requiring measurable API outcomes.",
@@ -643,7 +643,7 @@ def test_langgraph_agentic_orchestrator_resumes_native_human_interrupt(tmp_path,
     first_run = langgraph_module.LangGraphAgenticOrchestrator(checkpointer=checkpointer)
     asyncio.run(
         first_run.run_orchestration(
-            task_id="task-langgraph-hitl",
+            task_id="tatest-api-key",
             user_id="user-langgraph-hitl",
             config_id=None,
             is_co_pilot=True,
@@ -657,7 +657,7 @@ def test_langgraph_agentic_orchestrator_resumes_native_human_interrupt(tmp_path,
     resumed = langgraph_module.LangGraphAgenticOrchestrator(checkpointer=checkpointer)
     asyncio.run(
         resumed.resume_orchestration(
-            task_id="task-langgraph-hitl",
+            task_id="tatest-api-key",
             user_id="user-langgraph-hitl",
             resume_payload={
                 "answer": "接口 P95 延迟降低 30%。",
@@ -685,7 +685,7 @@ def test_langgraph_postgres_checkpointer_resumes_across_instances(monkeypatch):
     import backend.agents.orchestrator as orchestrator_module
 
     suffix = uuid4().hex
-    task_id = f"task-postgres-probe-{suffix}"
+    task_id = f"tatest-api-key{suffix}"
     user_id = f"user-postgres-probe-{suffix}"
     thread_id = f"agent-resume:{user_id}:{task_id}"
     resumed_answers = []

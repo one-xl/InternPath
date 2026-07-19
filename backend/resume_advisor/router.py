@@ -75,6 +75,27 @@ def build_resume_advisor_router(
         except Exception as exc:
             raise _http_error(exc) from exc
 
+    @router.get("/api/agent/resume/memory")
+    async def list_memory(user_id: Any = Depends(current_user_dependency)) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(module.list_memory, user_id=user_id)
+        except Exception as exc:
+            raise _http_error(exc) from exc
+
+    @router.delete("/api/agent/resume/memory/facts/{fact_id}")
+    async def revoke_memory_fact(fact_id: str, user_id: Any = Depends(current_user_dependency)) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(module.revoke_memory_fact, user_id=user_id, fact_id=fact_id)
+        except Exception as exc:
+            raise _http_error(exc) from exc
+
+    @router.delete("/api/agent/resume/memory/preferences/{preference_id}")
+    async def delete_memory_preference(preference_id: str, user_id: Any = Depends(current_user_dependency)) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(module.delete_memory_preference, user_id=user_id, preference_id=preference_id)
+        except Exception as exc:
+            raise _http_error(exc) from exc
+
     @router.get("/api/agent/resume/sessions/{session_id}")
     async def get_session(session_id: str, user_id: Any = Depends(current_user_dependency)) -> dict[str, Any]:
         try:
@@ -249,10 +270,28 @@ def build_resume_advisor_router(
         except Exception as exc:
             raise _http_error(exc) from exc
 
+    @router.post("/api/agent/resume/sessions/{session_id}/runs/{run_id}/cancel")
+    async def cancel_run(
+        session_id: str,
+        run_id: str,
+        user_id: Any = Depends(current_user_dependency),
+    ) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(module.cancel_run, user_id=user_id, session_id=session_id, run_id=run_id)
+        except Exception as exc:
+            raise _http_error(exc) from exc
+
     @router.post("/api/agent/resume/sessions/{session_id}/archive")
     async def archive_session(session_id: str, user_id: Any = Depends(current_user_dependency)) -> dict[str, Any]:
         try:
             return await asyncio.to_thread(module.archive_session, user_id=user_id, session_id=session_id)
+        except Exception as exc:
+            raise _http_error(exc) from exc
+
+    @router.delete("/api/agent/resume/sessions/{session_id}")
+    async def delete_session(session_id: str, user_id: Any = Depends(current_user_dependency)) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(module.delete_session, user_id=user_id, session_id=session_id)
         except Exception as exc:
             raise _http_error(exc) from exc
 

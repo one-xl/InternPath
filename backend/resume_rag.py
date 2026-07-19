@@ -66,6 +66,15 @@ SECTION_ALIASES = {
         "Education",
         "Academic Background",
     ],
+    "核心课程": [
+        "核心课程",
+        "相关课程",
+        "主修课程",
+        "专业课程",
+        "课程列表",
+        "Relevant Coursework",
+        "Coursework",
+    ],
     "技能": [
         "技能",
         "专业技能",
@@ -168,23 +177,31 @@ SECTION_ALIASES = {
         "个人简介",
         "个人优势",
         "个人陈述",
-        "求职意向",
         "Summary",
-        "Objective",
         "Profile",
         "About Me",
+    ],
+    "求职意向": [
+        "求职意向",
+        "职业目标",
+        "意向岗位",
+        "目标岗位",
+        "Objective",
+        "Career Objective",
     ],
 }
 
 SECTION_TYPES = {
     "基本信息": "contact",
     "教育经历": "education",
+    "核心课程": "coursework",
     "技能": "skills",
     "项目经历": "project_experience",
     "实习 / 工作经历": "work_experience",
     "获奖 / 证书": "awards",
     "科研经历": "research",
     "自我评价": "self_introduction",
+    "求职意向": "objective",
     "其他": "generic_section",
     "简历内容": "generic_section",
 }
@@ -192,12 +209,14 @@ SECTION_TYPES = {
 SECTION_IMPORTANCE = {
     "contact": 0.60,
     "education": 0.80,
+    "coursework": 0.86,
     "skills": 0.85,
     "project_experience": 0.95,
     "work_experience": 0.90,
     "awards": 0.70,
     "research": 0.85,
     "self_introduction": 0.50,
+    "objective": 0.0,
     "generic_section": 0.60,
 }
 
@@ -516,7 +535,7 @@ def semantic_type_for_section_type(section_type: str) -> str:
         return "experience"
     if section_type == "skills":
         return "skills"
-    if section_type == "education":
+    if section_type in {"education", "coursework"}:
         return "education"
     return "general"
 

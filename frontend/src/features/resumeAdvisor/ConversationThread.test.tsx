@@ -59,4 +59,46 @@ describe("ConversationThread", () => {
 
     expect(screen.queryByLabelText("模型正在流式回复")).not.toBeInTheDocument();
   });
+
+  it("keeps only the last question without a later user reply active", () => {
+    render(
+      <ConversationThread
+        messages={[
+          { id: "question-1", sequence: 1, role: "assistant", content: "第一个问题", messageKind: "question", payload: {} },
+          { id: "reply-1", sequence: 2, role: "user", content: "第一个回答", messageKind: "fact", payload: {} },
+          { id: "question-2", sequence: 3, role: "assistant", content: "第二个问题", messageKind: "question", payload: {} },
+        ]}
+        suggestions={[]}
+        onSuggestionAction={vi.fn().mockResolvedValue(undefined)}
+        onFocusSuggestion={vi.fn()}
+        onQuestionAnswer={vi.fn().mockResolvedValue(undefined)}
+      />,
+    );
+
+    expect(screen.getByText("第一个问题")).toBeInTheDocument();
+    expect(screen.getByText("第二个问题")).toBeInTheDocument();
+    expect(screen.getByText("已回答 / 已失效")).toBeInTheDocument();
+    expect(screen.getAllByRole("textbox", { name: "补充真实证据" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "提交事实" })).toHaveLength(1);
+  });
+
+  it("shows confirmed and declined facts retained for the active session", () => {
+    render(
+      <ConversationThread
+        messages={[]}
+        suggestions={[]}
+        facts={[
+          { id: "fact-1", claimKey: "requirement:redis", claimValue: "使用过 Redis 缓存热点查询", sourceType: "user_message", sourceId: "turn-1", status: "confirmed", scope: "session" },
+          { id: "fact-2", claimKey: "requirement:kafka", claimValue: "没有 Kafka 相关真实经历", sourceType: "user_message", sourceId: "turn-2", status: "denied", scope: "global" },
+        ]}
+        onSuggestionAction={vi.fn().mockResolvedValue(undefined)}
+        onFocusSuggestion={vi.fn()}
+        onQuestionAnswer={vi.fn().mockResolvedValue(undefined)}
+      />,
+    );
+
+    expect(screen.getByText("已记录事实")).toBeInTheDocument();
+    expect(screen.getByText(/已确认 · 使用过 Redis 缓存热点查询 · 本次会话/)).toBeInTheDocument();
+    expect(screen.getByText(/明确不存在 · 没有 Kafka 相关真实经历 · 长期/)).toBeInTheDocument();
+  });
 });

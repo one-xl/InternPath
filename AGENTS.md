@@ -138,8 +138,7 @@ npm run build
 ## Default Credentials
 
 **Development Admin:**
-- Email: `admin@example.com`
-- Password: `ChangeMe123!`
+- Configure `INTERNPATH_ADMIN_USERNAME` and `INTERNPATH_ADMIN_PASSWORD` locally.`r`n- Never commit administrator credentials to the repository.
 
 **Database (PostgreSQL):**
 - User: `app_user`

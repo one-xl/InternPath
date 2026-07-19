@@ -1,18 +1,21 @@
 import { useState } from "react";
 import { copyText } from "./copyText";
-import type { ResumeSuggestion } from "./types";
+import type { AdvisorFact, ResumeSuggestion } from "./types";
 
 export function ResumeSuggestionCard({
   suggestion,
   onAction,
   onFocus,
+  facts = [],
 }: {
   suggestion: ResumeSuggestion;
   onAction: (action: "accepted" | "rejected" | "needs_revision" | "applied" | "restore", feedback?: string) => Promise<void>;
   onFocus: () => void;
+  facts?: AdvisorFact[];
 }) {
   const [notice, setNotice] = useState("");
   const copyable = suggestion.factStatus === "supported" && ["accepted", "applied"].includes(suggestion.status);
+  const supportingFacts = facts.filter((fact) => (suggestion.userFactIds || []).includes(fact.id));
 
   async function copySuggestion() {
     try {
@@ -49,6 +52,7 @@ export function ResumeSuggestionCard({
         <summary>查看依据</summary>
         <p>简历证据：{suggestion.resumeEvidenceBlockIds.join("、") || "无"}</p>
         <p>JD 要求：{suggestion.jdRequirementIds.join("、") || "无"}</p>
+        {supportingFacts.length > 0 && <p>用户补充：{supportingFacts.map((fact) => fact.claimValue).join("；")}</p>}
       </details>
       <p className="resume-advisor-status">状态：{suggestion.status}</p>
       <p className="sr-only" aria-live="polite">{notice}</p>

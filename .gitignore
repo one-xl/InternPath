@@ -60,3 +60,12 @@ scratch/
 
 # User data folder containing local user databases and migration indicators
 user_data/
+
+# Local tool state and non-source deliverables
+.codegraph/
+*.zip
+*.7z
+*.rar
+*.mp4
+*.mov
+*.avi

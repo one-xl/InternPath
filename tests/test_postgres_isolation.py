@@ -140,7 +140,7 @@ def test_model_config_isolation_between_users(tmp_path, monkeypatch):
         "provider": "gemini",
         "modelId": "gemini-2.5-flash",
         "name": "Alice Gemini",
-        "apiKey": "sk-alice-secret-key-12345678",
+        "apiKey": "test-api-key",
         "enabled": True,
         "type": "chat",
     })
@@ -178,7 +178,7 @@ def test_model_config_update_persists_model_id(tmp_path, monkeypatch):
         "provider": "gemini",
         "modelId": "gemini-flash-latest",
         "name": "Gemini gemini-flash-latest",
-        "apiKey": "sk-alice-secret-key-12345678",
+        "apiKey": "test-api-key",
         "enabled": True,
         "type": "chat",
     })

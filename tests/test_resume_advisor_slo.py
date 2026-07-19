@@ -37,9 +37,9 @@ class _Database:
 
 def test_slo_dashboard_calculates_p95_and_exposes_threshold_breaches():
     rows = [
-        (json.dumps({"queueMs": 90, "providerFirstTokenMs": 7_000, "endToEndFirstTokenMs": 8_500}),),
-        (json.dumps({"queueMs": 1_100, "providerFirstTokenMs": 7_500, "endToEndFirstTokenMs": 9_000}),),
-        (json.dumps({"queueMs": 1_200, "providerFirstTokenMs": 7_900, "endToEndFirstTokenMs": 10_000}),),
+        (json.dumps({"queueMs": 90, "providerFirstTokenMs": 7_000, "endToEndFirstTokenMs": 8_500}), "COMPLETED", None),
+        (json.dumps({"queueMs": 1_100, "providerFirstTokenMs": 7_500, "endToEndFirstTokenMs": 9_000}), "CANCELLED", None),
+        (json.dumps({"queueMs": 1_200, "providerFirstTokenMs": 7_900, "endToEndFirstTokenMs": 10_000}), "FAILED", "tool_timeout"),
     ]
     repository = ResumeAdvisorRepository(_Database(rows))
 
@@ -53,3 +53,4 @@ def test_slo_dashboard_calculates_p95_and_exposes_threshold_breaches():
         "queueMs_p95_breach",
         "endToEndFirstTokenMs_p95_breach",
     }
+    assert dashboard["health"] == {"cancelledRuns": 1, "failedRuns": 1, "toolTimeoutRuns": 1}

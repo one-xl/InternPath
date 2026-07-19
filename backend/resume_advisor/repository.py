@@ -180,6 +180,39 @@ class ResumeAdvisorRepository:
         finally:
             conn.close()
 
+    def delete_session(self, *, user_id: Any, session_id: str) -> bool:
+        """Delete a terminal advisor session and its cascaded durable records."""
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                SELECT status
+                FROM agent_resume_runs
+                WHERE session_id = ? AND user_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                FOR UPDATE
+                """,
+                (session_id, str(user_id)),
+            )
+            latest_run = cursor.fetchone()
+            if latest_run and str(latest_run[0]) in {"QUEUED", "RUNNING"}:
+                raise ValueError("运行中的会话不能删除，请等待本轮完成。")
+            cursor.execute(
+                """
+                DELETE FROM agent_resume_tasks
+                WHERE task_id = ? AND user_id = ? AND interaction_mode = 'resume_advisor'
+                RETURNING task_id
+                """,
+                (session_id, str(user_id)),
+            )
+            deleted = cursor.fetchone() is not None
+            conn.commit()
+            return deleted
+        finally:
+            conn.close()
+
     def _lock_session(self, cursor, user_id: Any, session_id: str) -> None:
         cursor.execute(
             "SELECT task_id FROM agent_resume_tasks WHERE task_id = ? AND user_id = ? FOR UPDATE",
@@ -317,6 +350,186 @@ class ResumeAdvisorRepository:
             conn.close()
         return {"id": run_id, "sessionId": session_id, "status": "QUEUED", "traceId": trace_id}
 
+    def reserve_run_for_message(self, *, user_id: Any, session_id: str) -> dict[str, Any]:
+        """Atomically reserve a new run or resume the paused run for one user message."""
+        now = datetime.now().isoformat()
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+        try:
+            self._lock_session(cursor, user_id, session_id)
+            cursor.execute(
+                """
+                SELECT id, status, trace_id
+                FROM agent_resume_runs
+                WHERE session_id = ? AND user_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                FOR UPDATE
+                """,
+                (session_id, str(user_id)),
+            )
+            latest = cursor.fetchone()
+            if latest and str(latest[1]) in {"QUEUED", "RUNNING"}:
+                raise ValueError("上一条消息仍在处理中，请等待本轮回复后再发送。")
+            if latest and str(latest[1]) == "PAUSED":
+                run_id, _status, trace_id = latest
+                cursor.execute(
+                    """
+                    UPDATE agent_resume_runs
+                    SET status = 'RUNNING', error_code = NULL, error_message = NULL
+                    WHERE id = ? AND user_id = ?
+                    """,
+                    (run_id, str(user_id)),
+                )
+                cursor.execute(
+                    """
+                    UPDATE agent_resume_tasks
+                    SET active_run_id = ?, session_status = 'ACTIVE', status = 'ACTIVE', updated_at = ?
+                    WHERE task_id = ? AND user_id = ?
+                    """,
+                    (run_id, now, session_id, str(user_id)),
+                )
+                conn.commit()
+                return {"id": str(run_id), "sessionId": session_id, "status": "RUNNING", "traceId": str(trace_id), "resumed": True}
+
+            run_id = f"run-{uuid4().hex}"
+            trace_id = f"tr-{uuid4().hex}"
+            cursor.execute(
+                """
+                INSERT INTO agent_resume_runs (
+                    id, session_id, user_id, trigger_message_id, status, rq_job_id,
+                    trace_id, telemetry_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?)
+                """,
+                (run_id, session_id, str(user_id), None, "QUEUED", run_id, trace_id, "{}", now),
+            )
+            cursor.execute(
+                """
+                UPDATE agent_resume_tasks
+                SET active_run_id = ?, session_status = 'ACTIVE', status = 'ACTIVE', updated_at = ?
+                WHERE task_id = ? AND user_id = ?
+                """,
+                (run_id, now, session_id, str(user_id)),
+            )
+            conn.commit()
+            return {"id": run_id, "sessionId": session_id, "status": "QUEUED", "traceId": trace_id, "resumed": False}
+        finally:
+            conn.close()
+
+    def append_message_and_reserve_run(
+        self,
+        *,
+        user_id: Any,
+        session_id: str,
+        content: str,
+        message_kind: str,
+        client_message_id: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Atomically persist one user message and its single active Advisor run."""
+        now = datetime.now().isoformat()
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+        try:
+            self._lock_session(cursor, user_id, session_id)
+            cursor.execute(
+                """
+                SELECT id, sequence_no, role, content, message_kind, client_message_id, run_id, payload_json, status
+                FROM agent_resume_turns
+                WHERE user_id = ? AND task_id = ? AND client_message_id = ?
+                """,
+                (str(user_id), session_id, client_message_id),
+            )
+            duplicate = cursor.fetchone()
+            if duplicate:
+                conn.commit()
+                return {
+                    "duplicate": True,
+                    "message": {
+                        "id": str(duplicate[0]), "sequence": duplicate[1], "role": duplicate[2],
+                        "content": duplicate[3], "messageKind": duplicate[4], "clientMessageId": duplicate[5],
+                        "runId": duplicate[6], "payload": _load_json(duplicate[7], {}), "status": duplicate[8],
+                    },
+                    "run": None,
+                }
+
+            cursor.execute(
+                """
+                SELECT id, status, trace_id
+                FROM agent_resume_runs
+                WHERE session_id = ? AND user_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                FOR UPDATE
+                """,
+                (session_id, str(user_id)),
+            )
+            latest = cursor.fetchone()
+            if latest and str(latest[1]) in {"QUEUED", "RUNNING"}:
+                raise ValueError("上一条消息仍在处理中，请等待本轮回复后再发送。")
+
+            resumed = bool(latest and str(latest[1]) == "PAUSED")
+            if resumed:
+                run_id, _status, trace_id = latest
+                cursor.execute(
+                    "UPDATE agent_resume_runs SET status = 'RUNNING', error_code = NULL, error_message = NULL WHERE id = ? AND user_id = ?",
+                    (run_id, str(user_id)),
+                )
+            else:
+                run_id = f"run-{uuid4().hex}"
+                trace_id = f"tr-{uuid4().hex}"
+                cursor.execute(
+                    """
+                    INSERT INTO agent_resume_runs (
+                        id, session_id, user_id, trigger_message_id, status, rq_job_id,
+                        trace_id, telemetry_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?)
+                    """,
+                    (run_id, session_id, str(user_id), None, "QUEUED", run_id, trace_id, "{}", now),
+                )
+
+            turn_id = str(uuid4())
+            cursor.execute(
+                "SELECT COALESCE(MAX(sequence_no), 0) + 1 FROM agent_resume_turns WHERE task_id = ? AND user_id = ?",
+                (session_id, str(user_id)),
+            )
+            sequence_no = int(cursor.fetchone()[0])
+            cursor.execute(
+                """
+                INSERT INTO agent_resume_turns (
+                    id, task_id, user_id, role, content, sequence_no, message_kind,
+                    payload_json, client_message_id, run_id, parent_turn_id, status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?, ?)
+                """,
+                (
+                    turn_id, session_id, str(user_id), "user", content, sequence_no, message_kind,
+                    _dump_json(payload or {}), client_message_id, run_id, None, "COMPLETED", now,
+                ),
+            )
+            if not resumed:
+                cursor.execute(
+                    "UPDATE agent_resume_runs SET trigger_message_id = ? WHERE id = ? AND user_id = ?",
+                    (turn_id, run_id, str(user_id)),
+                )
+            cursor.execute(
+                """
+                UPDATE agent_resume_tasks
+                SET active_run_id = ?, session_status = 'ACTIVE', status = 'ACTIVE', updated_at = ?
+                WHERE task_id = ? AND user_id = ?
+                """,
+                (run_id, now, session_id, str(user_id)),
+            )
+            conn.commit()
+            run = {"id": str(run_id), "sessionId": session_id, "status": "RUNNING" if resumed else "QUEUED", "traceId": str(trace_id), "resumed": resumed}
+            message = {
+                "id": turn_id, "sequence": sequence_no, "role": "user", "content": content,
+                "messageKind": message_kind, "clientMessageId": client_message_id, "runId": str(run_id),
+                "payload": payload or {}, "status": "COMPLETED",
+            }
+            return {"duplicate": False, "message": message, "run": run}
+        finally:
+            conn.close()
+
     def update_run(
         self,
         *,
@@ -327,7 +540,7 @@ class ResumeAdvisorRepository:
         error_message: str | None = None,
     ) -> None:
         now = datetime.now().isoformat()
-        finished_at = now if status in {"COMPLETED", "FAILED", "PAUSED"} else None
+        finished_at = now if status in {"COMPLETED", "FAILED", "PAUSED", "CANCELLED"} else None
         conn = self.db.get_connection()
         cursor = conn.cursor()
         try:
@@ -335,7 +548,7 @@ class ResumeAdvisorRepository:
                 """
                 UPDATE agent_resume_runs
                 SET status = ?, started_at = COALESCE(started_at, ?),
-                    finished_at = COALESCE(?, finished_at), error_code = ?, error_message = ?
+                    finished_at = ?, error_code = ?, error_message = ?
                 WHERE id = ? AND user_id = ?
                 """,
                 (status, now, finished_at, error_code, error_message, run_id, str(user_id)),
@@ -343,6 +556,83 @@ class ResumeAdvisorRepository:
             conn.commit()
         finally:
             conn.close()
+
+    def set_run_rq_job_id(self, *, user_id: Any, run_id: str, rq_job_id: str) -> None:
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "UPDATE agent_resume_runs SET rq_job_id = ? WHERE id = ? AND user_id = ?",
+                (rq_job_id, run_id, str(user_id)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def is_run_cancelled(self, *, user_id: Any, run_id: str) -> bool:
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT status FROM agent_resume_runs WHERE id = ? AND user_id = ?",
+                (run_id, str(user_id)),
+            )
+            row = cursor.fetchone()
+        finally:
+            conn.close()
+        return bool(row and str(row[0]) == "CANCELLED")
+
+    def cancel_run(self, *, user_id: Any, session_id: str, run_id: str) -> dict[str, Any]:
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+        now = datetime.now().isoformat()
+        try:
+            self._lock_session(cursor, user_id, session_id)
+            cursor.execute(
+                """
+                SELECT status
+                FROM agent_resume_runs
+                WHERE id = ? AND session_id = ? AND user_id = ?
+                FOR UPDATE
+                """,
+                (run_id, session_id, str(user_id)),
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise LookupError("未找到本会话的运行记录。")
+            status = str(row[0])
+            if status == "CANCELLED":
+                raise ValueError("该运行已经取消，不能重复取消。")
+            if status not in {"QUEUED", "RUNNING", "PAUSED"}:
+                raise ValueError("该运行已经结束，不能取消。")
+            cursor.execute(
+                """
+                UPDATE agent_resume_runs
+                SET status = 'CANCELLED', finished_at = COALESCE(finished_at, ?),
+                    error_code = 'cancelled', error_message = '用户取消本轮运行。'
+                WHERE id = ? AND user_id = ?
+                """,
+                (now, run_id, str(user_id)),
+            )
+            cursor.execute(
+                """
+                UPDATE agent_resume_tasks
+                SET session_status = 'ACTIVE', status = 'ACTIVE', updated_at = ?, last_message_at = ?
+                WHERE task_id = ? AND user_id = ? AND interaction_mode = 'resume_advisor'
+                """,
+                (now, now, session_id, str(user_id)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        event = self.append_event(
+            user_id=user_id,
+            session_id=session_id,
+            run_id=run_id,
+            event_type="run_cancelled",
+            payload={"stage": "run_control", "reason": "user_requested"},
+        )
+        return {"id": run_id, "status": "CANCELLED", "alreadyCancelled": False, "event": event}
 
     def get_run(self, *, user_id: Any, run_id: str) -> dict[str, Any] | None:
         conn = self.db.get_connection()
@@ -402,7 +692,7 @@ class ResumeAdvisorRepository:
         try:
             cursor.execute(
                 """
-                SELECT telemetry_json
+                SELECT telemetry_json, status, error_code
                 FROM agent_resume_runs
                 WHERE user_id = ? AND created_at >= ?
                 ORDER BY created_at ASC
@@ -414,6 +704,8 @@ class ResumeAdvisorRepository:
             conn.close()
 
         telemetry_rows = [_load_json(row[0], {}) for row in rows]
+        statuses = [str(row[1]) if len(row) > 1 else "" for row in rows]
+        error_codes = [str(row[2]) if len(row) > 2 and row[2] else "" for row in rows]
 
         def percentile_95(values: list[int]) -> int | None:
             if not values:
@@ -460,6 +752,11 @@ class ResumeAdvisorRepository:
             "runCount": len(telemetry_rows),
             "metrics": metrics,
             "alerts": alerts,
+            "health": {
+                "cancelledRuns": sum(status == "CANCELLED" for status in statuses),
+                "failedRuns": sum(status == "FAILED" for status in statuses),
+                "toolTimeoutRuns": sum(code == "tool_timeout" for code in error_codes),
+            },
         }
 
     def get_active_run(self, user_id: Any, session_id: str) -> dict[str, Any] | None:
@@ -501,6 +798,24 @@ class ResumeAdvisorRepository:
         cursor = conn.cursor()
         try:
             self._lock_session(cursor, user_id, session_id)
+            trace_id = ""
+            if run_id:
+                cursor.execute(
+                    "SELECT trace_id FROM agent_resume_runs WHERE id = ? AND user_id = ?",
+                    (run_id, str(user_id)),
+                )
+                trace_row = cursor.fetchone()
+                trace_id = str(trace_row[0] or "") if trace_row else ""
+            if not trace_id:
+                cursor.execute(
+                    "SELECT trace_id FROM agent_resume_tasks WHERE task_id = ? AND user_id = ?",
+                    (session_id, str(user_id)),
+                )
+                trace_row = cursor.fetchone()
+                trace_id = str(trace_row[0] or "") if trace_row else ""
+            event_payload = {**(payload or {})}
+            if trace_id:
+                event_payload["traceId"] = trace_id
             cursor.execute(
                 "SELECT COALESCE(MAX(sequence_no), 0) + 1 FROM agent_resume_events WHERE session_id = ? AND user_id = ?",
                 (session_id, str(user_id)),
@@ -515,7 +830,7 @@ class ResumeAdvisorRepository:
                 """,
                 (
                     event_id, session_id, str(user_id), sequence_no, run_id, event_type,
-                    message_id, suggestion_id, _dump_json(payload or {}), datetime.now().isoformat(),
+                    message_id, suggestion_id, _dump_json(event_payload), datetime.now().isoformat(),
                 ),
             )
             conn.commit()
@@ -523,7 +838,7 @@ class ResumeAdvisorRepository:
             conn.close()
         event = {
             "id": event_id, "sequence": sequence_no, "runId": run_id, "type": event_type,
-            "messageId": message_id, "suggestionId": suggestion_id, "payload": payload or {},
+            "messageId": message_id, "suggestionId": suggestion_id, "payload": event_payload, "traceId": trace_id,
         }
         from .event_stream import publish_event_notification
 
@@ -690,17 +1005,31 @@ class ResumeAdvisorRepository:
         )
 
     def list_confirmed_facts(self, user_id: Any, session_id: str) -> list[dict[str, Any]]:
+        return self.list_session_facts(user_id, session_id, statuses=("confirmed",))
+
+    def list_session_facts(
+        self,
+        user_id: Any,
+        session_id: str,
+        *,
+        statuses: tuple[str, ...] = ("confirmed", "denied"),
+    ) -> list[dict[str, Any]]:
+        allowed_statuses = tuple(dict.fromkeys(status for status in statuses if status in {"confirmed", "denied"}))
+        if not allowed_statuses:
+            return []
+        placeholders = ", ".join("?" for _ in allowed_statuses)
         conn = self.db.get_connection()
         cursor = conn.cursor()
         try:
             cursor.execute(
-                """
+                f"""
                 SELECT id, claim_key, claim_value, source_type, source_id, status, scope
                 FROM agent_resume_facts
-                WHERE user_id = ? AND (session_id = ? OR scope = 'global')
+                WHERE user_id = ? AND status IN ({placeholders})
+                  AND (session_id = ? OR scope = 'global')
                 ORDER BY created_at ASC
                 """,
-                (str(user_id), session_id),
+                (str(user_id), *allowed_statuses, session_id),
             )
             rows = cursor.fetchall()
         finally:
@@ -709,6 +1038,50 @@ class ResumeAdvisorRepository:
             {"id": row[0], "claimKey": row[1], "claimValue": row[2], "sourceType": row[3], "sourceId": row[4], "status": row[5], "scope": row[6]}
             for row in rows
         ]
+
+    def list_global_facts(self, user_id: Any, *, limit: int = 100) -> list[dict[str, Any]]:
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                SELECT id, claim_key, claim_value, source_type, source_id, status, created_at
+                FROM agent_resume_facts
+                WHERE user_id = ? AND scope = 'global' AND status = 'confirmed'
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (str(user_id), max(1, min(int(limit), 100))),
+            )
+            rows = cursor.fetchall()
+        finally:
+            conn.close()
+        return [
+            {
+                "id": str(row[0]), "claimKey": str(row[1]), "claimValue": str(row[2]),
+                "sourceType": str(row[3]), "sourceId": str(row[4]), "status": str(row[5]), "createdAt": row[6],
+            }
+            for row in rows
+        ]
+
+    def revoke_global_fact(self, *, user_id: Any, fact_id: str) -> bool:
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                UPDATE agent_resume_facts
+                SET status = 'revoked', updated_at = ?
+                WHERE id = ? AND user_id = ? AND scope = 'global' AND status = 'confirmed'
+                RETURNING id
+                """,
+                (datetime.now().isoformat(), fact_id, str(user_id)),
+            )
+            revoked = cursor.fetchone() is not None
+            conn.commit()
+        finally:
+            conn.close()
+        return revoked
 
     def record_fact(
         self,

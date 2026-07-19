@@ -8255,6 +8255,8 @@ blockquote,
 
 /* Evidence-first resume advisor */
 .resume-advisor-page { display: grid; gap: 18px; min-width: 0; }
+.app-shell--immersive .resume-advisor-page { height: 100%; min-height: 0; box-sizing: border-box; padding: 24px; grid-template-rows: auto auto minmax(0, 1fr); }
+.app-shell--immersive .resume-advisor-grid { grid-row: 3; }
 .resume-advisor-header { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
 .resume-advisor-header h1 { margin: 2px 0 6px; font-size: 28px; }
 .resume-advisor-header p { margin: 0; color: var(--muted); }
@@ -8267,22 +8269,29 @@ blockquote,
 .resume-advisor-slo.warning > span { border-color: color-mix(in srgb, var(--danger) 42%, var(--line)); }
 .resume-advisor-slo-alert { color: var(--danger); font-weight: 700; }
 .resume-advisor-error { margin: 0; border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); border-radius: var(--radius-md); padding: 10px 12px; }
-.resume-advisor-grid { display: grid; grid-template-columns: minmax(210px, .8fr) minmax(330px, 1.45fr) minmax(270px, 1fr); gap: 14px; min-width: 0; align-items: start; }
+.resume-advisor-grid { display: grid; grid-template-columns: minmax(210px, .8fr) minmax(330px, 1.45fr) minmax(270px, 1fr); gap: 14px; min-width: 0; min-height: 0; align-items: stretch; }
 .resume-advisor-sidebar, .resume-advisor-main, .resume-advisor-viewer { min-width: 0; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--panel); }
-.resume-advisor-sidebar { display: grid; gap: 12px; padding: 14px; }
+.resume-advisor-sidebar { display: grid; grid-template-rows: auto auto auto auto auto auto minmax(0, 1fr); gap: 12px; min-height: 0; overflow: hidden; padding: 14px; }
 .resume-advisor-sidebar h2, .resume-advisor-viewer h2 { margin: 0; font-size: 14px; }
 .resume-advisor-sidebar label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 700; }
-.resume-advisor-sidebar select, .resume-advisor-sidebar textarea, .resume-advisor-composer textarea { width: 100%; box-sizing: border-box; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); color: var(--text); padding: 9px; font: inherit; resize: vertical; }
+.resume-advisor-sidebar select, .resume-advisor-sidebar textarea, .resume-advisor-composer textarea, .resume-advisor-question textarea { width: 100%; box-sizing: border-box; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); color: var(--text); padding: 9px; font: inherit; resize: vertical; }
 .resume-advisor-sidebar textarea { min-height: 120px; }
 .resume-advisor-upload input { max-width: 100%; color: var(--text); font: inherit; }
 .resume-advisor-upload span { color: var(--muted); font-size: 11px; font-weight: 500; }
+.resume-advisor-resume-actions { display: flex; }
 .resume-advisor-page button.primary { background: var(--accent); color: #fff; border: 0; border-radius: var(--radius-md); padding: 9px 12px; font-weight: 700; cursor: pointer; }
 .resume-advisor-page button:disabled { cursor: not-allowed; opacity: .55; }
-.resume-advisor-session-list { display: grid; gap: 7px; border-top: 1px solid var(--line); padding-top: 12px; }
-.resume-advisor-session-list button { border: 1px solid var(--line); background: transparent; color: var(--text); border-radius: var(--radius-md); padding: 9px; text-align: left; display: grid; gap: 3px; cursor: pointer; }
-.resume-advisor-session-list button.selected { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+.resume-advisor-danger-button { min-height: 44px; border: 1px solid color-mix(in srgb, var(--danger) 48%, var(--line)); background: color-mix(in srgb, var(--danger) 10%, var(--surface)); color: var(--danger); border-radius: var(--radius-md); padding: 8px 10px; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
+.resume-advisor-danger-button:not(:disabled):hover { background: color-mix(in srgb, var(--danger) 18%, var(--surface)); }
+.resume-advisor-cancel-run { justify-self: end; margin: 0 12px 10px; }
+.resume-advisor-session-list { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 7px; min-height: 0; border-top: 1px solid var(--line); padding-top: 12px; }
+.resume-advisor-session-items { display: grid; align-content: start; gap: 7px; min-height: 0; overflow-y: auto; padding-right: 2px; }
+.resume-advisor-session-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
+.resume-advisor-session-button { min-width: 0; border: 1px solid var(--line); background: transparent; color: var(--text); border-radius: var(--radius-md); padding: 9px; text-align: left; display: grid; gap: 3px; cursor: pointer; }
+.resume-advisor-session-button.selected { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+.resume-advisor-delete-session { min-width: 52px; }
 .resume-advisor-session-list span, .muted { color: var(--muted); font-size: 12px; }
-.resume-advisor-main { display: grid; grid-template-rows: minmax(0, 1fr) auto; height: min(68vh, 680px); min-height: 420px; overflow: hidden; }
+.resume-advisor-main { display: grid; grid-template-rows: minmax(0, 1fr) auto; height: 100%; min-height: 0; overflow: hidden; }
 .resume-advisor-conversation { display: grid; align-content: start; gap: 11px; min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 16px; }
 .resume-advisor-message { max-width: 88%; border-radius: var(--radius-md); padding: 10px 12px; line-height: 1.55; white-space: pre-wrap; }
 .resume-advisor-message.assistant { background: var(--surface); border: 1px solid var(--line); justify-self: start; }
@@ -8310,6 +8319,7 @@ blockquote,
 .resume-advisor-suggestion { display: grid; gap: 9px; border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line)); border-radius: var(--radius-md); padding: 13px; background: color-mix(in srgb, var(--accent) 5%, var(--panel)); }
 .resume-advisor-question { display: grid; gap: 8px; border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line)); border-radius: var(--radius-md); padding: 13px; background: color-mix(in srgb, var(--accent) 4%, var(--panel)); }
 .resume-advisor-question p { margin: 0; font-size: 13px; line-height: 1.55; }
+.resume-advisor-question label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 700; }
 .resume-advisor-quality-gate { display: grid; gap: 9px; border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--line)); border-radius: var(--radius-md); padding: 13px; background: color-mix(in srgb, var(--danger) 5%, var(--panel)); }
 .resume-advisor-quality-gate h3, .resume-advisor-quality-gate p { margin: 0; }
 .resume-advisor-quality-gate dl { display: grid; gap: 6px; margin: 0; font-size: 12px; }
@@ -8359,10 +8369,14 @@ blockquote,
 }
 
 @media (max-width: 700px) {
+  .app-shell--immersive .resume-advisor-page { height: auto; min-height: 100%; padding: 16px; grid-template-rows: auto; }
+  .app-shell--immersive .resume-advisor-grid { grid-row: auto; }
   .resume-advisor-header { display: grid; }
   .resume-advisor-header-meta, .resume-advisor-slo { justify-content: flex-start; }
   .resume-advisor-grid { grid-template-columns: minmax(0, 1fr); }
   .resume-advisor-sidebar, .resume-advisor-viewer { max-height: none; }
+  .resume-advisor-sidebar { grid-template-rows: none; overflow: visible; }
+  .resume-advisor-session-list { max-height: 280px; }
   .resume-advisor-main { height: min(68vh, 600px); min-height: 360px; }
   .resume-advisor-composer { grid-template-columns: 1fr; }
   .resume-advisor-finish { align-items: stretch; flex-direction: column; }

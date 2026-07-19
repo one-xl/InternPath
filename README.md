@@ -56,8 +56,7 @@ docker compose up -d
 
 默认开发账号：
 
-- Email: `admin@example.com`
-- Password: `ChangeMe123!`
+- Set `INTERNPATH_ADMIN_USERNAME` and `INTERNPATH_ADMIN_PASSWORD` in your local environment.`r`n- Do not store administrator credentials in source files or commit them to Git.
 
 ## 简历定向优化
 

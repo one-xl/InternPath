@@ -2037,6 +2037,44 @@ class Database:
         conn.close()
         return [str(row[0]) for row in reversed(rows)]
 
+    def list_agent_preference_records(self, user_id: Any, limit: int = 100) -> list[dict[str, Any]]:
+        conn = self.get_connection()
+        cursor = DatabaseCursorWrapper(conn.cursor(), self.is_postgres)
+        cursor.execute(
+            """
+            SELECT id, section_name, preference_text, source_task_id, created_at
+            FROM agent_preferences
+            WHERE user_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (str(user_id), max(1, min(int(limit), 100))),
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [
+            {
+                "id": str(row[0]),
+                "sectionName": str(row[1]),
+                "text": str(row[2]),
+                "sourceTaskId": str(row[3] or ""),
+                "createdAt": row[4],
+            }
+            for row in rows
+        ]
+
+    def delete_agent_preference(self, user_id: Any, preference_id: str) -> bool:
+        conn = self.get_connection()
+        cursor = DatabaseCursorWrapper(conn.cursor(), self.is_postgres)
+        cursor.execute(
+            "DELETE FROM agent_preferences WHERE id = ? AND user_id = ? RETURNING id",
+            (preference_id, str(user_id)),
+        )
+        deleted = cursor.fetchone() is not None
+        conn.commit()
+        conn.close()
+        return deleted
+
     def save_analysis_report(
         self,
         *,

@@ -226,6 +226,7 @@ def draft_resume_suggestion(
     model_client: Any | None = None,
     model_id: str = "",
     revision_feedback: str = "",
+    context_snapshot: str = "",
     user_id: Any = "default",
     on_delta: Callable[[str], None] | None = None,
     on_cache_event: Callable[[str, bool], None] | None = None,
@@ -262,6 +263,7 @@ def draft_resume_suggestion(
         section_name,
         jd_requirements,
         revision_feedback,
+        context_snapshot,
         preference_rules,
         schema_version=_ADVISOR_CACHE_SCHEMA_VERSION,
         tool_version="resume-copywriter-v1",
@@ -291,6 +293,7 @@ def draft_resume_suggestion(
                 goal=(
                     "只优化已有事实的清晰度和可扫描性；不得新增任何技能、角色、数字或结果。"
                     f" 用户本轮修订要求：{revision_feedback.strip()}"
+                    f"\n\n[受限会话上下文]\n{context_snapshot.strip()}"
                 ),
                 user_id=str(user_id),
                 on_delta=on_delta,

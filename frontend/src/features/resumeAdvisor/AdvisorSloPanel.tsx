@@ -16,6 +16,9 @@ export function AdvisorSloPanel({ dashboard }: { dashboard: AdvisorSloDashboard 
       {metricEntries.map(([name, metric]) => (
         <span key={name}>{METRIC_LABELS[name] || name} {metric.p95Ms} / {metric.thresholdMs} ms</span>
       ))}
+      {dashboard.health && dashboard.health.cancelledRuns > 0 && <span>取消 {dashboard.health.cancelledRuns}</span>}
+      {dashboard.health && dashboard.health.failedRuns > 0 && <span>失败 {dashboard.health.failedRuns}</span>}
+      {dashboard.health && dashboard.health.toolTimeoutRuns > 0 && <span>工具超时 {dashboard.health.toolTimeoutRuns}</span>}
       {dashboard.alerts.length > 0 && <span className="resume-advisor-slo-alert">告警 {dashboard.alerts.length}</span>}
     </aside>
   );

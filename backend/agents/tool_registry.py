@@ -5,6 +5,7 @@ import json
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Literal
@@ -785,10 +786,17 @@ class AgentToolRegistry:
             for attempts in range(1, max_attempts + 1):
                 attempt_started_at = time.perf_counter()
                 try:
-                    result = tool.handler(ctx, arguments)
+                    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"internpath-tool-{name}")
+                    future = executor.submit(tool.handler, ctx, arguments)
+                    try:
+                        result = future.result(timeout=max(0.001, float(tool.timeout_seconds)))
+                    except FutureTimeout as exc:
+                        future.cancel()
+                        raise TimeoutError(f"Tool exceeded its {tool.timeout_seconds}s timeout: {name}") from exc
+                    finally:
+                        # Never wait for an uncooperative blocking handler after its deadline.
+                        executor.shutdown(wait=False, cancel_futures=True)
                     attempt_duration_ms = int((time.perf_counter() - attempt_started_at) * 1000)
-                    if attempt_duration_ms > tool.timeout_seconds * 1000:
-                        raise TimeoutError(f"Tool exceeded its {tool.timeout_seconds}s timeout: {name}")
                     if tool.output_model is not None and isinstance(result, dict) and result.get("ok") is not False:
                         data = result.get("data", result)
                         result = {

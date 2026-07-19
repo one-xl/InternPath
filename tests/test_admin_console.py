@@ -67,7 +67,7 @@ def test_admin_console_flow(tmp_path, monkeypatch):
         "provider": "gemini",
         "modelId": "gemini-2.5-flash",
         "name": "Admin Gemini Config",
-        "apiKey": "sk-admin-gemini-key-12345678",
+        "apiKey": "test-api-key",
         "enabled": True,
         "config_json": {"temperature": 0.5}
     })
@@ -128,7 +128,7 @@ def test_admin_console_flow(tmp_path, monkeypatch):
         "type": "chat",
         "configId": admin_config_id
     })
-    # Since we are using an invalid/mock api key (sk-admin-gemini-key-12345678), it will connect to Gemini and fail.
+    # Since we are using an invalid/mock api key (test-api-key), it will connect to Gemini and fail.
     # But it must try to connect and return Gemini failure (upstreamStatus != 200) instead of "No API Key found" (500)
     assert resp.status_code == 200
     assert resp.json()["ok"] is False
@@ -292,7 +292,7 @@ def test_user_config_idor_prevention(tmp_path, monkeypatch):
         "provider": "openai-compatible",
         "modelId": "gpt-4o",
         "name": "User A Private Config",
-        "apiKey": "sk-user-a-secret-12345678",
+        "apiKey": "test-api-key",
         "enabled": True
     })
     assert resp.status_code == 200
@@ -304,7 +304,7 @@ def test_user_config_idor_prevention(tmp_path, monkeypatch):
         "provider": "openai-compatible",
         "modelId": "gpt-4o",
         "name": "User B Hacked Name",
-        "apiKey": "sk-user-b-evil-key",
+        "apiKey": "test-api-key",
         "enabled": False
     })
     assert resp.status_code == 403

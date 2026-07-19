@@ -6,6 +6,9 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 from uuid import uuid4
 
+from config import Config
+from backend.resume_rag import SECTION_IMPORTANCE
+
 from .verification import (
     draft_resume_suggestion,
     decode_jd_requirements,
@@ -14,6 +17,8 @@ from .verification import (
     SuggestionDraft,
     verify_suggestion_facts,
 )
+from .tool_runtime import ResumeAdvisorToolRuntime
+from .context import build_advisor_context_snapshot
 
 
 _KEYWORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9+#./-]{1,}|[\u4e00-\u9fff]{2,}")
@@ -21,6 +26,31 @@ _STOP_WORDS = {"负责", "要求", "需要", "相关", "岗位", "经验", "能�
 _FOLLOW_UP_PREFIXES = ("为什么", "为何", "怎么", "如何", "能否", "可以", "解释", "这条", "这个")
 _REVISION_HINTS = ("改短", "精简", "精炼", "更克制", "换个说法", "改写", "重写", "语气")
 _FIRST_TOKEN_SLO_MS = 10_000
+_EDITABLE_BLOCK_KINDS = {"bullet", "paragraph", "table_cell"}
+_NON_EDITABLE_SECTION_IDS = {"contact", "objective"}
+_ADVISOR_SECTION_BONUSES = {
+    "project_experience": 0.40,
+    "work_experience": 0.34,
+    "research": 0.28,
+    "coursework": 0.24,
+    "skills": 0.18,
+    "education": 0.12,
+    "self_introduction": 0.10,
+    "generic_section": -0.36,
+}
+_PERSONAL_FIELD_RE = re.compile(
+    r"(?:姓名|性别|年龄|生日|出生(?:日期|年月)?|电话|手机|邮箱|邮件|地址|现居|籍贯|微信|身份证|"
+    r"name|gender|age|birth(?:day| date)?|phone|mobile|email|address)\s*[:：]",
+    flags=re.IGNORECASE,
+)
+_EMAIL_RE = re.compile(r"\b[^\s@]+@[^\s@]+\.[^\s@]+\b")
+_PHONE_RE = re.compile(r"(?<!\d)(?:\+?86[-\s]?)?1[3-9]\d{9}(?!\d)")
+_DATE_OF_BIRTH_RE = re.compile(r"(?:19|20)\d{2}[./-年]\d{1,2}[./-月]\d{1,2}日?")
+_NAME_LIKE_RE = re.compile(r"^[\u4e00-\u9fff]{2,4}$")
+_GENERIC_REQUIREMENTS = {
+    "负责", "要求", "需要", "相关", "岗位", "经验", "能力", "优先", "我们", "你将", "以及", "进行",
+    "熟悉", "掌握", "具备", "良好", "优秀", "开发", "实习", "本科", "学历", "专业", "工作", "团队",
+}
 
 
 def _parse_timestamp(value: Any) -> datetime | None:
@@ -49,6 +79,37 @@ def _public_error_summary(exc: Exception) -> dict[str, Any]:
     return {"errorType": exc.__class__.__name__}
 
 
+def _verify_with_holder(
+    holder: dict[str, Any],
+    *,
+    original_text: str,
+    proposed_text: str,
+    resume_evidence_texts: list[str],
+    confirmed_facts: list[dict[str, Any]],
+    jd_text: str,
+) -> dict[str, Any]:
+    value = verify_suggestion_facts(
+        original_text=original_text,
+        proposed_text=proposed_text,
+        resume_evidence_texts=resume_evidence_texts,
+        confirmed_facts=confirmed_facts,
+        jd_text=jd_text,
+    )
+    holder["value"] = value
+    return {"status": value.status, "issueCount": len(value.fact_issues)}
+
+
+def _review_with_holder(holder: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+    value = review_with_hr_critic(**kwargs)
+    holder["value"] = value
+    return {
+        "isPassed": value.is_passed,
+        "score": value.score,
+        "issueCount": len(value.issues),
+        "reviewer": value.reviewer,
+    }
+
+
 def _jd_requirements(jd_text: str) -> list[str]:
     values: list[str] = []
     for token in _KEYWORD_RE.findall(jd_text):
@@ -65,6 +126,64 @@ def _copy_safe_reformat(text: str) -> str:
     compact = re.sub(r"\s+", " ", text).strip()
     compact = re.sub(r"^[-•·*]\s*", "", compact)
     return f"• {compact}" if compact else compact
+
+
+def _normalized_match_text(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "")).lower()
+
+
+def _effective_section_id(block: dict[str, Any]) -> str:
+    section_id = str(block.get("sectionId") or "generic_section").strip() or "generic_section"
+    section_name = str(block.get("sectionName") or "")
+    if "求职意向" in section_name or "职业目标" in section_name or "意向岗位" in section_name:
+        return "objective"
+    if "课程" in section_name:
+        return "coursework"
+    return section_id
+
+
+def _is_personal_identity_block(block: dict[str, Any]) -> bool:
+    section_id = _effective_section_id(block)
+    section_name = str(block.get("sectionName") or "")
+    text = str(block.get("text") or "").strip()
+    if section_id in _NON_EDITABLE_SECTION_IDS:
+        return True
+    if any(label in section_name for label in ("基本信息", "个人信息", "联系方式", "求职意向", "职业目标")):
+        return True
+    if _PERSONAL_FIELD_RE.search(text) or _EMAIL_RE.search(text) or _PHONE_RE.search(text) or _DATE_OF_BIRTH_RE.search(text):
+        return True
+    # DOCX textboxes can be read after an unrelated heading. A bare short Chinese name
+    # under a misclassified self-introduction block must still never become rewrite input.
+    return section_id in {"self_introduction", "generic_section"} and bool(_NAME_LIKE_RE.fullmatch(text))
+
+
+def _is_editable_candidate(block: dict[str, Any]) -> bool:
+    return (
+        str(block.get("kind") or "") in _EDITABLE_BLOCK_KINDS
+        and bool(str(block.get("text") or "").strip())
+        and not _is_personal_identity_block(block)
+    )
+
+
+def _section_priority(block: dict[str, Any]) -> int:
+    section_id = _effective_section_id(block)
+    baseline = float(SECTION_IMPORTANCE.get(section_id, SECTION_IMPORTANCE.get("generic_section", 0.0)))
+    return int(round((baseline + _ADVISOR_SECTION_BONUSES.get(section_id, 0.0)) * 100))
+
+
+def _requirement_matches_text(requirement: str, text: Any) -> bool:
+    normalized_requirement = _normalized_match_text(requirement)
+    return bool(normalized_requirement) and normalized_requirement in _normalized_match_text(text)
+
+
+def _block_requirement_matches(block: dict[str, Any], requirements: list[str]) -> int:
+    text = str(block.get("text") or "")
+    return sum(1 for requirement in requirements if _requirement_matches_text(requirement, text))
+
+
+def _is_actionable_requirement(requirement: str) -> bool:
+    normalized = _normalized_match_text(requirement)
+    return len(normalized) >= 2 and normalized not in _GENERIC_REQUIREMENTS
 
 
 class ResumeAdvisorGraph:
@@ -86,6 +205,144 @@ class ResumeAdvisorGraph:
         self.model_client = model_client
         self.model_id = model_id
         self.model_provider = model_provider
+        self.tool_runtime = ResumeAdvisorToolRuntime()
+
+    def _list_session_facts(self, *, user_id: Any, session_id: str) -> list[dict[str, Any]]:
+        list_session_facts = getattr(self.repository, "list_session_facts", None)
+        if callable(list_session_facts):
+            facts = list_session_facts(user_id, session_id)
+        else:
+            # Older repository fakes only expose the original confirmed-facts method.
+            facts = self.repository.list_confirmed_facts(user_id, session_id)
+        return [fact for fact in facts if isinstance(fact, dict)]
+
+    @staticmethod
+    def _rank_candidate_blocks(blocks: list[dict[str, Any]], requirements: list[str]) -> list[dict[str, Any]]:
+        return sorted(
+            blocks,
+            key=lambda block: (
+                -_section_priority(block),
+                -_block_requirement_matches(block, requirements),
+                int(block.get("order") or 0),
+            ),
+        )
+
+    @staticmethod
+    def _supporting_evidence_blocks(
+        *,
+        current_block: dict[str, Any],
+        all_blocks: list[dict[str, Any]],
+        requirements: list[str],
+    ) -> list[dict[str, Any]]:
+        """Keep the target first and attach a few JD-relevant, non-PII resume facts."""
+        selected = [current_block]
+        matches = [
+            block
+            for block in all_blocks
+            if block.get("id") != current_block.get("id")
+            and _is_editable_candidate(block)
+            and _block_requirement_matches(block, requirements)
+        ]
+        for block in ResumeAdvisorGraph._rank_candidate_blocks(matches, requirements):
+            if len(selected) >= 4:
+                break
+            selected.append(block)
+        return selected
+
+    @staticmethod
+    def _supporting_user_fact_ids(facts: list[dict[str, Any]], proposed_text: str) -> list[str]:
+        proposed = _normalized_match_text(proposed_text)
+        if not proposed:
+            return []
+        fact_ids: list[str] = []
+        for fact in facts:
+            if fact.get("status") != "confirmed":
+                continue
+            fact_id = str(fact.get("id") or "")
+            if not fact_id:
+                continue
+            claim_key = str(fact.get("claimKey") or "")
+            claim_value = str(fact.get("claimValue") or "")
+            if claim_key.startswith("requirement:"):
+                if _requirement_matches_text(claim_key.removeprefix("requirement:"), proposed):
+                    fact_ids.append(fact_id)
+                continue
+            terms = [term for term in _KEYWORD_RE.findall(f"{claim_key} {claim_value}") if len(term) >= 2]
+            if any(_requirement_matches_text(term, proposed) for term in terms):
+                fact_ids.append(fact_id)
+        return list(dict.fromkeys(fact_ids))
+
+    @staticmethod
+    def _next_missing_requirement(
+        *,
+        requirements: list[str],
+        blocks: list[dict[str, Any]],
+        confirmed_facts: list[dict[str, Any]],
+        denied_facts: list[dict[str, Any]],
+        asked_keys: set[str],
+    ) -> str | None:
+        resume_text = "\n".join(str(block.get("text") or "") for block in blocks)
+        confirmed_text = "\n".join(str(fact.get("claimValue") or "") for fact in confirmed_facts)
+        denied_keys = {str(fact.get("claimKey") or "").lower() for fact in denied_facts}
+        denied_values = "\n".join(str(fact.get("claimValue") or "") for fact in denied_facts)
+        for requirement in requirements:
+            normalized = _normalized_match_text(requirement)
+            question_key = f"requirement:{normalized}"
+            if (
+                not _is_actionable_requirement(requirement)
+                or _requirement_matches_text(requirement, resume_text)
+                or _requirement_matches_text(requirement, confirmed_text)
+                or question_key in denied_keys
+                or _requirement_matches_text(requirement, denied_values)
+                or question_key in asked_keys
+            ):
+                continue
+            return requirement
+        return None
+
+    def _ask_for_requirement_evidence(
+        self,
+        *,
+        user_id: Any,
+        session_id: str,
+        run_id: str,
+        requirement: str,
+    ) -> dict[str, Any]:
+        normalized = _normalized_match_text(requirement)
+        question_key = f"requirement:{normalized}"
+        message = self.repository.append_turn(
+            user_id=user_id,
+            session_id=session_id,
+            role="assistant",
+            content=(
+                f"JD 强调「{requirement}」，但我还没有在项目、实习、课程或技能中找到可核验的对应证据。"
+                "你是否有真实的相关职责、技术选择或结果？如果没有，请明确说明；我会保留这个真实缺口，不会把 JD 当成你的经历。"
+            ),
+            message_kind="question",
+            run_id=run_id,
+            payload={
+                "questionKey": question_key,
+                "why": "缺少这项事实时，不能在后续建议中新增该声明。",
+                "target": "项目/实习经历、相关课程或技能段",
+                "evidenceTypes": ["具体职责", "技术选择", "可验证结果"],
+            },
+        )
+        self.repository.update_session(
+            user_id,
+            session_id,
+            session_status="WAITING_FOR_USER",
+            active_run_id=run_id,
+        )
+        self.repository.append_event(
+            user_id=user_id,
+            session_id=session_id,
+            run_id=run_id,
+            message_id=message["id"],
+            event_type="question",
+            payload={"questionKey": question_key},
+        )
+        self.repository.update_run(user_id=user_id, run_id=run_id, status="PAUSED")
+        return {"status": "WAITING_FOR_USER", "message": message}
 
     @staticmethod
     def _draft_copy(text: str) -> str:
@@ -100,6 +357,7 @@ class ResumeAdvisorGraph:
         model_client: Any | None,
         model_id: str,
         revision_feedback: str = "",
+        context_snapshot: str = "",
         user_id: Any = "default",
         on_delta: Callable[[str], None] | None = None,
         on_cache_event: Callable[[str, bool], None] | None = None,
@@ -120,6 +378,7 @@ class ResumeAdvisorGraph:
             model_client=model_client,
             model_id=model_id,
             revision_feedback=revision_feedback,
+            context_snapshot=context_snapshot,
             user_id=user_id,
             on_delta=on_delta,
             on_cache_event=on_cache_event,
@@ -145,6 +404,25 @@ class ResumeAdvisorGraph:
         except Exception:
             pass
 
+    def _is_cancelled(self, *, user_id: Any, run_id: str) -> bool:
+        checker = getattr(self.repository, "is_run_cancelled", None)
+        if not callable(checker):
+            return False
+        return bool(checker(user_id=user_id, run_id=run_id))
+
+    def _cancelled_result(self, *, user_id: Any, session_id: str, run_id: str) -> dict[str, Any]:
+        run = self._get_run_snapshot(user_id=user_id, run_id=run_id)
+        if str(run.get("status") or "") != "CANCELLED":
+            self.repository.update_run(user_id=user_id, run_id=run_id, status="CANCELLED")
+            self.repository.append_event(
+                user_id=user_id,
+                session_id=session_id,
+                run_id=run_id,
+                event_type="run_cancelled",
+                payload={"stage": "run_control"},
+            )
+        return {"status": "CANCELLED"}
+
     @staticmethod
     def _provider_first_token_ms(model_client: Any) -> int | None:
         value = getattr(model_client, "_internpath_provider_first_token_ms", None)
@@ -156,6 +434,9 @@ class ResumeAdvisorGraph:
         session = self.repository.get_session(user_id, session_id)
         if not session:
             raise LookupError("未找到简历优化会话。")
+
+        if self._is_cancelled(user_id=user_id, run_id=run_id):
+            return self._cancelled_result(user_id=user_id, session_id=session_id, run_id=run_id)
 
         self.repository.update_run(user_id=user_id, run_id=run_id, status="RUNNING")
         run_snapshot = self._get_run_snapshot(user_id=user_id, run_id=run_id)
@@ -174,7 +455,9 @@ class ResumeAdvisorGraph:
         resume_view = self.repository.get_resume_view(user_id, session_id)
         blocks = [block for block in resume_view.get("blocks", []) if isinstance(block, dict)]
         suggestions = self.repository.list_suggestions(user_id, session_id)
-        confirmed_facts = self.repository.list_confirmed_facts(user_id, session_id)
+        session_facts = self._list_session_facts(user_id=user_id, session_id=session_id)
+        confirmed_facts = [fact for fact in session_facts if fact.get("status") == "confirmed"]
+        denied_facts = [fact for fact in session_facts if fact.get("status") == "denied"]
         messages = self.repository.list_turns(user_id, session_id)
         follow_up = next(
             (
@@ -218,8 +501,7 @@ class ResumeAdvisorGraph:
         }
         denied_question_keys = {
             str(fact.get("claimKey") or "")
-            for fact in confirmed_facts
-            if fact.get("status") == "denied"
+            for fact in denied_facts
         }
         denied_blocks = {
             question_key.split(":", 2)[1]
@@ -239,10 +521,11 @@ class ResumeAdvisorGraph:
                 if str(value or "")
             }
 
+        ranking_requirements = _jd_requirements(str(session.get("jdText") or ""))
         candidates = [
             block
             for block in blocks
-            if block.get("kind") in {"bullet", "paragraph"}
+            if _is_editable_candidate(block)
             and block_reference_ids(block).isdisjoint(rejected_blocks)
             and block_reference_ids(block).isdisjoint(denied_blocks)
             and block_reference_ids(block).isdisjoint(completed_blocks)
@@ -251,6 +534,8 @@ class ResumeAdvisorGraph:
         if revision_request:
             requested_block_id = str(revision_request.get("target", {}).get("blockId") or "")
             candidates = [block for block in blocks if requested_block_id in block_reference_ids(block)]
+        else:
+            candidates = self._rank_candidate_blocks(candidates, ranking_requirements)
         revision_feedback = str(latest_user_message.get("content") or "") if implicit_revision and latest_user_message else next(
             (
                 str(message.get("content") or "")
@@ -261,66 +546,44 @@ class ResumeAdvisorGraph:
             ),
             "",
         )
+        asked_keys = {
+            str(message.get("payload", {}).get("questionKey") or "")
+            for message in messages
+            if isinstance(message.get("payload"), dict)
+        }
+        missing_requirement = self._next_missing_requirement(
+            requirements=ranking_requirements,
+            blocks=blocks,
+            confirmed_facts=confirmed_facts,
+            denied_facts=denied_facts,
+            asked_keys=asked_keys,
+        )
+
+        # If the resume has no JD-relevant editable evidence at all, clarify the
+        # most important gap before polishing an unrelated sentence.
+        if (
+            candidates
+            and not revision_request
+            and not any(_block_requirement_matches(block, ranking_requirements) for block in candidates)
+            and missing_requirement
+        ):
+            return self._ask_for_requirement_evidence(
+                user_id=user_id,
+                session_id=session_id,
+                run_id=run_id,
+                requirement=missing_requirement,
+            )
 
         if not candidates:
             applied_exists = any(suggestion.get("status") == "applied" for suggestion in suggestions)
-            resume_text = "\n".join(str(block.get("text") or "") for block in blocks).lower()
-            asked_keys = {
-                str(message.get("payload", {}).get("questionKey") or "")
-                for message in messages
-                if isinstance(message.get("payload"), dict)
-            }
-            denied_values = "\n".join(
-                str(fact.get("claimValue") or "")
-                for fact in confirmed_facts
-                if fact.get("status") == "denied"
-            ).lower()
-            missing_requirement = next(
-                (
-                    requirement
-                    for requirement in _jd_requirements(str(session.get("jdText") or ""))
-                    if requirement.lower() not in resume_text
-                    and requirement.lower() not in denied_values
-                    and f"requirement:{requirement.lower()}" not in denied_question_keys
-                    and f"requirement:{requirement.lower()}" not in asked_keys
-                ),
-                None,
-            )
-            if applied_exists and missing_requirement:
-                question_key = f"requirement:{missing_requirement.lower()}"
-                message = self.repository.append_turn(
-                    user_id=user_id,
-                    session_id=session_id,
-                    role="assistant",
-                    content=(
-                        f"JD 强调「{missing_requirement}」。你是否有可核验的相关职责、技术选择或结果？"
-                        "如果没有，请选择“没有这项经历”；我会保留这个真实缺口，不会把 JD 当作你的事实。"
-                    ),
-                    message_kind="question",
-                    run_id=run_id,
-                    payload={
-                        "questionKey": question_key,
-                        "why": "缺少这项事实时，不能在后续建议中新增该声明。",
-                        "target": "下一处简历优化建议",
-                        "evidenceTypes": ["具体职责", "技术选择", "可验证结果"],
-                    },
-                )
-                self.repository.update_session(
-                    user_id,
-                    session_id,
-                    session_status="WAITING_FOR_USER",
-                    active_run_id=run_id,
-                )
-                self.repository.append_event(
+            editable_content_exists = any(_is_editable_candidate(block) for block in blocks)
+            if missing_requirement and (applied_exists or editable_content_exists):
+                return self._ask_for_requirement_evidence(
                     user_id=user_id,
                     session_id=session_id,
                     run_id=run_id,
-                    message_id=message["id"],
-                    event_type="question",
-                    payload={"questionKey": question_key},
+                    requirement=missing_requirement,
                 )
-                self.repository.update_run(user_id=user_id, run_id=run_id, status="PAUSED")
-                return {"status": "WAITING_FOR_USER", "message": message}
 
             message = self.repository.append_turn(
                 user_id=user_id,
@@ -350,6 +613,57 @@ class ResumeAdvisorGraph:
 
         block = candidates[0]
         original_text = str(block.get("text") or "").strip()
+        supporting_blocks = self._supporting_evidence_blocks(
+            current_block=block,
+            all_blocks=blocks,
+            requirements=ranking_requirements,
+        )
+        supporting_evidence_block_ids = [
+            str(item.get("id") or "")
+            for item in supporting_blocks
+            if str(item.get("id") or "")
+        ]
+        preferences: list[str] = []
+        try:
+            from backend.memory.preference_db import PreferenceDB
+
+            preference_db = PreferenceDB(db=getattr(self.repository, "db", None))
+            preferences = list(dict.fromkeys([
+                *preference_db.get_preferences(user_id, "resume_advisor"),
+                *preference_db.get_preferences(user_id, str(block.get("sectionId") or "resume_advisor")),
+            ]))
+        except Exception:
+            preferences = []
+        context_snapshot = build_advisor_context_snapshot(
+            current_block=block,
+            jd_requirements=_jd_requirements(str(session.get("jdText") or "")),
+            messages=messages,
+            facts=confirmed_facts,
+            preferences=preferences,
+            max_chars=Config.ADVISOR_CONTEXT_MAX_CHARS,
+            recent_turn_limit=Config.ADVISOR_CONTEXT_RECENT_TURNS,
+        )
+        self._merge_run_telemetry(
+            user_id=user_id,
+            run_id=run_id,
+            telemetry={
+                "contextVersion": context_snapshot["version"],
+                "contextHash": context_snapshot["hash"],
+                "contextChars": context_snapshot["characterCount"],
+                "compactedMessageCount": context_snapshot["compactedMessageCount"],
+            },
+        )
+        supplementary_evidence = "\n".join(
+            f"- {str(item.get('locationLabel') or item.get('sectionName') or '简历内容')}: {str(item.get('text') or '').strip()}"
+            for item in supporting_blocks[1:]
+            if str(item.get("text") or "").strip()
+        )
+        context_prompt = str(context_snapshot["promptText"])
+        if supplementary_evidence:
+            context_prompt = (
+                f"{context_prompt}\n\n[同份简历中可核验的补充证据]\n"
+                f"{supplementary_evidence[:1200]}"
+            )
 
         def record_cache_event(namespace: str, hit: bool) -> None:
             self.repository.append_event(
@@ -421,34 +735,67 @@ class ResumeAdvisorGraph:
                 },
             )
 
-        extract_call_id, extract_started_at = emit_tool_call("extract_jd_requirements", "jd_requirements")
-        try:
-            requirements = decode_jd_requirements(
-                jd_text=str(session.get("jdText") or ""),
-                fallback_requirements=_jd_requirements(str(session.get("jdText") or "")),
-                model_client=model_client,
-                model_id=model_id,
-                allow_model_call=False,
-                on_cache_event=record_cache_event,
+        def execute_operation(
+            *,
+            tool_name: str,
+            stage: str,
+            arguments: dict[str, Any],
+            handler: Callable[[], dict[str, Any]],
+        ) -> dict[str, Any]:
+            call_id, started_at = emit_tool_call(tool_name, stage)
+            outcome = self.tool_runtime.execute(
+                name=tool_name,
+                user_id=user_id,
+                session_id=session_id,
+                trace_id=str(run_snapshot.get("traceId") or session.get("traceId") or ""),
+                arguments=arguments,
+                handler=handler,
             )
-        except Exception as exc:
+            if outcome.get("ok"):
+                data = outcome.get("data") if isinstance(outcome.get("data"), dict) else {}
+                public_data = (
+                    {"requirementCount": len(data.get("requirements", []))}
+                    if tool_name == "extract_jd_requirements"
+                    else {key: value for key, value in data.items() if key != "raw"}
+                )
+                emit_tool_result(
+                    call_id=call_id,
+                    tool_name=tool_name,
+                    stage=stage,
+                    started_at=started_at,
+                    ok=True,
+                    summary={"meta": outcome.get("meta", {}), **public_data},
+                )
+                return data
+            error = outcome.get("error") if isinstance(outcome.get("error"), dict) else {}
             emit_tool_result(
-                call_id=extract_call_id,
-                tool_name="extract_jd_requirements",
-                stage="jd_requirements",
-                started_at=extract_started_at,
+                call_id=call_id,
+                tool_name=tool_name,
+                stage=stage,
+                started_at=started_at,
                 ok=False,
-                summary=_public_error_summary(exc),
+                summary={"code": str(error.get("code") or "tool_execution_failed")},
             )
-            raise
-        emit_tool_result(
-            call_id=extract_call_id,
+            raise RuntimeError(str(error.get("message") or f"Advisor tool failed: {tool_name}"))
+
+        if self._is_cancelled(user_id=user_id, run_id=run_id):
+            return self._cancelled_result(user_id=user_id, session_id=session_id, run_id=run_id)
+        requirements_result = execute_operation(
             tool_name="extract_jd_requirements",
             stage="jd_requirements",
-            started_at=extract_started_at,
-            ok=True,
-            summary={"requirementCount": len(requirements)},
+            arguments={"jdText": str(session.get("jdText") or "")},
+            handler=lambda: {
+                "requirements": decode_jd_requirements(
+                    jd_text=str(session.get("jdText") or ""),
+                    fallback_requirements=_jd_requirements(str(session.get("jdText") or "")),
+                    model_client=model_client,
+                    model_id=model_id,
+                    allow_model_call=False,
+                    on_cache_event=record_cache_event,
+                )
+            },
         )
+        requirements = [str(item) for item in requirements_result.get("requirements", [])]
         self.repository.append_event(
             user_id=user_id,
             session_id=session_id,
@@ -528,6 +875,8 @@ class ResumeAdvisorGraph:
             pending_chars += len(delta)
             flush_model_delta()
 
+        if self._is_cancelled(user_id=user_id, run_id=run_id):
+            return self._cancelled_result(user_id=user_id, session_id=session_id, run_id=run_id)
         try:
             draft = self._draft_suggestion(
                 original_text,
@@ -536,6 +885,7 @@ class ResumeAdvisorGraph:
                 model_client=model_client,
                 model_id=model_id,
                 revision_feedback=revision_feedback,
+                context_snapshot=context_prompt,
                 user_id=user_id,
                 on_delta=on_model_delta,
                 on_cache_event=record_cache_event,
@@ -543,37 +893,28 @@ class ResumeAdvisorGraph:
             )
         finally:
             flush_model_delta(force=True)
+        if self._is_cancelled(user_id=user_id, run_id=run_id):
+            return self._cancelled_result(user_id=user_id, session_id=session_id, run_id=run_id)
         copy_text = draft.proposed_text
-        verification_call_id, verification_started_at = emit_tool_call(
-            "verify_suggestion_facts",
-            "fact_verification",
-        )
-        try:
-            verification = verify_suggestion_facts(
-                original_text=original_text,
-                proposed_text=copy_text,
-                resume_evidence_texts=[original_text],
-                confirmed_facts=confirmed_facts,
-                jd_text=str(session.get("jdText") or ""),
-            )
-        except Exception as exc:
-            emit_tool_result(
-                call_id=verification_call_id,
-                tool_name="verify_suggestion_facts",
-                stage="fact_verification",
-                started_at=verification_started_at,
-                ok=False,
-                summary=_public_error_summary(exc),
-            )
-            raise
-        emit_tool_result(
-            call_id=verification_call_id,
+        if self._is_cancelled(user_id=user_id, run_id=run_id):
+            return self._cancelled_result(user_id=user_id, session_id=session_id, run_id=run_id)
+        verification_holder: dict[str, Any] = {}
+        execute_operation(
             tool_name="verify_suggestion_facts",
             stage="fact_verification",
-            started_at=verification_started_at,
-            ok=True,
-            summary={"status": verification.status, "issueCount": len(verification.fact_issues)},
+            arguments={"blockId": str(block.get("id") or "")},
+            handler=lambda: _verify_with_holder(
+                verification_holder,
+                original_text=original_text,
+                proposed_text=copy_text,
+                confirmed_facts=confirmed_facts,
+                jd_text=str(session.get("jdText") or ""),
+                resume_evidence_texts=[str(item.get("text") or "") for item in supporting_blocks],
+            ),
         )
+        verification = verification_holder["value"]
+        if self._is_cancelled(user_id=user_id, run_id=run_id):
+            return self._cancelled_result(user_id=user_id, session_id=session_id, run_id=run_id)
         if verification.status != "supported":
             issues = [issue.message for issue in verification.fact_issues]
             question_key = f"fact:{block['id']}:{'|'.join(issue.claim for issue in verification.fact_issues)}"
@@ -612,9 +953,15 @@ class ResumeAdvisorGraph:
             self.repository.update_run(user_id=user_id, run_id=run_id, status="PAUSED")
             return {"status": "WAITING_FOR_USER", "message": message}
 
-        quality_call_id, quality_started_at = emit_tool_call("hr_quality_review", "quality_review")
-        try:
-            quality = review_with_hr_critic(
+        if self._is_cancelled(user_id=user_id, run_id=run_id):
+            return self._cancelled_result(user_id=user_id, session_id=session_id, run_id=run_id)
+        quality_holder: dict[str, Any] = {}
+        execute_operation(
+            tool_name="hr_quality_review",
+            stage="quality_review",
+            arguments={"blockId": str(block.get("id") or "")},
+            handler=lambda: _review_with_holder(
+                quality_holder,
                 original_text=original_text,
                 proposed_text=copy_text,
                 section_name=str(block.get("sectionName") or "其他"),
@@ -623,34 +970,13 @@ class ResumeAdvisorGraph:
                 model_id=model_id,
                 on_cache_event=record_cache_event,
                 on_provider_usage=record_provider_usage,
-            )
-        except Exception as exc:
-            emit_tool_result(
-                call_id=quality_call_id,
-                tool_name="hr_quality_review",
-                stage="quality_review",
-                started_at=quality_started_at,
-                ok=False,
-                summary=_public_error_summary(exc),
-            )
-            raise
-        emit_tool_result(
-            call_id=quality_call_id,
-            tool_name="hr_quality_review",
-            stage="quality_review",
-            started_at=quality_started_at,
-            ok=True,
-            summary={
-                "isPassed": quality.is_passed,
-                "score": quality.score,
-                "issueCount": len(quality.issues),
-                "reviewer": quality.reviewer,
-            },
+            ),
         )
+        quality = quality_holder["value"]
         local_quality = review_suggestion_quality(
             original_text=original_text,
             proposed_text=copy_text,
-            evidence_block_ids=[str(block["id"])],
+            evidence_block_ids=supporting_evidence_block_ids,
             fact_status=verification.status,
         )
         if not local_quality.is_passed:
@@ -688,6 +1014,9 @@ class ResumeAdvisorGraph:
             )
             self.repository.update_run(user_id=user_id, run_id=run_id, status="PAUSED")
             return {"status": "WAITING_FOR_USER", "message": message}
+
+        if self._is_cancelled(user_id=user_id, run_id=run_id):
+            return self._cancelled_result(user_id=user_id, session_id=session_id, run_id=run_id)
         location = {
             "blockId": block["id"],
             "sectionId": block.get("sectionId") or "generic_section",
@@ -715,8 +1044,8 @@ class ResumeAdvisorGraph:
                 "rationale": f"{draft.rationale} 已通过事实与质量检查；不引入 JD 中未被简历证据支持的技能、数字或职责。",
                 "expectedImpact": draft.expected_impact,
                 "jdRequirementIds": requirements,
-                "resumeEvidenceBlockIds": [block["id"]],
-                "userFactIds": [],
+                "resumeEvidenceBlockIds": supporting_evidence_block_ids,
+                "userFactIds": self._supporting_user_fact_ids(confirmed_facts, copy_text),
                 "factStatus": verification.status,
                 "factIssues": [issue.message for issue in verification.fact_issues],
                 "status": "proposed",

@@ -278,7 +278,7 @@ def test_service_upload_knowledge_document_and_passes_chunks_to_ai_service(local
 
 def test_service_analyze_jd_with_guardrails_fails_when_ai_service_unavailable(local_tmp_dir, monkeypatch):
     service = _service_with_tmp_user_db(local_tmp_dir, monkeypatch, _FailingAiServiceClient())
-    task_id = "task-ai-service-down"
+    task_id = "tatest-api-key"
 
     with pytest.raises(RuntimeError, match="增强校验服务调用失败"):
         service.analyze_jd_with_guardrails(

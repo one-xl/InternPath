@@ -46,6 +46,9 @@ export function ResumeAdvisorPage() {
   const [activeBlockId, setActiveBlockId] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [deletingResumeId, setDeletingResumeId] = useState<string | null>(null);
+  const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
+  const [cancellingRunId, setCancellingRunId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [liveState, setLiveState] = useState<AdvisorLiveState | null>(null);
   const latestEventSequenceRef = useRef(0);
@@ -202,7 +205,7 @@ export function ResumeAdvisorPage() {
         return;
       }
 
-      if (["message", "suggestion", "suggestion_action", "suggestion_restored", "question", "session_finished", "error"].includes(eventName)) {
+      if (["message", "suggestion", "suggestion_action", "suggestion_restored", "question", "session_finished", "run_cancelled", "error"].includes(eventName)) {
         if (eventName === "error") setError(eventText(payload, "error") || "本轮分析失败，请重试。");
         reconcile(eventName === "error" ? "本轮运行失败" : "本轮回复已完成");
       }
@@ -220,7 +223,7 @@ export function ResumeAdvisorPage() {
       }));
       source = new EventSource(`/api/agent/resume/sessions/${encodeURIComponent(selectedSessionId)}/events?afterSequence=${latestEventSequenceRef.current}`);
       source.onopen = () => setLiveState((current) => current?.runId === activeRunId ? { ...current, active: true, detail: current.detail || "实时连接已建立" } : current);
-      ["message", "suggestion", "suggestion_action", "suggestion_restored", "session_finished", "error", "progress", "question", "model_delta", "cache", "provider_usage", "tool_call", "tool_result"].forEach((name) => {
+      ["message", "suggestion", "suggestion_action", "suggestion_restored", "session_finished", "run_cancelled", "error", "progress", "question", "model_delta", "cache", "provider_usage", "tool_call", "tool_result"].forEach((name) => {
         source?.addEventListener(name, (event) => handleEvent(name, event));
       });
       source.addEventListener("done", () => {
@@ -254,7 +257,7 @@ export function ResumeAdvisorPage() {
     setLiveState({ runId: "pending", active: true, title: "正在提交分析任务", detail: "准备进入专用 Advisor 队列", liveText: "", cacheLabel: "", providerCacheLabel: "", firstTokenMs: null });
     try {
       const result = await resumeAdvisorApi.startSession({ resumeId: selectedResumeId, jdText });
-      setSnapshot({ session: result.session, run: result.run, messages: [], suggestions: [] });
+      setSnapshot({ session: result.session, run: result.run, messages: [], suggestions: [], facts: [] });
       setLiveState({ runId: result.run.id, active: true, title: "任务已进入专用 Advisor 队列", detail: "正在等待模型流连接", liveText: "", cacheLabel: "", providerCacheLabel: "", firstTokenMs: null });
       setSelectedSessionId(result.session.id);
       setJdText("");
@@ -278,6 +281,38 @@ export function ResumeAdvisorPage() {
       setError(reason instanceof Error ? reason.message : "简历上传失败。");
     } finally {
       setUploading(false);
+    }
+  }
+
+  async function deleteResume(resumeId: string) {
+    const resume = resumes.find((item) => item.id === resumeId);
+    if (!window.confirm(`删除简历“${resume?.name || "该简历"}”？该操作不会删除已有会话的不可变快照。`)) return;
+    setDeletingResumeId(resumeId);
+    setError("");
+    try {
+      await resumeAdvisorApi.deleteResume(resumeId);
+      setSelectedResumeId((current) => current === resumeId ? "" : current);
+      await refreshLists();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "删除简历失败。");
+    } finally {
+      setDeletingResumeId(null);
+    }
+  }
+
+  async function deleteSession(sessionId: string) {
+    const session = sessions.find((item) => item.id === sessionId);
+    if (!window.confirm(`删除会话“${session?.title || "简历定向优化"}”？会话中的消息、建议和事件将一并删除。`)) return;
+    setDeletingSessionId(sessionId);
+    setError("");
+    try {
+      await resumeAdvisorApi.deleteSession(sessionId);
+      if (sessionId === selectedSessionId) setSelectedSessionId(null);
+      await refreshLists();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "删除会话失败。");
+    } finally {
+      setDeletingSessionId(null);
     }
   }
 
@@ -319,6 +354,21 @@ export function ResumeAdvisorPage() {
     }
   }
 
+  async function cancelActiveRun() {
+    if (!selectedSessionId || !activeRunId) return;
+    setCancellingRunId(activeRunId);
+    setError("");
+    try {
+      await resumeAdvisorApi.cancelRun(selectedSessionId, activeRunId);
+      setLiveState((current) => current?.runId === activeRunId ? { ...current, active: false, title: "本轮运行已取消", detail: "不会继续写入新的建议" } : current);
+      await Promise.all([refreshSnapshot(selectedSessionId), refreshLists(), refreshSloDashboard()]);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "取消本轮运行失败。");
+    } finally {
+      setCancellingRunId(null);
+    }
+  }
+
   const suggestions = useMemo(() => snapshot?.suggestions || [], [snapshot?.suggestions]);
   function focusSuggestion(suggestion: ResumeSuggestion) {
     setActiveBlockId(suggestion.target.blockId);
@@ -352,6 +402,10 @@ export function ResumeAdvisorPage() {
           starting={starting}
           onUpload={(file) => void uploadResume(file)}
           uploading={uploading}
+          onDeleteResume={(resumeId) => void deleteResume(resumeId)}
+          deletingResumeId={deletingResumeId}
+          onDeleteSession={(sessionId) => void deleteSession(sessionId)}
+          deletingSessionId={deletingSessionId}
         />
         <section className="resume-advisor-main">
           <ConversationThread
@@ -361,6 +415,7 @@ export function ResumeAdvisorPage() {
             onFocusSuggestion={focusSuggestion}
             onQuestionAnswer={(answer, remember) => sendMessage(answer, "fact", remember)}
             streamingContent={liveState?.runId === activeRunId ? liveState.liveText : ""}
+            facts={snapshot?.facts || []}
           />
           <AgentActivityBar activity={liveState ? {
             active: liveState.active,
@@ -370,6 +425,7 @@ export function ResumeAdvisorPage() {
             providerCacheLabel: liveState.providerCacheLabel,
             firstTokenMs: liveState.firstTokenMs,
           } : isWaitingForAgent ? { active: true, title: "等待 GPT 首 token" } : null} />
+          {["QUEUED", "RUNNING", "PAUSED"].includes(activeRunStatus) && <button type="button" className="resume-advisor-danger-button resume-advisor-cancel-run" onClick={() => void cancelActiveRun()} disabled={cancellingRunId === activeRunId}>取消本轮运行</button>}
           {readyToFinish && <div className="resume-advisor-finish"><strong>已完成当前可验证的检查。</strong><button type="button" className="primary" onClick={() => void finishSession()}>我满意了，结束本次优化</button></div>}
           <MessageComposer onSend={sendMessage} disabled={!selectedSessionId || isClosed} />
         </section>

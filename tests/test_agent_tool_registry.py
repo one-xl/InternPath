@@ -1,4 +1,5 @@
 import json
+import time
 
 import pytest
 
@@ -153,6 +154,26 @@ def test_registry_validates_required_and_unknown_arguments(tmp_path, monkeypatch
     assert "Missing required tool argument" in missing["error"]
     assert unknown["ok"] is False
     assert "Unknown tool argument" in unknown["error"]
+
+
+def test_registry_returns_on_tool_deadline_without_waiting_for_a_blocked_read():
+    registry = AgentToolRegistry([
+        AgentToolSpec(
+            name="slow_read",
+            description="A deliberately slow read for timeout behavior.",
+            parameters_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            handler=lambda _ctx, _arguments: (time.sleep(0.2), {"ok": True})[1],
+            read_only=True,
+            timeout_seconds=0.01,
+        )
+    ])
+
+    started_at = time.perf_counter()
+    result = registry.execute("slow_read", {}, AgentToolContext(user_id="u1", task_id="t1"))
+
+    assert time.perf_counter() - started_at < 0.15
+    assert result["ok"] is False
+    assert "Tool exceeded" in result["error"]
 
 
 def test_registry_retries_read_tools_and_enforces_confirmation():

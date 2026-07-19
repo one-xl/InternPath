@@ -53,6 +53,11 @@ def test_section_for_line_accepts_inline_and_decorated_headings():
     assert section_for_line("项目经历包括接口开发和性能优化") is None
 
 
+def test_section_for_line_keeps_job_objective_and_coursework_out_of_self_evaluation():
+    assert section_for_line("求职意向：后端开发实习生") == "求职意向"
+    assert section_for_line("核心课程：数据结构、数据库系统原理") == "核心课程"
+
+
 def test_chunk_resume_exposes_structured_section_metadata_for_retrieval():
     text = clean_resume_text(
         """基本信息

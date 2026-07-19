@@ -28,7 +28,7 @@ def _mark_resume_advisor_run_started(*, run_id: str, user_id: Any) -> None:
             """
             UPDATE agent_resume_runs
             SET status = 'RUNNING', started_at = COALESCE(started_at, ?)
-            WHERE id = ? AND user_id = ?
+            WHERE id = ? AND user_id = ? AND status = 'QUEUED'
             """,
             (now, run_id, str(user_id)),
         )

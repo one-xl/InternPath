@@ -94,6 +94,8 @@ class AnalyzeRequest(BaseModel):
     jd_text: str = Field(..., min_length=20)
     resume_text: str = ""
     knowledge_document_ids: list[int] = Field(default_factory=list)
+    project_knowledge_scope: Literal["all", "selected", "none"] = "none"
+    project_knowledge_document_ids: list[int] = Field(default_factory=list)
     expert_options: dict[str, bool] = Field(default_factory=dict)
     draft_id: Optional[str] = None
     async_mode: bool = True
@@ -105,6 +107,8 @@ class BackgroundAnalysisStartRequest(BaseModel):
     resume_file_id: str
     embedding_config_id: Optional[str] = None
     chat_config_id: Optional[str] = None
+    project_knowledge_scope: Literal["all", "selected", "none"] = "none"
+    project_knowledge_document_ids: list[int] = Field(default_factory=list)
     enable_agent_resume: bool = False
     legacy_artifact_mode: bool = False
 
@@ -269,6 +273,15 @@ class ModelProxyRequest(BaseModel):
     requestBody: dict[str, Any]
     endpoint: Optional[str] = None
     configId: Optional[str] = None
+
+
+async def persist_model_usage_in_background(auth_db: Database, usage: dict[str, Any]) -> None:
+    """Keep non-critical usage auditing out of the request/stream hot path."""
+    try:
+        await asyncio.to_thread(auth_db.log_model_usage, **usage)
+    except Exception as exc:
+        # Do not turn a successful provider response into a failed user request.
+        print(f"[MODEL_USAGE_AUDIT] Failed to persist deferred usage log: {exc}")
 
 
 class TestConnectionRequest(BaseModel):
@@ -2278,23 +2291,29 @@ def create_app(
 
                 analysis_id = payload.requestBody.get("analysis_id") or payload.requestBody.get("analysisId")
 
-                state.auth_db.log_model_usage(
-                    user_id=user_id,
-                    config_id=resolved_config_id,
-                    assignment_id=resolved_assignment_id,
-                    analysis_id=analysis_id,
-                    provider=payload.provider,
-                    model_id=model_id,
-                    usage_type="chat",
-                    endpoint=None,
-                    success=success,
-                    error_type=error_type,
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
-                    total_tokens=total_tokens,
-                    input_chars=input_chars,
-                    output_chars=output_chars,
-                    latency_ms=duration
+                asyncio.create_task(
+                    persist_model_usage_in_background(
+                        state.auth_db,
+                        {
+                            "user_id": user_id,
+                            "config_id": resolved_config_id,
+                            "assignment_id": resolved_assignment_id,
+                            "analysis_id": analysis_id,
+                            "provider": payload.provider,
+                            "model_id": model_id,
+                            "usage_type": "chat",
+                            "endpoint": None,
+                            "success": success,
+                            "error_type": error_type,
+                            "prompt_tokens": prompt_tokens,
+                            "completion_tokens": completion_tokens,
+                            "total_tokens": total_tokens,
+                            "input_chars": input_chars,
+                            "output_chars": output_chars,
+                            "latency_ms": duration,
+                        },
+                    ),
+                    name=f"model-usage-audit-{user_id}",
                 )
             except Exception as e:
                 print(f"[ERROR] Failed to log model usage: {e}")
@@ -2689,8 +2708,12 @@ def create_app(
 
 
     @app.get("/api/materials")
-    def list_materials(user_id: Any = Depends(current_user_id)) -> dict[str, Any]:
-        return {"documents": state.service.list_knowledge_documents(user_id)}
+    def list_materials(
+        source_type: Optional[str] = None,
+        user_id: Any = Depends(current_user_id),
+    ) -> dict[str, Any]:
+        normalized_source_type = source_type.strip().lower() if source_type else None
+        return {"documents": state.service.list_knowledge_documents(user_id, normalized_source_type)}
 
     @app.post("/api/materials")
     async def upload_material(
@@ -2703,6 +2726,7 @@ def create_app(
         if len(content) > 20 * 1024 * 1024:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="上传文件过大，请限制在 20MB 以内。")
         adapter = UploadedFileAdapter(file.filename or "upload.txt", content)
+        source_type = source_type.strip().lower() or "resume"
         try:
             document = await asyncio.to_thread(
                 state.service.upload_knowledge_document, user_id, adapter, source_type, title=title
@@ -2899,6 +2923,8 @@ def create_app(
             payload.resume_file_id,
             payload.embedding_config_id,
             payload.chat_config_id,
+            payload.project_knowledge_scope,
+            payload.project_knowledge_document_ids,
             payload.enable_agent_resume,
             payload.legacy_artifact_mode,
             job_id=payload.record_id,
@@ -3545,7 +3571,7 @@ def create_app(
         request: Request,
         user_id: Any = Depends(current_user_id)
     ):
-        if not state.auth_db.get_agent_resume_task(user_id, task_id):
+        if not await asyncio.to_thread(state.auth_db.get_agent_resume_task, user_id, task_id):
             raise HTTPException(status_code=404, detail="未找到该优化任务")
 
         async def event_stream():
@@ -3560,7 +3586,7 @@ def create_app(
             yield format_sse_event("connected", {
                 "taskId": task_id,
                 "timestamp": datetime.now().isoformat(),
-                "pollIntervalMs": 350,
+                "pollIntervalMs": 250,
                 "message": "事件流已连接，正在同步任务首包。",
             })
 
@@ -3568,7 +3594,13 @@ def create_app(
                 if await request.is_disconnected():
                     break
 
-                task = state.auth_db.get_agent_resume_task(user_id, task_id)
+                # The worker owns persistence.  Keep the ASGI loop free to
+                # flush already-available SSE frames while a snapshot is read.
+                task = await asyncio.to_thread(
+                    state.auth_db.get_agent_resume_task,
+                    user_id,
+                    task_id,
+                )
                 if not task:
                     yield format_sse_event("error", {"message": "任务不存在或已被删除。"})
                     break
@@ -3583,7 +3615,11 @@ def create_app(
                         and str(detail.get("tool_name") or "") == "replace_resume_section"
                         and detail.get("ok") is True
                     ):
-                        patch = read_latest_agent_modification_patch(user_id, task_id)
+                        patch = await asyncio.to_thread(
+                            read_latest_agent_modification_patch,
+                            user_id,
+                            task_id,
+                        )
                         if patch:
                             patch_signature = hashlib.sha1(
                                 json.dumps(patch, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -3599,7 +3635,8 @@ def create_app(
 
                 task_status = str(task.get("status") or "")
                 snapshot_started_at = time.perf_counter()
-                snapshot = serialize_agent_task_summary(
+                snapshot = await asyncio.to_thread(
+                    serialize_agent_task_summary,
                     task,
                     parsed_logs=logs,
                     include_artifacts=task_status in terminal_statuses,
@@ -3608,7 +3645,7 @@ def create_app(
                 snapshot["eventStreamMeta"] = {
                     "snapshotBuildMs": snapshot_build_ms,
                     "artifactMode": "full" if task_status in terminal_statuses else "live",
-                    "pollIntervalMs": 350 if time.perf_counter() - stream_started_at < 8 else 1000,
+                    "pollIntervalMs": 250 if time.perf_counter() - stream_started_at < 3 else 750,
                 }
                 stream_preview = str(snapshot.get("streamPreviewMd") or "")
                 signature = ":".join([
@@ -3664,7 +3701,10 @@ def create_app(
                     })
                     break
 
-                await asyncio.sleep(0.35 if now - stream_started_at < 8 else 1)
+                # A short initial window makes the first tool/thought visible
+                # quickly; then back off because worker log writes are eventful,
+                # not a 3 Hz state feed.
+                await asyncio.sleep(0.25 if now - stream_started_at < 3 else 0.75)
 
         return StreamingResponse(
             event_stream(),

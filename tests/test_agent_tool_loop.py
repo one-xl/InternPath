@@ -533,3 +533,39 @@ def test_native_responses_loop_records_and_reuses_failed_model_input(tmp_path, m
     assert retry_turn.calls[0]["input_items"] == failed_model_input["input_items"]
     assert retry_turn.calls[0]["instructions"] == failed_model_input["instructions"]
     assert retry_turn.calls[0]["previous_response_id"] == failed_model_input["previous_response_id"]
+
+
+def test_native_responses_loop_returns_structured_invalid_argument_feedback(tmp_path, monkeypatch):
+    monkeypatch.setattr(Config, "USER_DB_DIR", str(tmp_path))
+    loop = AgenticToolLoop(AgentToolRegistry(), max_turns=1)
+    ctx = AgentToolContext(user_id="u-invalid-native", task_id="t-invalid-native")
+
+    class InvalidArgumentsNativeTurn:
+        last_provider_usage = {}
+
+        def create(self, _input_items, *, instructions="", previous_response_id="", on_delta=None):
+            return ResponsesNativeTurnResult(
+                response={
+                    "id": "resp-invalid",
+                    "output": [{
+                        "type": "function_call",
+                        "name": "list_workspace_files",
+                        "arguments": "[]",
+                        "call_id": "call-invalid",
+                    }],
+                },
+                response_id="resp-invalid",
+            )
+
+    result = loop.run_native_responses_loop(ctx, InvalidArgumentsNativeTurn())
+
+    assert result.status == "max_turns"
+    failure = next(
+        event
+        for event in result.events
+        if event["type"] == "tool_result" and event.get("failure_code") == "invalid_tool_arguments"
+    )
+    assert failure["ok"] is False
+    assert failure["failure_code"] == "invalid_tool_arguments"
+    assert failure["failure_reason"]
+    assert failure["retryable"] is True

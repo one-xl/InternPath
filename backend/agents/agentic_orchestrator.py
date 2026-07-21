@@ -349,6 +349,8 @@ class AgenticOrchestrator(Orchestrator):
             if event_type == "tool_result":
                 tool_name = str(event.get("tool_name") or "")
                 ok = bool(event.get("ok"))
+                failure_code = str(event.get("failure_code") or "ToolExecutionError")
+                failure_reason = str(event.get("failure_reason") or event.get("error") or "")
                 waiting_for_human = tool_name == "ask_user_for_fact"
                 self._refresh_stream_preview_after_tool(user_id, task_id, tool_name, ok)
                 if not ok and not waiting_for_human and plan_data is not None:
@@ -363,7 +365,9 @@ class AgenticOrchestrator(Orchestrator):
                             "failed_tool_arguments": arguments or {},
                             "failed_model_input_ref": f"turn:{turn or last_tool_call.get('turn') or ''}",
                             "failed_sequence": len(self.logs) + 1,
-                            "error": event.get("error") or "",
+                            "error": failure_reason,
+                            "failure_code": failure_code,
+                            "retryable": bool(event.get("retryable")),
                         },
                         tool_calling_mode=tool_calling_mode,
                     )
@@ -371,13 +375,21 @@ class AgenticOrchestrator(Orchestrator):
                     task_id,
                     user_id,
                     "tool_response" if ok or waiting_for_human else "error",
-                    f"Tool {tool_name} {'is waiting for user input' if waiting_for_human else ('completed' if ok else 'failed')}.",
+                    (
+                        f"Tool {tool_name} is waiting for user input."
+                        if waiting_for_human
+                        else (
+                            f"Tool {tool_name} completed."
+                            if ok
+                            else f"Tool {tool_name} failed ({failure_code}): {failure_reason or 'no reason returned'}"
+                        )
+                    ),
                     event,
                     stage="tool_result",
                     agent="AgenticToolLoop",
                     duration_ms=int(event.get("duration_ms") or 0),
                     status="waiting" if waiting_for_human else ("completed" if ok else "failed"),
-                    error_type="" if ok or waiting_for_human else "ToolExecutionError",
+                    error_type="" if ok or waiting_for_human else failure_code,
                 )
                 return
             if event_type == "error":

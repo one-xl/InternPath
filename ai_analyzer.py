@@ -8,6 +8,7 @@ import httpx
 from openai import APIConnectionError, APITimeoutError, AuthenticationError, OpenAI
 
 from backend.agents.base import BaseAgent
+from backend.memory import ContextManager
 from config import Config
 from models import (
     FitExamPaper,
@@ -60,6 +61,41 @@ def _usage_value(usage: Any, key: str) -> int:
         return 0
 
 
+def _format_bounded_llm_context(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Preserve system instructions while bounding any supplied chat history."""
+    system_parts = [
+        str(item.get("content") or "").strip()
+        for item in messages
+        if str(item.get("role") or "").strip().lower() == "system"
+    ]
+    conversation = [
+        item
+        for item in messages
+        if str(item.get("role") or "").strip().lower() != "system"
+    ]
+    result = ContextManager().format_for_llm(
+        conversation,
+        "\n\n".join(part for part in system_parts if part),
+        return_metadata=True,
+    )
+    metadata = result.metadata
+    if metadata["compacted"] or metadata["fusion_applied"]:
+        print(
+            "[LLM_CONTEXT] "
+            + json.dumps(
+                {
+                    "compacted": metadata["compacted"],
+                    "sourceMessageCount": metadata["source_message_count"],
+                    "compactedMessageCount": metadata["compacted_message_count"],
+                    "fusionApplied": metadata["fusion_applied"],
+                    "truncated": metadata["truncated"],
+                },
+                ensure_ascii=False,
+            )
+        )
+    return result.messages
+
+
 def _call_openai_text(
     client: OpenAI,
     model: str,
@@ -69,6 +105,7 @@ def _call_openai_text(
     response_format: Optional[dict[str, Any]] = None,
     max_tokens: Optional[int] = None,
 ) -> tuple[str, dict[str, int]]:
+    messages = _format_bounded_llm_context(messages)
     mode = BaseAgent._normalize_stream_api_mode(
         getattr(client, "_internpath_stream_api_mode", None)
     )

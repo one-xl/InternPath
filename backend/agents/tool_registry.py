@@ -135,6 +135,18 @@ def _tool_error_code(error: str) -> str:
     return "tool_execution_failed"
 
 
+def _tool_failure_retryable(error_code: str, tool: "AgentToolSpec") -> bool:
+    """Only retry idempotent/read-only failures automatically.
+
+    The value is returned to both the model and the event trace so a failed
+    write is never presented as something the runner may safely replay.
+    """
+    return (
+        tool.side_effect == AgentToolSideEffect.READ
+        and error_code in {"tool_timeout", "tool_execution_failed"}
+    )
+
+
 class _NoArguments(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -821,6 +833,7 @@ class AgentToolRegistry:
             ok = False
             error = str(exc)
         duration_ms = int((time.perf_counter() - started_at) * 1000)
+        failure_code = "" if ok else _tool_error_code(error)
         return {
             "tool_name": name,
             "ok": ok,
@@ -836,6 +849,9 @@ class AgentToolRegistry:
             "requires_confirmation": tool.requires_confirmation,
             "idempotency_key": idempotency_key,
             "attempts": attempts,
+            "failure_code": failure_code,
+            "failure_reason": error if not ok else "",
+            "retryable": _tool_failure_retryable(failure_code, tool) if not ok else False,
         }
 
     def execute_profiled(self, name: str, arguments: JsonDict, ctx: AgentToolContext) -> JsonDict:

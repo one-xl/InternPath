@@ -217,6 +217,30 @@ def _function_call_output(call_id: str, tool_result: dict[str, Any]) -> dict[str
     }
 
 
+def _native_tool_failure(
+    tool_name: str,
+    error: Exception | str,
+    *,
+    failure_code: str,
+    retryable: bool,
+) -> dict[str, Any]:
+    """Build the failure contract returned to the model and persisted in traces."""
+    reason = str(error)
+    return {
+        "tool_name": tool_name,
+        "ok": False,
+        "result": None,
+        "error": reason,
+        "failure_code": failure_code,
+        "failure_reason": reason,
+        "retryable": retryable,
+        "duration_ms": 0,
+        "preview": reason,
+        "read_only": False,
+        "requires_confirmation": False,
+    }
+
+
 def _retry_failure_tool(retry_failure_point: dict[str, Any] | None) -> tuple[str, dict[str, Any], int, int]:
     if not isinstance(retry_failure_point, dict):
         return "", {}, 0, 0
@@ -911,16 +935,12 @@ class AgenticToolLoop:
                     arguments = _parse_native_tool_arguments(raw_arguments)
                 except Exception as exc:
                     arguments = {}
-                    tool_result = {
-                        "tool_name": tool_name,
-                        "ok": False,
-                        "result": None,
-                        "error": str(exc),
-                        "duration_ms": 0,
-                        "preview": str(exc),
-                        "read_only": False,
-                        "requires_confirmation": False,
-                    }
+                    tool_result = _native_tool_failure(
+                        tool_name,
+                        exc,
+                        failure_code="invalid_tool_arguments",
+                        retryable=True,
+                    )
                     emit({
                         "type": "tool_call",
                         "turn": turn_index,
@@ -942,16 +962,12 @@ class AgenticToolLoop:
                 try:
                     tool_result = self.registry.execute(tool_name, arguments, ctx)
                 except Exception as exc:
-                    tool_result = {
-                        "tool_name": tool_name,
-                        "ok": False,
-                        "result": None,
-                        "error": str(exc),
-                        "duration_ms": 0,
-                        "preview": str(exc),
-                        "read_only": False,
-                        "requires_confirmation": False,
-                    }
+                    tool_result = _native_tool_failure(
+                        tool_name,
+                        exc,
+                        failure_code="tool_runner_exception",
+                        retryable=False,
+                    )
                 emit({"type": "tool_result", "turn": turn_index, **tool_result})
                 tool_outputs.append(_function_call_output(call_id, tool_result))
 

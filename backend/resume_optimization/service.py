@@ -105,6 +105,7 @@ class ResumeOptimizationService:
         context = {
             "jd": session["jdText"],
             "userMessage": message,
+            "resumeBlocks": session.get("blocks", []),
             "hr": session["state"].get("hr", {}),
             "diffs": session["state"].get("diffs", []),
             "evidence": session["state"].get("evidence", [])[:6],

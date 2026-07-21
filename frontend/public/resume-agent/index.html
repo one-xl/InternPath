@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Minimal Agent Runtime Web App - 生心科技笔试演示</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <!-- 顶栏 -->
+        <header class="app-header">
+            <div class="brand">
+                <div class="logo-icon">⚡</div>
+                <div class="brand-text">
+                    <h1>Minimal Agent Runtime</h1>
+                    <span class="badge">Zero-Framework Agent Engine</span>
+                </div>
+            </div>
+            <div class="header-right">
+                <div class="header-status">
+                    <span class="status-dot online" id="statusDot"></span>
+                    <span class="status-text" id="statusText">Mode: Mock</span>
+                </div>
+                <button class="config-btn" id="openConfigBtn">⚙️ 大模型 API 配置</button>
+            </div>
+        </header>
+
+        <!-- 主体区域 -->
+        <div class="main-layout">
+            <!-- 左侧/中部：对话主区 -->
+            <main class="chat-section">
+                <!-- Session 窗口标签切换栏 -->
+                <div class="session-tabs-bar">
+                    <div class="tabs-list" id="sessionTabs">
+                        <button class="tab-btn active" data-session="window_1">
+                            <span class="tab-icon">💬</span> 窗口 1 (天气/待办)
+                        </button>
+                        <button class="tab-btn" data-session="window_2">
+                            <span class="tab-icon">📝</span> 窗口 2 (周报/待办)
+                        </button>
+                    </div>
+                    <button class="add-tab-btn" id="newSessionBtn" title="新建 Session 窗口">+ 新建窗口</button>
+                </div>
+
+                <!-- 消息滚动列表 -->
+                <div class="messages-container" id="messagesList">
+                    <!-- 初始 Welcome 欢迎卡片 -->
+                    <div class="welcome-card">
+                        <h2>🚀 欢迎体验自主 Agent 引擎</h2>
+                        <p>本系统已支持配置任意 OpenAI 兼容的真实大模型 API（如 DeepSeek, Qwen, OpenAI 等）。可随时点击右上角<b>【⚙️ 大模型 API 配置】</b>接入真实大模型进行真实 Agent 思考与工具调度！</p>
+                        <div class="quick-prompts">
+                            <button class="quick-btn" onclick="sendQuickPrompt('帮我查一下北京的天气，然后记一条出行待办')">
+                                ☀️ 查北京天气并记待办 (窗口 1)
+                            </button>
+                            <button class="quick-btn" onclick="sendQuickPrompt('我今天需要写周报，帮我记一条写周报的待办事项')">
+                                📝 写周报记待办 (窗口 2)
+                            </button>
+                            <button class="quick-btn" onclick="sendQuickPrompt('计算 12 * (34 + 56) 等于多少')">
+                                🧮 复杂数学计算测试
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 底部输入框 -->
+                <div class="input-container">
+                    <form id="chatForm" class="input-form">
+                        <input 
+                            type="text" 
+                            id="userInput" 
+                            placeholder="输入您的指令（例如: 查天气、算公式、记待办...）" 
+                            autocomplete="off"
+                            required
+                        >
+                        <button type="submit" id="sendBtn">
+                            <span>发送指令</span>
+                            <span class="send-icon">➔</span>
+                        </button>
+                    </form>
+                </div>
+            </main>
+
+            <!-- 右侧：动态窗口待办与上下文监控 -->
+            <aside class="sidebar-section">
+                <!-- 大模型配置概览卡片 -->
+                <div class="panel-card model-panel">
+                    <div class="panel-header">
+                        <h3>🤖 当前模型配置</h3>
+                        <span class="session-tag" id="activeModelTag">gpt-4o-mini</span>
+                    </div>
+                    <p class="panel-desc" id="modelModeDesc">当前处于 Mock 调试模式。可配置 API Key 开启真实 API 调用。</p>
+                </div>
+
+                <!-- 待办事项卡片 -->
+                <div class="panel-card todo-panel">
+                    <div class="panel-header">
+                        <h3>📌 当前窗口待办事项</h3>
+                        <span class="session-tag" id="currentSessionTag">window_1</span>
+                    </div>
+                    <div class="todo-list" id="todoList">
+                        <div class="empty-state">暂无待办事项</div>
+                    </div>
+                </div>
+
+                <!-- 运行时工具面板 -->
+                <div class="panel-card tools-panel">
+                    <div class="panel-header">
+                        <h3>🛠️ 已注册 Agent 工具</h3>
+                    </div>
+                    <div class="tools-grid">
+                        <div class="tool-chip">
+                            <span class="chip-name">calculator</span>
+                            <span class="chip-desc">数学计算器</span>
+                        </div>
+                        <div class="tool-chip">
+                            <span class="chip-name">search</span>
+                            <span class="chip-desc">知识库搜索</span>
+                        </div>
+                        <div class="tool-chip">
+                            <span class="chip-name">todo</span>
+                            <span class="chip-desc">Session待办</span>
+                        </div>
+                        <div class="tool-chip">
+                            <span class="chip-name">weather</span>
+                            <span class="chip-desc">天气实时查询</span>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+        </div>
+    </div>
+
+    <!-- ⚙️ 大模型 API 配置 Modal 弹窗 -->
+    <div class="modal-overlay" id="configModal">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h2>⚙️ 配置真实大模型 API</h2>
+                <button class="close-btn" id="closeConfigBtn">&times;</button>
+            </div>
+            <form id="configForm" class="modal-body">
+                <div class="form-group">
+                    <label for="cfgApiKey">API Key <span class="required">*</span></label>
+                    <div class="input-with-eye">
+                        <input type="password" id="cfgApiKey" placeholder="sk-..." required>
+                        <button type="button" class="toggle-eye-btn" id="toggleKeyBtn">👁️</button>
+                    </div>
+                    <small class="form-tip">支持 OpenAI, DeepSeek, Qwen(DashScope), Moonshot 等标准 OpenAI 兼容 Key。</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="cfgBaseUrl">Base URL (接口地址)</label>
+                    <input type="text" id="cfgBaseUrl" placeholder="https://api.openai.com/v1">
+                    <!-- 快捷填入预设按钮 -->
+                    <div class="presets-group">
+                        <span class="form-tip" style="align-self: center;">快捷预设:</span>
+                        <button type="button" class="preset-chip" onclick="applyPreset('https://api.deepseek.com/v1', 'deepseek-chat')">DeepSeek</button>
+                        <button type="button" class="preset-chip" onclick="applyPreset('https://dashscope.aliyuncs.com/compatible-mode/v1', 'qwen-max')">通义千问 Qwen</button>
+                        <button type="button" class="preset-chip" onclick="applyPreset('https://api.openai.com/v1', 'gpt-4o-mini')">OpenAI</button>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="cfgModel">Model 名称</label>
+                    <input type="text" id="cfgModel" placeholder="gpt-4o-mini" value="gpt-4o-mini" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="cfgTemp">Temperature (随机度):</label>
+                    <div class="slider-group">
+                        <input type="range" id="cfgTemp" min="0" max="1" step="0.05" value="0.2">
+                        <span id="tempVal">0.2</span>
+                    </div>
+                </div>
+
+                <div class="modal-actions">
+                    <button type="button" class="btn-secondary" id="clearKeyBtn">重置为 Mock 模式</button>
+                    <button type="submit" class="btn-primary">💾 保存并连接大模型</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+    <!-- 右键上下文删除菜单 -->
+    <div id="tabContextMenu" class="context-menu">
+        <div class="context-menu-item danger" id="deleteTabBtn">
+            <span>🗑️</span> 删除此窗口 Session
+        </div>
+    </div>
+
+</body>
+</html>

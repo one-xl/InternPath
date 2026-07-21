@@ -14,48 +14,6 @@ from backend.task_queue import get_redis_connection
 from service import CareerPathAIService
 
 
-_resume_advisor_module: Any | None = None
-_resume_advisor_module_lock = Lock()
-
-
-def _mark_resume_advisor_run_started(*, run_id: str, user_id: Any) -> None:
-    """Start queue timing before importing the Advisor workflow and its dependencies."""
-    conn = Database().get_connection()
-    cursor = conn.cursor()
-    try:
-        now = datetime.now().isoformat()
-        cursor.execute(
-            """
-            UPDATE agent_resume_runs
-            SET status = 'RUNNING', started_at = COALESCE(started_at, ?)
-            WHERE id = ? AND user_id = ? AND status = 'QUEUED'
-            """,
-            (now, run_id, str(user_id)),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def _get_resume_advisor_module() -> Any:
-    global _resume_advisor_module
-    if _resume_advisor_module is not None:
-        return _resume_advisor_module
-    with _resume_advisor_module_lock:
-        if _resume_advisor_module is None:
-            from backend.resume_advisor import ResumeAdvisorModule
-            from backend.resume_advisor.session_module import resolve_advisor_model
-
-            _resume_advisor_module = ResumeAdvisorModule(Database(), model_provider=resolve_advisor_model)
-    return _resume_advisor_module
-
-
-def warm_resume_advisor_worker() -> None:
-    """Preload the first-token path once when the dedicated worker starts."""
-    _get_resume_advisor_module()
-    from backend.agents.resume_copywriter import ResumeCopywriter  # noqa: F401
-
-
 def _agent_task_lock_key(task_id: str) -> str:
     return f"agent:task-lock:{task_id}"
 
@@ -401,26 +359,6 @@ def run_agent_resume_orchestration_job(
             )
     finally:
         _release_agent_task_lock(redis, task_id, run_id)
-
-
-def run_resume_advisor_session_job(
-    run_id: str,
-    user_id: Any,
-    session_id: str,
-    resume_payload: dict[str, Any] | None = None,
-) -> None:
-    """RQ entry point for one durable ResumeAdvisor run."""
-    _mark_resume_advisor_run_started(run_id=run_id, user_id=user_id)
-    module = _get_resume_advisor_module()
-    if resume_payload is not None:
-        module.resume_session(
-            user_id=user_id,
-            session_id=session_id,
-            run_id=run_id,
-            resume_payload=resume_payload,
-        )
-    else:
-        module.run_session(user_id=user_id, session_id=session_id, run_id=run_id)
 
 
 def worker_healthcheck() -> dict[str, str]:

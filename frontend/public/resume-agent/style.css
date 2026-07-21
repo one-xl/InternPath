@@ -1,0 +1,945 @@
+/* 
+ * Minimal Agent Web App - Apple Liquid Glass 美学顶级样式表
+ * 灵感来源于 Apple iOS / macOS Sequoia 液态玻璃 (Liquid Glass & Glassmorphism) 视觉设计规范。
+ * 保留所有 DOM ID 与前端交互逻辑，提升晶莹剔透的水凝胶高光折射、毛玻璃弥散与悬浮光影体验。
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500;600&display=swap');
+
+:root {
+    /* Liquid Glass 色彩系统 */
+    --liquid-bg: #05070e;
+    --liquid-glass-bg: rgba(255, 255, 255, 0.04);
+    --liquid-glass-card: rgba(18, 26, 43, 0.55);
+    --liquid-glass-hover: rgba(255, 255, 255, 0.08);
+    
+    --liquid-border: rgba(255, 255, 255, 0.15);
+    --liquid-border-highlight: rgba(255, 255, 255, 0.35);
+    
+    --text-primary: #ffffff;
+    --text-secondary: rgba(255, 255, 255, 0.75);
+    --text-muted: rgba(255, 255, 255, 0.45);
+    
+    --apple-blue: #0A84FF;
+    --apple-cyan: #64D2FF;
+    --apple-purple: #BF5AF2;
+    --apple-green: #30D158;
+    --apple-indigo: #5E5CE6;
+    
+    --font-main: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Inter", sans-serif;
+    --font-code: 'Fira Code', SFMono-Regular, Consolas, monospace;
+    
+    --glass-blur: blur(28px) saturate(190%);
+    --glass-shadow: 0 20px 50px rgba(0, 0, 0, 0.45), inset 0 1px 1px rgba(255, 255, 255, 0.3);
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+html, body {
+    height: 100%;
+    width: 100%;
+    font-family: var(--font-main);
+    background-color: var(--liquid-bg);
+    color: var(--text-primary);
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+}
+
+/* 动态背景：Apple 弥散水凝胶光晕 */
+body::before {
+    content: "";
+    position: fixed;
+    top: -20%;
+    left: -10%;
+    width: 60vw;
+    height: 60vw;
+    background: radial-gradient(circle, rgba(10, 132, 255, 0.18) 0%, rgba(191, 90, 242, 0.12) 40%, rgba(0,0,0,0) 70%);
+    filter: blur(80px);
+    z-index: 0;
+    pointer-events: none;
+    animation: floatGlow1 18s ease-in-out infinite alternate;
+}
+
+body::after {
+    content: "";
+    position: fixed;
+    bottom: -20%;
+    right: -10%;
+    width: 55vw;
+    height: 55vw;
+    background: radial-gradient(circle, rgba(48, 209, 88, 0.15) 0%, rgba(100, 210, 255, 0.12) 40%, rgba(0,0,0,0) 70%);
+    filter: blur(80px);
+    z-index: 0;
+    pointer-events: none;
+    animation: floatGlow2 22s ease-in-out infinite alternate;
+}
+
+@keyframes floatGlow1 {
+    0% { transform: translate(0, 0) scale(1); }
+    100% { transform: translate(8%, 10%) scale(1.1); }
+}
+@keyframes floatGlow2 {
+    0% { transform: translate(0, 0) scale(1); }
+    100% { transform: translate(-8%, -10%) scale(1.15); }
+}
+
+.app-container {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    width: 100vw;
+    overflow: hidden;
+    position: relative;
+    z-index: 1;
+}
+
+/* 顶部 Liquid Header */
+.app-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.9rem 1.8rem;
+    background: rgba(10, 14, 26, 0.65);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border-bottom: 1px solid var(--liquid-border);
+    box-shadow: 0 4px 30px rgba(0, 0, 0, 0.2);
+    flex-shrink: 0;
+}
+
+.logo-group {
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+}
+
+.logo-badge {
+    background: linear-gradient(135deg, var(--apple-blue), var(--apple-purple));
+    color: #fff;
+    font-weight: 800;
+    font-size: 0.72rem;
+    padding: 0.28rem 0.65rem;
+    border-radius: 8px;
+    letter-spacing: 0.8px;
+    box-shadow: 0 0 16px rgba(10, 132, 255, 0.4);
+}
+
+.logo-group h1 {
+    font-size: 1.2rem;
+    font-weight: 700;
+    letter-spacing: -0.4px;
+    background: linear-gradient(180deg, #ffffff 0%, rgba(255, 255, 255, 0.7) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.header-controls {
+    display: flex;
+    align-items: center;
+    gap: 1.2rem;
+}
+
+.status-badge {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    background: rgba(255, 255, 255, 0.05);
+    padding: 0.4rem 0.9rem;
+    border-radius: 20px;
+    border: 1px solid var(--liquid-border);
+    backdrop-filter: blur(10px);
+}
+
+.status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background-color: var(--text-muted);
+}
+.status-dot.online {
+    background-color: var(--apple-green);
+    box-shadow: 0 0 10px var(--apple-green);
+}
+.status-dot.real-api {
+    background-color: var(--apple-cyan);
+    box-shadow: 0 0 10px var(--apple-cyan);
+}
+
+.config-btn {
+    background: rgba(255, 255, 255, 0.07);
+    border: 1px solid var(--liquid-border);
+    color: var(--text-primary);
+    padding: 0.5rem 1.1rem;
+    border-radius: 12px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    cursor: pointer;
+    backdrop-filter: blur(12px);
+    transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.2);
+}
+
+.config-btn:hover {
+    background: rgba(255, 255, 255, 0.14);
+    border-color: var(--liquid-border-highlight);
+    transform: translateY(-1px);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3), inset 0 1px 1px rgba(255, 255, 255, 0.4);
+}
+
+/* 主布局 */
+.main-layout {
+    display: grid;
+    grid-template-columns: 1fr 340px;
+    flex: 1;
+    height: calc(100vh - 62px);
+    overflow: hidden;
+}
+
+/* 聊天主区 */
+.chat-section {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+    border-right: 1px solid var(--liquid-border);
+    position: relative;
+}
+
+/* 1. Session 选项卡栏 (Apple 水凝胶浮动 Glass Tab Bar) */
+.session-tabs-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 1.8rem;
+    background: rgba(12, 17, 30, 0.45);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border-bottom: 1px solid var(--liquid-border);
+    gap: 1rem;
+    flex-shrink: 0;
+    overflow: hidden;
+}
+
+.tabs-list {
+    display: flex;
+    gap: 0.6rem;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scroll-behavior: smooth;
+    white-space: nowrap;
+    padding: 4px 2px 6px 2px;
+    flex: 1;
+    -webkit-overflow-scrolling: touch;
+}
+
+.tabs-list::-webkit-scrollbar {
+    height: 4px;
+}
+.tabs-list::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.1);
+}
+.tabs-list::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.18);
+    border-radius: 4px;
+}
+
+.tab-btn {
+    flex-shrink: 0;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: var(--text-secondary);
+    padding: 0.55rem 1.1rem;
+    border-radius: 12px;
+    cursor: pointer;
+    font-size: 0.86rem;
+    font-weight: 500;
+    transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    white-space: nowrap;
+    backdrop-filter: blur(10px);
+}
+
+.tab-btn:hover {
+    color: var(--text-primary);
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.18);
+}
+
+.tab-btn.active {
+    background: linear-gradient(135deg, rgba(10, 132, 255, 0.25), rgba(191, 90, 242, 0.25));
+    color: var(--text-primary);
+    border-color: rgba(10, 132, 255, 0.45);
+    font-weight: 600;
+    box-shadow: 0 4px 16px rgba(10, 132, 255, 0.2), inset 0 1px 1px rgba(255, 255, 255, 0.3);
+}
+
+.add-tab-btn {
+    flex-shrink: 0;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px dashed rgba(255, 255, 255, 0.2);
+    color: var(--text-secondary);
+    padding: 0.45rem 0.9rem;
+    border-radius: 10px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    font-weight: 500;
+    transition: all 0.2s;
+    white-space: nowrap;
+}
+
+.add-tab-btn:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text-primary);
+    border-color: var(--apple-blue);
+}
+
+/* 2. 消息主区 (独立纵向上下滑动查看历史) */
+.messages-container {
+    flex: 1;
+    padding: 1.8rem;
+    overflow-y: auto;
+    overflow-x: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: 1.6rem;
+    scroll-behavior: smooth;
+}
+
+.messages-container::-webkit-scrollbar {
+    width: 6px;
+}
+.messages-container::-webkit-scrollbar-track {
+    background: transparent;
+}
+.messages-container::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.15);
+    border-radius: 3px;
+}
+.messages-container::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.3);
+}
+
+.welcome-card {
+    background: var(--liquid-glass-card);
+    border: 1px solid var(--liquid-border);
+    border-radius: 20px;
+    padding: 1.8rem;
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    box-shadow: var(--glass-shadow);
+}
+
+.welcome-card h2 {
+    font-size: 1.2rem;
+    font-weight: 700;
+    margin-bottom: 0.6rem;
+    color: var(--apple-cyan);
+}
+
+.welcome-card p {
+    font-size: 0.92rem;
+    color: var(--text-secondary);
+    line-height: 1.55;
+    margin-bottom: 1.4rem;
+}
+
+.quick-prompts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.7rem;
+}
+
+.quick-btn {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--liquid-border);
+    color: var(--text-primary);
+    padding: 0.55rem 1rem;
+    border-radius: 20px;
+    font-size: 0.82rem;
+    cursor: pointer;
+    transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    backdrop-filter: blur(8px);
+}
+
+.quick-btn:hover {
+    background: rgba(10, 132, 255, 0.2);
+    border-color: var(--apple-blue);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(10, 132, 255, 0.25);
+}
+
+/* 消息气泡与 Agent 思考卡片 (Apple Liquid Bubble) */
+.msg-row {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+    max-width: 85%;
+}
+
+.msg-row.user-msg {
+    align-self: flex-end;
+}
+
+.msg-row.agent-msg {
+    align-self: flex-start;
+}
+
+.user-bubble {
+    background: linear-gradient(135deg, #0A84FF, #0066CC);
+    color: #ffffff;
+    padding: 0.85rem 1.25rem;
+    border-radius: 20px 20px 4px 20px;
+    font-size: 0.95rem;
+    line-height: 1.55;
+    box-shadow: 0 8px 24px rgba(10, 132, 255, 0.35), inset 0 1px 1px rgba(255, 255, 255, 0.3);
+}
+
+.agent-card {
+    background: var(--liquid-glass-card);
+    border: 1px solid var(--liquid-border);
+    border-radius: 20px 20px 20px 4px;
+    padding: 1.4rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.1rem;
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    box-shadow: var(--glass-shadow);
+}
+
+.thought-box {
+    background: rgba(48, 209, 88, 0.08);
+    border-left: 3px solid var(--apple-green);
+    padding: 0.7rem 1rem;
+    border-radius: 10px;
+    font-size: 0.86rem;
+    color: #bbf7d0;
+    line-height: 1.5;
+    backdrop-filter: blur(8px);
+}
+
+.thought-title {
+    font-weight: 700;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 0.35rem;
+    color: var(--apple-green);
+}
+
+.tool-calls-box {
+    background: rgba(8, 12, 22, 0.65);
+    border: 1px solid var(--liquid-border);
+    border-radius: 12px;
+    padding: 0.85rem;
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+.tool-call-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--apple-cyan);
+    font-family: var(--font-code);
+    font-weight: 600;
+}
+
+.tool-obs {
+    margin-top: 0.55rem;
+    background: rgba(255, 255, 255, 0.04);
+    border-radius: 8px;
+    padding: 0.5rem 0.75rem;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: #cbd5e1;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.tool-obs.error-obs {
+    background: rgba(255, 69, 58, 0.12);
+    border: 1px solid rgba(255, 69, 58, 0.35);
+    color: #ffb4ab;
+}
+
+.answer-box {
+    font-size: 0.96rem;
+    line-height: 1.65;
+    color: var(--text-primary);
+}
+
+.model-tag-inline {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-family: var(--font-code);
+    margin-top: 0.45rem;
+}
+
+/* 3. 底部对话框容器 (Liquid Bar Sticky Bottom) */
+.input-container {
+    flex-shrink: 0;
+    padding: 1.1rem 1.8rem;
+    background: rgba(10, 14, 26, 0.75);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border-top: 1px solid var(--liquid-border);
+    box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.4);
+}
+
+.input-form {
+    display: flex;
+    gap: 0.85rem;
+}
+
+.input-form input {
+    flex: 1;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--liquid-border);
+    border-radius: 14px;
+    padding: 0.85rem 1.3rem;
+    color: var(--text-primary);
+    font-size: 0.96rem;
+    font-family: var(--font-main);
+    outline: none;
+    backdrop-filter: blur(10px);
+    transition: all 0.25s ease;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+.input-form input:focus {
+    border-color: var(--apple-blue);
+    background: rgba(255, 255, 255, 0.09);
+    box-shadow: 0 0 0 4px rgba(10, 132, 255, 0.25), inset 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.input-form button {
+    background: linear-gradient(135deg, var(--apple-blue), var(--apple-indigo));
+    color: #ffffff;
+    border: none;
+    border-radius: 14px;
+    padding: 0 1.6rem;
+    font-weight: 600;
+    font-size: 0.95rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    box-shadow: 0 6px 20px rgba(10, 132, 255, 0.35), inset 0 1px 1px rgba(255, 255, 255, 0.4);
+}
+
+.input-form button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 28px rgba(10, 132, 255, 0.5), inset 0 1px 1px rgba(255, 255, 255, 0.5);
+}
+
+/* 侧边栏 (Apple Sidebar Panel) */
+.sidebar-section {
+    background: rgba(10, 14, 26, 0.35);
+    padding: 1.6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.4rem;
+    overflow-y: auto;
+    backdrop-filter: blur(16px);
+}
+
+.panel-card {
+    background: var(--liquid-glass-card);
+    border: 1px solid var(--liquid-border);
+    border-radius: 16px;
+    padding: 1.1rem 1.3rem;
+    backdrop-filter: var(--glass-blur);
+    box-shadow: var(--glass-shadow);
+}
+
+.panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.9rem;
+}
+
+.panel-header h3 {
+    font-size: 0.92rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.session-tag {
+    font-size: 0.72rem;
+    background: rgba(191, 90, 242, 0.2);
+    color: var(--apple-purple);
+    padding: 0.25rem 0.6rem;
+    border-radius: 6px;
+    font-family: var(--font-code);
+    font-weight: 500;
+}
+
+.todo-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+
+.todo-item {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--liquid-border);
+    padding: 0.55rem 0.85rem;
+    border-radius: 8px;
+    font-size: 0.84rem;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    backdrop-filter: blur(6px);
+}
+
+.empty-state {
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+.tools-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.6rem;
+}
+
+.tool-chip {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--liquid-border);
+    border-radius: 10px;
+    padding: 0.5rem 0.7rem;
+    display: flex;
+    flex-direction: column;
+}
+
+.chip-name {
+    font-size: 0.78rem;
+    font-family: var(--font-code);
+    color: var(--apple-cyan);
+    font-weight: 600;
+}
+
+.chip-desc {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+}
+
+.panel-desc {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    line-height: 1.45;
+}
+
+/* Modal 遮罩层与 Apple 水凝胶玻璃弹窗 */
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(0, 0, 0, 0.65);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 999;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.modal-overlay.active {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.modal-card {
+    background: rgba(20, 28, 45, 0.85);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 24px;
+    width: 100%;
+    max-width: 520px;
+    padding: 2.2rem;
+    box-shadow: 0 30px 70px rgba(0, 0, 0, 0.6), inset 0 1px 1px rgba(255, 255, 255, 0.4);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    transform: scale(0.95);
+    transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.modal-overlay.active .modal-card {
+    transform: scale(1);
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1.6rem;
+}
+
+.modal-header h2 {
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: #ffffff;
+}
+
+.close-btn {
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--liquid-border);
+    color: var(--text-secondary);
+    font-size: 1.1rem;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+}
+
+.close-btn:hover {
+    background: rgba(255, 255, 255, 0.2);
+    color: #fff;
+}
+
+.form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    margin-bottom: 1.3rem;
+}
+
+.form-group label {
+    font-size: 0.86rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.input-with-btn {
+    display: flex;
+    gap: 0.6rem;
+}
+
+.input-with-btn input {
+    flex: 1;
+}
+
+.form-group input {
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid var(--liquid-border);
+    border-radius: 12px;
+    padding: 0.8rem 1.1rem;
+    color: var(--text-primary);
+    font-size: 0.92rem;
+    outline: none;
+    transition: all 0.2s;
+}
+
+.form-group input:focus {
+    border-color: var(--apple-blue);
+    box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.25);
+}
+
+.icon-btn {
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--liquid-border);
+    border-radius: 12px;
+    padding: 0 1rem;
+    cursor: pointer;
+    color: var(--text-primary);
+    transition: all 0.2s;
+}
+
+.icon-btn:hover {
+    background: rgba(255, 255, 255, 0.16);
+}
+
+.form-tip {
+    font-size: 0.76rem;
+    color: var(--text-muted);
+}
+
+.presets-group {
+    display: flex;
+    gap: 0.6rem;
+    margin-top: 0.3rem;
+}
+
+.preset-chip {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--liquid-border);
+    color: var(--text-secondary);
+    padding: 0.35rem 0.75rem;
+    border-radius: 8px;
+    font-size: 0.78rem;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.preset-chip:hover {
+    background: rgba(10, 132, 255, 0.2);
+    color: var(--apple-blue);
+    border-color: var(--apple-blue);
+}
+
+.slider-group {
+    display: flex;
+    align-items: center;
+    gap: 1.2rem;
+}
+
+.slider-group input {
+    flex: 1;
+}
+
+.slider-group span {
+    font-family: var(--font-code);
+    font-size: 0.92rem;
+    color: var(--apple-purple);
+    font-weight: 600;
+    width: 32px;
+}
+
+.modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.85rem;
+    margin-top: 1.8rem;
+}
+
+.btn-secondary {
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--liquid-border);
+    color: var(--text-secondary);
+    padding: 0.65rem 1.3rem;
+    border-radius: 12px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    transition: all 0.2s;
+}
+
+.btn-secondary:hover {
+    background: rgba(255, 255, 255, 0.15);
+    color: #fff;
+}
+
+.btn-primary {
+    background: linear-gradient(135deg, var(--apple-blue), var(--apple-indigo));
+    border: none;
+    color: #fff;
+    padding: 0.65rem 1.5rem;
+    border-radius: 12px;
+    font-weight: 600;
+    font-size: 0.9rem;
+    cursor: pointer;
+    box-shadow: 0 4px 16px rgba(10, 132, 255, 0.35);
+    transition: all 0.2s;
+}
+
+.btn-primary:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 22px rgba(10, 132, 255, 0.5);
+}
+
+.input-with-eye {
+    display: flex;
+    gap: 0.6rem;
+}
+
+.input-with-eye input {
+    flex: 1;
+}
+
+.toggle-eye-btn {
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--liquid-border);
+    border-radius: 12px;
+    width: 48px;
+    cursor: pointer;
+    font-size: 1rem;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+}
+
+.toggle-eye-btn:hover {
+    background: rgba(255, 255, 255, 0.16);
+    border-color: rgba(255, 255, 255, 0.3);
+}
+
+/* ================= Apple Glass 右键上下文菜单 ================= */
+.context-menu {
+    position: fixed;
+    display: none;
+    z-index: 2000;
+    background: rgba(20, 28, 45, 0.85);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 14px;
+    padding: 8px;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5), inset 0 1px 1px rgba(255, 255, 255, 0.3);
+    min-width: 180px;
+}
+
+.context-menu.active {
+    display: block;
+    animation: menuFadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes menuFadeIn {
+    from { opacity: 0; transform: scale(0.92) translateY(-4px); }
+    to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.context-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 14px;
+    font-size: 0.88rem;
+    color: var(--text-primary);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.context-menu-item:hover {
+    background: rgba(255, 255, 255, 0.12);
+}
+
+.context-menu-item.danger {
+    color: #ff453a;
+}
+
+.context-menu-item.danger:hover {
+    background: rgba(255, 69, 58, 0.25);
+    color: #ff6961;
+}
+
+/* 响应式适配 */
+@media (max-width: 768px) {
+    .main-layout {
+        grid-template-columns: 1fr;
+    }
+    .sidebar-section {
+        display: none;
+    }
+}

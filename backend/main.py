@@ -38,11 +38,8 @@ from backend.jobs import (
     run_agent_resume_orchestration_job,
     run_async_analysis_job,
     run_background_resume_analysis_job,
-    run_resume_advisor_session_job,
 )
-from backend.resume_advisor import ResumeAdvisorModule
-from backend.resume_advisor.router import build_resume_advisor_router
-from backend.resume_advisor.session_module import resolve_advisor_model
+from backend.reference_agent_router import build_reference_agent_router
 from backend.task_queue import cancel_job, enqueue_job
 from backend.docx_boundary_check import DocxBoundaryCheckConfig, check_docx_file_boundaries
 from service import CareerPathAIService
@@ -1311,6 +1308,15 @@ def create_app(
 ) -> FastAPI:
     app = FastAPI(title="InternPath Personal Workbench API")
 
+    @app.middleware("http")
+    async def retire_legacy_resume_optimization(request: Request, call_next):
+        if request.url.path.startswith("/api/agent/resume"):
+            return JSONResponse(
+                status_code=status.HTTP_410_GONE,
+                content={"detail": "旧版简历定向优化已删除，请使用新的 Agent 页面。"},
+            )
+        return await call_next(request)
+
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError):
         import traceback
@@ -1515,32 +1521,7 @@ def create_app(
         return user_id
 
 
-    def enqueue_resume_advisor_run(
-        run_id: str,
-        user_id: Any,
-        session_id: str,
-        *,
-        resume_payload: dict[str, Any] | None = None,
-    ) -> str:
-        job_id = run_id if resume_payload is None else f"{run_id}-resume-{uuid4().hex}"
-        job = enqueue_job(
-            run_resume_advisor_session_job,
-            run_id=run_id,
-            user_id=user_id,
-            session_id=session_id,
-            resume_payload=resume_payload,
-            job_id=job_id,
-            queue_name=Config.RQ_ADVISOR_QUEUE_NAME,
-        )
-        return str(getattr(job, "id", job_id))
-
-    resume_advisor_module = ResumeAdvisorModule(
-        state.auth_db,
-        enqueue_run=enqueue_resume_advisor_run,
-        cancel_enqueued_run=cancel_job,
-        model_provider=resolve_advisor_model,
-    )
-    app.include_router(build_resume_advisor_router(resume_advisor_module, current_user_id))
+    app.include_router(build_reference_agent_router(current_user_id))
 
 
 

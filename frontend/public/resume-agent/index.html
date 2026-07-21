@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light" />
+    <title>InternPath Resume Agent</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="app-container">
+      <header class="app-header">
+        <div class="brand">
+          <div class="logo-icon" aria-hidden="true">IP</div>
+          <div class="brand-text"><h1>InternPath Agent</h1><span class="badge">Resume Optimization Runtime</span></div>
+        </div>
+        <div class="header-actions">
+          <span class="header-status"><i class="status-dot" id="statusDot"></i><span id="statusText">等待材料</span></span>
+          <button class="icon-button" id="openSetupBtn" aria-label="打开简历与职位设置" title="简历与职位设置">&#9881;</button>
+          <button class="icon-button" id="toggleDrawerBtn" aria-label="打开运行状态抽屉" title="运行状态">&#9776;</button>
+        </div>
+      </header>
+
+      <div class="main-layout">
+        <main class="chat-section">
+          <div class="session-tabs-bar">
+            <div class="tabs-list" id="sessionTabs" aria-label="优化会话"></div>
+            <button class="add-tab-btn" id="newSessionBtn" aria-label="新建优化会话" title="新建优化会话">+</button>
+          </div>
+          <section class="messages-container" id="messagesList" aria-live="polite"></section>
+          <div class="input-container">
+            <form id="chatForm" class="input-form">
+              <textarea id="userInput" rows="1" placeholder="继续追问、补充项目事实或确认修改" aria-label="发送给简历优化 Agent 的消息"></textarea>
+              <button type="submit" id="sendBtn" aria-label="发送消息" title="发送消息">&#10148;</button>
+            </form>
+          </div>
+        </main>
+
+        <aside class="runtime-drawer" id="runtimeDrawer" aria-label="运行状态与简历预览">
+          <div class="drawer-header"><h2>运行面板</h2><button class="icon-button close-drawer" id="closeDrawerBtn" aria-label="关闭运行面板">&times;</button></div>
+          <div class="drawer-tabs" role="tablist">
+            <button class="drawer-tab active" data-panel="statusPanel" role="tab">状态</button>
+            <button class="drawer-tab" data-panel="diffPanel" role="tab">修改</button>
+            <button class="drawer-tab" data-panel="previewPanel" role="tab">预览</button>
+          </div>
+          <section class="drawer-panel active" id="statusPanel">
+            <div class="panel-card"><div class="panel-header"><h3>模型配置</h3><span class="session-tag" id="activeModelTag">系统默认</span></div><p class="panel-desc" id="modelModeDesc">在设置中选择已配置模型。</p></div>
+            <div class="panel-card"><div class="panel-header"><h3>多智能体编排</h3><span class="session-tag" id="currentSessionTag">未开始</span></div><div class="trace-list" id="traceList"><p class="empty-state">开始分析后显示主控、JD、修改与 HR 节点状态。</p></div></div>
+            <div class="panel-card"><div class="panel-header"><h3>Hybrid RAG 证据</h3><span class="session-tag" id="evidenceCount">0</span></div><div class="evidence-list" id="evidenceList"><p class="empty-state">暂无检索证据</p></div></div>
+          </section>
+          <section class="drawer-panel" id="diffPanel"><div id="diffList" class="diff-list"><p class="empty-state">完成分析后在这里查看可复制、可定位的修改建议。</p></div></section>
+          <section class="drawer-panel" id="previewPanel"><div id="previewContent" class="preview-content"><p class="empty-state">选择简历后显示原件与结构化预览。</p></div></section>
+        </aside>
+      </div>
+    </div>
+
+    <div class="modal-overlay" id="setupModal" aria-hidden="true">
+      <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="setupTitle">
+        <div class="modal-header"><div><h2 id="setupTitle">开始简历定向优化</h2><p>选择证据来源后，由多智能体完成分析与建议。</p></div><button class="icon-button" id="closeSetupBtn" aria-label="关闭设置">&times;</button></div>
+        <div class="modal-body">
+          <details open class="upload-section"><summary>简历</summary><label class="file-picker">上传 PDF、DOCX、TXT 或 MD<input id="resumeUpload" type="file" multiple accept=".pdf,.docx,.txt,.md" /></label><div id="resumeList" class="file-list"></div></details>
+          <details class="upload-section"><summary>项目经历资料</summary><label class="file-picker">上传项目资料<input id="projectUpload" type="file" multiple accept=".pdf,.docx,.txt,.md" /></label><div id="projectList" class="file-list"></div></details>
+          <label class="form-group">模型配置<select id="modelSelect"><option value="">系统默认</option></select></label>
+          <label class="form-group">职位描述<textarea id="jdInput" rows="8" placeholder="粘贴完整 JD，用它作为评估标准，不会被当成候选人事实。"></textarea></label>
+        </div>
+        <div class="modal-actions"><button class="btn-secondary" id="cancelSetupBtn">取消</button><button class="btn-primary" id="startAnalysisBtn">开始分析</button></div>
+      </section>
+    </div>
+    <div class="toast" id="toast" role="status"></div>
+    <script src="app.js"></script>
+  </body>
+</html>

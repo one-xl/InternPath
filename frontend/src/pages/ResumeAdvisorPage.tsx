@@ -28,6 +28,7 @@ export function ResumeAdvisorPage() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [message, setMessage] = useState("");
   const [activeBlock, setActiveBlock] = useState("");
+  const [previewFile, setPreviewFile] = useState<{ type?: string; b64?: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -45,6 +46,12 @@ export function ResumeAdvisorPage() {
   };
 
   useEffect(() => { void refresh().catch((reason) => setError(reason.message)); }, []);
+  useEffect(() => {
+    if (!resumeId) { setPreviewFile(null); return; }
+    void json<{ parsedResume?: { file?: { type?: string; b64_content?: string } } }>(`/api/resumes/${encodeURIComponent(resumeId)}`)
+      .then((result) => setPreviewFile(result.parsedResume?.file ? { type: result.parsedResume.file.type, b64: result.parsedResume.file.b64_content } : null))
+      .catch((reason) => setError(reason.message));
+  }, [resumeId]);
   useEffect(() => {
     if (!snapshot || !["PENDING", "RUNNING"].includes(snapshot.status)) return;
     const timer = window.setInterval(() => void json<Snapshot>(`/api/resume-optimization/sessions/${snapshot.sessionId}`).then(setSnapshot).catch((reason) => setError(reason.message)), 1500);
@@ -107,7 +114,7 @@ export function ResumeAdvisorPage() {
       <section style={{ background: "white", padding: 14, border: "1px solid #dce3ee" }}><label>模型配置<select value={modelId} onChange={(e) => setModelId(e.target.value)}><option value="">系统默认</option>{models.map((item) => <option key={item.id} value={item.id}>{item.name} / {item.modelId}</option>)}</select></label><textarea value={jd} onChange={(e) => setJd(e.target.value)} placeholder="粘贴职位描述" rows={10}/><button onClick={() => void start()} disabled={busy}>开始定向优化</button></section>
     </aside>
     <section style={{ background: "white", border: "1px solid #dce3ee", display: "grid", gridTemplateRows: "1fr auto", minHeight: 0 }}><div style={{ overflow: "auto", padding: 18 }}><h2>与简历优化 Agent 对话</h2>{snapshot && <small>编排状态：{snapshot.status}</small>}{!snapshot && <p>上传简历、输入 JD 后，Agent 会在这里解释匹配情况和修改建议。</p>}{snapshot?.messages.map((item, index) => <p key={index} style={{ whiteSpace: "pre-wrap", padding: 10, background: item.role === "user" ? "#e8f1ff" : "#f7f8fa" }}><b>{item.role === "user" ? "你" : "Agent"}：</b>{item.content}</p>)}{snapshot?.diffs.map((item, index) => <article key={index} style={{ borderLeft: "4px solid #d97706", padding: 10, marginTop: 8 }}><button onClick={() => focus(item.targetBlockId)}>定位修改位置</button><button onClick={() => void copy(item.replacementText)}>复制修改结果</button><p><del>{item.originalText}</del></p><p><b>{item.replacementText}</b></p><small>{item.reason}</small></article>)}{snapshot?.hr.matched && <div><h3>匹配亮点</h3>{(snapshot.hr.strengths || []).map((item, index) => <button key={index} onClick={() => item.targetBlockId && focus(item.targetBlockId)}>{item.reason}</button>)}</div>}</div><form onSubmit={(e) => void send(e)} style={{ display: "flex", gap: 8, padding: 12, borderTop: "1px solid #dce3ee" }}><input value={message} onChange={(e) => setMessage(e.target.value)} placeholder="继续追问、补充事实或确认完成" disabled={!snapshot || busy || snapshot.status !== "COMPLETED"}/><button disabled={!snapshot || busy || snapshot.status !== "COMPLETED"}>发送</button></form></section>
-    <aside style={{ background: "white", border: "1px solid #dce3ee", overflow: "auto", padding: 14 }}><h2>简历预览</h2>{snapshot?.resumeBlocks.map((block) => <article id={`resume-block-${block.id}`} key={block.id} style={{ padding: 10, marginBottom: 8, background: activeBlock === block.id ? "#fff3cd" : highlights.has(block.id) ? "#fff7e6" : "#fff", border: "1px solid #e1e6ef" }}><small>{block.section}</small><p>{block.text}</p></article>)}<h3>检索证据</h3>{snapshot?.evidence.map((item, index) => <p key={index}>{item.text}</p>)}</aside>
+    <aside style={{ background: "white", border: "1px solid #dce3ee", overflow: "auto", padding: 14 }}><h2>简历预览</h2>{previewFile?.type === "application/pdf" && previewFile.b64 && <iframe title="原始 PDF 简历" src={`data:application/pdf;base64,${previewFile.b64}`} style={{ border: 0, width: "100%", height: 340 }} />}{snapshot?.resumeBlocks.map((block) => <article id={`resume-block-${block.id}`} key={block.id} style={{ padding: 10, marginBottom: 8, background: activeBlock === block.id ? "#fff3cd" : highlights.has(block.id) ? "#fff7e6" : "#fff", border: "1px solid #e1e6ef" }}><small>{block.section}</small><p>{block.text}</p></article>)}<h3>检索证据</h3>{snapshot?.evidence.map((item, index) => <p key={index}>{item.text}</p>)}</aside>
     {error && <div style={{ position: "fixed", bottom: 16, left: "50%", color: "#991b1b", background: "#fee2e2", padding: 10 }}>{error}</div>}
   </main>;
 }

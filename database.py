@@ -5223,7 +5223,7 @@ class Database:
             else:
                 cursor.execute(
                     "SELECT parsed_json FROM resumes WHERE id = ? AND user_id = ?",
-                    (resume_id, user_id)
+                    (resume_id, str(user_id))
                 )
             row = cursor.fetchone()
             if row:

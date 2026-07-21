@@ -47,6 +47,25 @@ class AiServiceClient:
             },
         )
 
+    def rag_search(
+        self,
+        *,
+        query: str,
+        documents: list[dict[str, Any]],
+        top_k: int = 6,
+        strategy: str = "hybrid",
+    ) -> dict[str, Any]:
+        """Search structured evidence without forwarding backend model credentials."""
+        return self._post(
+            "/ai/rag/search",
+            {
+                "query": query,
+                "documents": documents,
+                "topK": top_k,
+                "strategy": strategy,
+            },
+        )
+
     def _get(self, path: str) -> dict[str, Any]:
         with httpx.Client(timeout=self.timeout) as client:
             response = client.get(f"{self.base_url}{path}")

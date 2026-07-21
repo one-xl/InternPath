@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect, useRef, useCallback } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import { AppShell } from "./components/layout/AppShell";
 import { ErrorBoundary } from "./components/ui/ErrorBoundary";
 import { useHistory } from "./hooks/useHistory";
@@ -131,7 +131,6 @@ export default function App() {
   const modelConfigs = useModelConfigs(isAuthenticated);
   const history = useHistory(isAuthenticated);
   const draftsControl = useAnalysisDrafts(isAuthenticated);
-
   // Prevent accidental refresh/close during ongoing analysis
   useEffect(() => {
     if (!analysis.isAnalyzing) return;
@@ -583,7 +582,6 @@ export default function App() {
             onRemoveResume={resumeUpload.removeFile}
             onGoSettings={() => setActivePage("settings")}
             onAnalyze={runAnalysis}
-
             latestDraft={draftsControl.latestDraft}
             draftSaveMessage={draftSaveMessage}
             onRestoreDraft={handleRestoreDraft}

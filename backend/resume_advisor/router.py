@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any, Callable
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
@@ -52,6 +53,8 @@ def build_resume_advisor_router(
                 jd_text=payload.jd_text,
                 analysis_record_id=payload.analysis_record_id,
                 title=payload.title or "",
+                project_knowledge_scope=payload.project_knowledge_scope,
+                project_knowledge_document_ids=payload.project_knowledge_document_ids,
             )
         except Exception as exc:
             raise _http_error(exc) from exc
@@ -236,10 +239,16 @@ def build_resume_advisor_router(
         except Exception as exc:
             raise _http_error(exc) from exc
         safe_file_name = file_name.replace('"', "")
+        ascii_file_name = safe_file_name.encode("ascii", "ignore").decode("ascii") or "resume"
         return Response(
             content=content,
             media_type=media_type,
-            headers={"Content-Disposition": f'inline; filename="{safe_file_name}"'},
+            headers={
+                "Content-Disposition": (
+                    f'inline; filename="{ascii_file_name}"; '
+                    f"filename*=UTF-8''{quote(safe_file_name)}"
+                ),
+            },
         )
 
     @router.post("/api/agent/resume/suggestions/{suggestion_id}/actions")

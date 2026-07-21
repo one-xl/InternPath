@@ -121,8 +121,12 @@ def test_char_bigram_similarity():
     assert char_bigram_similarity(s1, s3) < sim
 
 
-def test_hybrid_retrieval():
+def test_hybrid_retrieval(monkeypatch):
     """Test Hybrid retrieval score combining BM25 and boosts."""
+    monkeypatch.setattr(
+        "app.rag.hybrid_retriever.get_embedding",
+        lambda _query, _config=None: [],
+    )
     chunks = [
         {
             "chunkId": "c1",
@@ -155,6 +159,54 @@ def test_hybrid_retrieval():
     assert results[0]["score"] > results[1]["score"]
     assert "bm25_match" in results[0]["retrievalReasons"]
     assert "keyword_match" in results[0]["retrievalReasons"]
+
+
+def test_hybrid_retrieval_reports_vector_or_lexical_mode(monkeypatch):
+    chunks = [
+        {
+            "chunkId": "c1",
+            "documentId": "doc1",
+            "text": "Built a Python FastAPI backend.",
+            "embedding": [1.0, 0.0],
+            "metadata": {"sourceBlockIds": ["block-1"]},
+        }
+    ]
+    monkeypatch.setattr(
+        "app.rag.hybrid_retriever.get_embedding",
+        lambda _query, _config=None: [1.0, 0.0],
+    )
+    results, metadata = retrieve_hybrid(chunks, "Python FastAPI", 1, return_metadata=True)
+    assert metadata == {"semanticMode": "embedding", "semanticChunkCount": 1}
+    assert results[0]["metadata"]["sourceBlockIds"] == ["block-1"]
+
+    monkeypatch.setattr(
+        "app.rag.hybrid_retriever.get_embedding",
+        lambda _query, _config=None: [],
+    )
+    fallback_results, metadata = retrieve_hybrid(chunks, "Python FastAPI", 1, return_metadata=True)
+    assert metadata["semanticMode"] == "lexical_fallback"
+    assert "semantic_match" not in fallback_results[0]["retrievalReasons"]
+    assert "lexical_similarity" not in fallback_results[0]["retrievalReasons"]
+
+
+def test_hybrid_retrieval_does_not_label_invalid_vectors_as_embedding(monkeypatch):
+    chunks = [
+        {
+            "chunkId": "c1",
+            "documentId": "doc1",
+            "text": "Built a Python FastAPI backend.",
+            "embedding": [0.0, 0.0],
+        }
+    ]
+    monkeypatch.setattr(
+        "app.rag.hybrid_retriever.get_embedding",
+        lambda _query, _config=None: [float("nan"), 0.0],
+    )
+
+    results, metadata = retrieve_hybrid(chunks, "Python FastAPI", 1, return_metadata=True)
+
+    assert metadata == {"semanticMode": "lexical_fallback", "semanticChunkCount": 0}
+    assert "semantic_match" not in results[0]["retrievalReasons"]
 
 
 def test_semantic_ranking():

@@ -1,16 +1,19 @@
 import type { ReactNode } from "react";
 
-interface ModificationItem {
+export interface ModificationItem {
   section_name: string;
   section_index: number;
   original: string;
   new: string;
   reason: string;
+  id?: string;
+  locationLabel?: string;
 }
 
 interface ResumeDiffViewProps {
   modificationLog: ModificationItem[];
   optimizedResumeMd?: string;
+  onFocusItem?: (item: ModificationItem) => void;
 }
 
 type DiffRowKind = "context" | "remove" | "add" | "skip";
@@ -199,7 +202,7 @@ function DiffRows({ rows }: { rows: DiffRow[] }) {
   );
 }
 
-export function ResumeDiffView({ modificationLog, optimizedResumeMd = "" }: ResumeDiffViewProps) {
+export function ResumeDiffView({ modificationLog, optimizedResumeMd = "", onFocusItem }: ResumeDiffViewProps) {
   const resumeText = stripOptimizationSummary(optimizedResumeMd);
   const items = modificationLog || [];
   const stats = statsForItems(items);
@@ -227,6 +230,7 @@ export function ResumeDiffView({ modificationLog, optimizedResumeMd = "" }: Resu
                 <strong>{item.section_name || "修改段落"}</strong>
                 <em>#{item.section_index}</em>
                 {item.reason && <span>{item.reason}</span>}
+                {onFocusItem && <button type="button" className="link-button" onClick={() => onFocusItem(item)}>定位原文</button>}
               </div>
               <DiffRows rows={rows} />
             </section>

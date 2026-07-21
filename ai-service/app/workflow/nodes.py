@@ -70,7 +70,10 @@ class ResumeContextNode(BaseNode):
                 {"documentId": "RESUME", "content": state.request.resumeText, "metadata": {"sourceType": "RESUME"}}
             )
         if state.request.documents:
-            documents.extend(state.request.documents)
+            for document in state.request.documents:
+                raw = document.model_dump() if hasattr(document, "model_dump") else dict(document)
+                if str(raw.get("documentId") or "").strip() and str(raw.get("content") or "").strip():
+                    documents.append(raw)
         else:
             for index, text in enumerate(state.request.knowledgeTexts):
                 if text.strip():
@@ -307,7 +310,11 @@ class RewriteNode(BaseNode):
         if rewritten_items:
             rewritten["lowSupportNotice"] = rewritten_items
         suggestions = rewritten.setdefault("resumeSuggestions", {})
-        suggestions.setdefault("directlyUsable", [])
+        directly_usable = suggestions.setdefault("directlyUsable", [])
+        for recommendation in state.data.get("projectRerank", {}).get("recommendations", []):
+            suggestion = str(recommendation.get("resumeSuggestion") or "").strip()
+            if suggestion and suggestion not in directly_usable:
+                directly_usable.append(suggestion)
         suggestions.setdefault("needToBuildFirst", [])
         state.data["rewrittenReport"] = rewritten
         state.data["rewrittenItems"] = rewritten_items
@@ -399,6 +406,9 @@ class FinalReportNode(BaseNode):
         final_report["evidenceSummary"] = evidence_summary
         final_report["hallucinationControl"] = hallucination_control
         final_report["citations"] = citations
+        final_report["projectRecommendations"] = list(
+            state.data.get("projectRerank", {}).get("recommendations", [])
+        )
         state.data["finalReport"] = final_report
         return state
 
@@ -503,7 +513,11 @@ class HybridRetrievalNode(BaseNode):
         }
 
         if state.request.options.enableRag:
-            query = " ".join(state.data.get("jdParse", {}).get("techKeywords", [])) or state.request.jdText[:500]
+            query = build_project_query(
+                state.request.jdText,
+                state.request.resumeText,
+                state.data.get("jdParse", {}).get("techKeywords", []),
+            )
             hybrid_results = retrieve_hybrid(evidence_chunks, query, 15, embedding_config=emb_config)
         else:
             hybrid_results = []
@@ -526,11 +540,21 @@ class SemanticRankingNode(BaseNode):
         return f"hybrid candidates count: {len(hybrid)}"
 
     def run(self, state: WorkflowState) -> WorkflowState:
+        from app.rag.project_reranker import rerank_projects
         from app.rag.semantic_ranker import rerank_chunks
         hybrid_chunks = state.data.get("hybridRetrieval", {}).get("hybridChunks", [])
-        query = " ".join(state.data.get("jdParse", {}).get("techKeywords", [])) or state.request.jdText[:500]
+        query = build_project_query(
+            state.request.jdText,
+            state.request.resumeText,
+            state.data.get("jdParse", {}).get("techKeywords", []),
+        )
 
         ranked = rerank_chunks(hybrid_chunks, query, 8)
+        state.data["projectRerank"] = rerank_projects(
+            ranked,
+            jd_text=state.request.jdText,
+            resume_text=state.request.resumeText,
+        )
 
         state.data["retrieval"] = {
             "retrievedChunks": ranked,
@@ -540,7 +564,24 @@ class SemanticRankingNode(BaseNode):
         return state
 
     def output_summary(self, state: WorkflowState) -> str:
-        return f"Ranked Top {state.data.get('retrieval', {}).get('evidenceCount', 0)} chunks."
+        return (
+            f"Ranked Top {state.data.get('retrieval', {}).get('evidenceCount', 0)} chunks; "
+            f"projects: {len(state.data.get('projectRerank', {}).get('recommendations', []))}."
+        )
+
+
+def build_project_query(jd_text: str, resume_text: str, keywords: list[str]) -> str:
+    """Use both the JD and the current resume to retrieve project evidence."""
+    keyword_text = " ".join(str(keyword) for keyword in keywords if str(keyword).strip())
+    return "\n".join(
+        part
+        for part in (
+            f"JD: {jd_text[:1400]}",
+            f"Current resume: {resume_text[:1200]}",
+            f"Key requirements: {keyword_text}",
+        )
+        if part.strip()
+    )
 
 
 def build_analyze_jd_workflow() -> WorkflowEngine:
@@ -583,6 +624,10 @@ def workflow_response(task_id: str, state: WorkflowState) -> dict[str, Any]:
             "verificationResults": state.data.get("verification", {}).get("verificationResults", []),
             "workflowLogs": state.workflow_logs,
             "qualityEvaluation": state.data.get("qualityEvaluation", {}),
+            "projectRerank": state.data.get(
+                "projectRerank",
+                {"recommendations": [], "rerankMode": "fallback", "fallbackReason": "未执行项目重排"},
+            ),
         },
     }
 

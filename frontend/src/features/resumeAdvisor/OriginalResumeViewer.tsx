@@ -36,6 +36,29 @@ function deduplicateLocatorBlocks(blocks: ResumeBlock[]): ResumeBlock[] {
   return canonical;
 }
 
+type LocatorSection = {
+  key: string;
+  name: string;
+  blocks: ResumeBlock[];
+};
+
+function groupLocatorBlocks(blocks: ResumeBlock[]): LocatorSection[] {
+  const orderedBlocks = [...blocks]
+    .sort((left, right) => left.order - right.order)
+    .map((block) => ({ ...block }));
+  const sections: LocatorSection[] = [];
+  for (const block of orderedBlocks) {
+    const key = block.sectionUid || `${block.sectionId}:${block.sectionName}`;
+    const previous = sections[sections.length - 1];
+    if (previous && previous.key === key) {
+      previous.blocks.push(block);
+      continue;
+    }
+    sections.push({ key, name: block.sectionName || "简历内容", blocks: [block] });
+  }
+  return sections;
+}
+
 export function OriginalResumeViewer({
   blocks,
   activeBlockId,
@@ -50,7 +73,8 @@ export function OriginalResumeViewer({
   const activeRef = useRef<HTMLElement | null>(null);
   const docxPreviewRef = useRef<HTMLDivElement | null>(null);
   const [docxPreviewError, setDocxPreviewError] = useState<DocxPreviewError | null>(null);
-  const visibleBlocks = useMemo(() => deduplicateLocatorBlocks(blocks), [blocks]);
+  const visibleBlocks = useMemo(() => deduplicateLocatorBlocks([...blocks].sort((left, right) => left.order - right.order)), [blocks]);
+  const locatorSections = useMemo(() => groupLocatorBlocks(visibleBlocks), [visibleBlocks]);
   const activeBlock = visibleBlocks.find((block) => block.id === activeBlockId || block.legacyBlockIds?.includes(activeBlockId || ""))
     ?? blocks.find((block) => block.id === activeBlockId);
   useEffect(() => {
@@ -96,16 +120,24 @@ export function OriginalResumeViewer({
       {preview?.sourceFormat === "docx" && preview.hasOriginalFile && <div className="resume-advisor-docx-preview" ref={docxPreviewRef} hidden={Boolean(docxPreviewError)} />}
       {docxPreviewError && <p className="resume-advisor-warning" role="status"><strong>已切换为定位文本。</strong>{docxPreviewError.message}</p>}
       {showLocatorText && preview?.sourceFormat === "docx" && <h3 className="resume-advisor-locator-heading">定位文本</h3>}
-      {showLocatorText && visibleBlocks.map((block) => (
-        <article
-          key={block.id}
-          ref={(element) => { if (block.id === activeBlock?.id) activeRef.current = element; }}
-          className={`resume-advisor-block ${block.id === activeBlock?.id ? "highlighted" : ""}`}
-        >
-          {block.id === activeBlock?.id && <span className="resume-advisor-replace-label">替换这里</span>}
-          <p className={block.kind === "heading" ? "heading" : ""}>{block.text}</p>
-        </article>
-      ))}
+      {showLocatorText && locatorSections.map((section) => {
+        const hasSourceHeading = section.blocks.some((block) => block.kind === "heading");
+        return (
+          <section className="resume-advisor-locator-section" key={section.key} aria-label={`${section.name}定位文本`}>
+            {!hasSourceHeading && <h3>{section.name}</h3>}
+            {section.blocks.map((block) => (
+              <article
+                key={block.id}
+                ref={(element) => { if (block.id === activeBlock?.id) activeRef.current = element; }}
+                className={`resume-advisor-block ${block.id === activeBlock?.id ? "highlighted" : ""}`}
+              >
+                {block.id === activeBlock?.id && <span className="resume-advisor-replace-label">替换这里</span>}
+                <p className={block.kind === "heading" ? "heading" : ""}>{block.text}</p>
+              </article>
+            ))}
+          </section>
+        );
+      })}
       {showLocatorText && !visibleBlocks.length && <p className="muted">选择会话后显示其不可变简历快照。</p>}
     </aside>
   );

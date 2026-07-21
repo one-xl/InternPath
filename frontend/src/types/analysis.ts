@@ -1,6 +1,7 @@
 import type { JobDraft } from "./job";
 import type { ModelUsage } from "./modelConfig";
 import type { ParsedResume, ResumeChunk, UploadedResumeFile } from "./resume";
+import type { ProjectRecommendation, ProjectRerankResult } from "./projectKnowledge";
 
 export type Decision = "strong_yes" | "yes" | "maybe" | "no";
 export type RiskLevel = "low" | "medium" | "high";
@@ -95,6 +96,8 @@ export interface AnalysisResult {
   requirementMatches?: any; // RequirementsMatchesResult
   hardConstraintsResult?: any; // HardConstraintsResult
   requirementAssessments?: RequirementAssessment[];
+  projectRerank?: ProjectRerankResult;
+  projectRecommendations?: ProjectRecommendation[];
 }
 
 export interface HistoryRecord extends AnalysisResult {

@@ -64,6 +64,8 @@ class ResumeAdvisorModule:
         jd_text: str,
         analysis_record_id: str | None = None,
         title: str = "",
+        project_knowledge_scope: str = "none",
+        project_knowledge_document_ids: list[int] | None = None,
     ) -> dict[str, Any]:
         resume = self.repository.db.get_user_resume(user_id, resume_id)
         if not resume:
@@ -84,13 +86,23 @@ class ResumeAdvisorModule:
             analysis_record_id=analysis_record_id,
             title=title or "简历定向优化",
         )
+        scope = project_knowledge_scope if project_knowledge_scope in {"all", "selected"} else "none"
+        project_document_ids = list(dict.fromkeys(int(value) for value in project_knowledge_document_ids or []))
         message = self.repository.append_turn(
             user_id=user_id,
             session_id=session["id"],
             role="assistant",
-            content="已建立不可变简历快照。接下来我会一次只处理一个有证据支持的改进点。",
+            content=(
+                "已建立不可变简历快照。接下来我会一次只处理一个有证据支持的改进点。"
+                if scope == "none"
+                else "已建立不可变简历快照，并会把选定项目知识库作为补充证据。"
+            ),
             message_kind="text",
-            payload={"resumeContentHash": content_hash},
+            payload={
+                "resumeContentHash": content_hash,
+                "projectKnowledgeScope": scope,
+                "projectKnowledgeDocumentIds": project_document_ids,
+            },
         )
         self.repository.append_event(
             user_id=user_id,
@@ -178,9 +190,11 @@ class ResumeAdvisorModule:
         for turn in reversed(self.repository.list_turns(user_id, session_id)):
             if turn.get("role") != "assistant":
                 continue
+            payload = turn.get("payload") if isinstance(turn.get("payload"), dict) else {}
+            if payload.get("mode") == "evidence_clarification":
+                return f"clarification:{turn.get('id') or 'assistant'}"
             if turn.get("messageKind") != "question":
                 return ""
-            payload = turn.get("payload") if isinstance(turn.get("payload"), dict) else {}
             question_key = str(payload.get("questionKey") or "").strip()
             if question_key:
                 return question_key
@@ -391,6 +405,7 @@ class ResumeAdvisorModule:
             "messages": self.repository.list_turns(user_id, session_id),
             "suggestions": self.repository.list_suggestions(user_id, session_id),
             "facts": self.repository.list_session_facts(user_id, session_id),
+            "events": self.repository.list_events(user_id, session_id)[-160:],
         }
 
     def get_resume_view(self, *, user_id: Any, session_id: str) -> dict[str, Any]:

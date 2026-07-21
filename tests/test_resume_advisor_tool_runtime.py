@@ -31,3 +31,46 @@ def test_advisor_tool_runtime_rejects_invalid_domain_output():
 
     assert result["ok"] is False
     assert result["error"]["code"] == "invalid_arguments"
+
+
+def test_advisor_tool_runtime_validates_rag_retrieval_metadata_without_exposing_chunk_text():
+    result = ResumeAdvisorToolRuntime().execute(
+        name="retrieve_resume_evidence",
+        user_id="u1",
+        session_id="advisor-1",
+        trace_id="tr-1",
+        arguments={"jdText": "需要 FastAPI"},
+        handler=lambda: {
+            "evidenceCount": 2,
+            "chunkIds": ["chunk-1", "chunk-2"],
+            "retrievalMode": "ai_service_hybrid",
+            "semanticMode": "embedding",
+        },
+    )
+
+    assert result["ok"] is True
+    assert result["data"] == {
+        "evidenceCount": 2,
+        "chunkIds": ["chunk-1", "chunk-2"],
+        "retrievalMode": "ai_service_hybrid",
+        "semanticMode": "embedding",
+    }
+
+
+def test_advisor_tool_runtime_rejects_unknown_rag_retrieval_modes():
+    result = ResumeAdvisorToolRuntime().execute(
+        name="retrieve_resume_evidence",
+        user_id="u1",
+        session_id="advisor-1",
+        trace_id="tr-1",
+        arguments={"jdText": "需要 FastAPI"},
+        handler=lambda: {
+            "evidenceCount": 1,
+            "chunkIds": ["chunk-1"],
+            "retrievalMode": "keyword_search",
+            "semanticMode": "embedding",
+        },
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "invalid_arguments"

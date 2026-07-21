@@ -6,7 +6,7 @@ import { AgentQuestionCard } from "./AgentQuestionCard";
 describe("AgentQuestionCard", () => {
   afterEach(() => cleanup());
 
-  it("records an explicit no-experience answer instead of hiding the question", async () => {
+  it("accepts a natural-language evidence reply without presenting choice buttons", async () => {
     const onAnswer = vi.fn().mockResolvedValue(undefined);
     render(
       <AgentQuestionCard
@@ -24,9 +24,39 @@ describe("AgentQuestionCard", () => {
     );
 
     expect(screen.getByText("没有证据不能写入简历")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "没有这项经历" }));
-    await waitFor(() => expect(onAnswer).toHaveBeenCalledWith("没有 redis 相关真实经历。", false));
+    expect(screen.queryByRole("button", { name: "没有这项经历" })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByRole("textbox", { name: "补充真实证据" }), { target: { value: "没有 Redis 相关真实经历。" } });
+    fireEvent.click(screen.getByRole("button", { name: "提交事实" }));
+    await waitFor(() => expect(onAnswer).toHaveBeenCalledWith("没有 Redis 相关真实经历。", false));
     expect(screen.getByRole("status")).toHaveTextContent("已提交，正在继续分析。");
+  });
+
+  it("renders a structured evidence gate without an empty assistant bubble or fallback prose", () => {
+    const { container } = render(
+      <AgentQuestionCard
+        message={{
+          id: "question-structured",
+          sequence: 2,
+          role: "assistant",
+          content: "",
+          messageKind: "question",
+          payload: {
+            questionKey: "requirement:redis",
+            why: "当前简历没有可核验的 Redis 证据。",
+            target: "项目经历",
+            evidenceTypes: ["具体职责", "技术选择"],
+          },
+        }}
+        onAnswer={vi.fn().mockResolvedValue(undefined)}
+        active
+      />,
+    );
+
+    expect(container.querySelector(".resume-advisor-message.assistant")).toBeNull();
+    expect(screen.getByText("redis")).toBeInTheDocument();
+    expect(screen.getByText("当前简历没有可核验的 Redis 证据。")).toBeInTheDocument();
+    expect(screen.getByText("具体职责、技术选择")).toBeInTheDocument();
+    expect(screen.queryByText("需要先确认事实，才能避免写入不真实的声明。")).not.toBeInTheDocument();
   });
 
   it("submits typed evidence and saves it only when the user chooses to remember it", async () => {

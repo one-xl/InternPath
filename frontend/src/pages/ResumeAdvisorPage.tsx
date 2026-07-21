@@ -1,11 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgentActivityBar } from "../features/resumeAdvisor/AgentActivityBar";
+import { AgentTimeline } from "../features/resumeAdvisor/AgentTimeline";
 import { AdvisorSloPanel } from "../features/resumeAdvisor/AdvisorSloPanel";
 import { ConversationThread } from "../features/resumeAdvisor/ConversationThread";
 import { MessageComposer } from "../features/resumeAdvisor/MessageComposer";
 import { OriginalResumeViewer } from "../features/resumeAdvisor/OriginalResumeViewer";
 import { SessionSidebar } from "../features/resumeAdvisor/SessionSidebar";
+import { SuggestionWorkspace } from "../features/resumeAdvisor/SuggestionWorkspace";
 import { resumeAdvisorApi } from "../features/resumeAdvisor/api";
+import { ProjectKnowledgePanel } from "../features/projectKnowledge/ProjectKnowledgeSelector";
+import {
+  deleteProjectKnowledgeDocument,
+  fetchProjectKnowledgeDocuments,
+  uploadProjectKnowledgeDocument,
+} from "../services/projectKnowledgeService";
+import type { ProjectKnowledgeDocument, ProjectKnowledgeScope } from "../types/projectKnowledge";
 import type { AdvisorEvent, AdvisorSession, AdvisorSloDashboard, AdvisorSnapshot, ResumeBlock, ResumePreview, ResumeSuggestion, ResumeSummary } from "../features/resumeAdvisor/types";
 
 function newClientMessageId(): string {
@@ -33,6 +42,10 @@ function eventNumber(payload: Record<string, unknown>, key: string): number | nu
   return Number.isFinite(value) ? value : null;
 }
 
+function normalizedProjectFileName(fileName: string): string {
+  return fileName.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+}
+
 export function ResumeAdvisorPage() {
   const [resumes, setResumes] = useState<ResumeSummary[]>([]);
   const [sessions, setSessions] = useState<AdvisorSession[]>([]);
@@ -50,8 +63,15 @@ export function ResumeAdvisorPage() {
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [cancellingRunId, setCancellingRunId] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [projectKnowledgeDocuments, setProjectKnowledgeDocuments] = useState<ProjectKnowledgeDocument[]>([]);
+  const [selectedProjectKnowledgeIds, setSelectedProjectKnowledgeIds] = useState<number[]>([]);
+  const [projectKnowledgeLoading, setProjectKnowledgeLoading] = useState(false);
+  const [projectKnowledgeError, setProjectKnowledgeError] = useState<string | null>(null);
+  const [projectKnowledgeUploadProgress, setProjectKnowledgeUploadProgress] = useState<{ completed: number; total: number } | null>(null);
+  const [failedProjectKnowledgeUploads, setFailedProjectKnowledgeUploads] = useState<Array<{ file: File; message: string }>>([]);
   const [liveState, setLiveState] = useState<AdvisorLiveState | null>(null);
   const latestEventSequenceRef = useRef(0);
+  const projectKnowledgeInitializedRef = useRef(false);
 
   const refreshLists = useCallback(async () => {
     const [nextResumes, nextSessions] = await Promise.all([resumeAdvisorApi.listResumes(), resumeAdvisorApi.listSessions()]);
@@ -77,6 +97,27 @@ export function ResumeAdvisorPage() {
     setSloDashboard(await resumeAdvisorApi.getSloDashboard());
   }, []);
 
+  const refreshProjectKnowledge = useCallback(async () => {
+    setProjectKnowledgeLoading(true);
+    setProjectKnowledgeError(null);
+    try {
+      const documents = await fetchProjectKnowledgeDocuments();
+      setProjectKnowledgeDocuments(documents);
+      setSelectedProjectKnowledgeIds((current) => {
+        const ids = documents.map((document) => document.id);
+        if (!projectKnowledgeInitializedRef.current) {
+          projectKnowledgeInitializedRef.current = true;
+          return ids;
+        }
+        return current.filter((id) => ids.includes(id));
+      });
+    } catch (reason) {
+      setProjectKnowledgeError(reason instanceof Error ? reason.message : "无法加载项目知识库。");
+    } finally {
+      setProjectKnowledgeLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     void refreshLists().catch((reason) => setError(reason instanceof Error ? reason.message : "无法加载简历会话。"));
   }, [refreshLists]);
@@ -84,6 +125,10 @@ export function ResumeAdvisorPage() {
   useEffect(() => {
     void refreshSloDashboard().catch(() => undefined);
   }, [refreshSloDashboard]);
+
+  useEffect(() => {
+    void refreshProjectKnowledge();
+  }, [refreshProjectKnowledge]);
 
   useEffect(() => {
     const rawContext = sessionStorage.getItem("internpath:resume-advisor-launch");
@@ -138,6 +183,11 @@ export function ResumeAdvisorPage() {
       }
       if (data.runId && data.runId !== activeRunId) return;
       const payload = data.payload && typeof data.payload === "object" ? data.payload : {};
+      setSnapshot((current) => {
+        if (!current || current.session.id !== selectedSessionId) return current;
+        if (current.events.some((entry) => entry.id === data.id)) return current;
+        return { ...current, events: [...current.events, data].slice(-160) };
+      });
 
       if (eventName === "model_delta") {
         const delta = eventText(payload, "delta");
@@ -256,8 +306,20 @@ export function ResumeAdvisorPage() {
     setError("");
     setLiveState({ runId: "pending", active: true, title: "正在提交分析任务", detail: "准备进入专用 Advisor 队列", liveText: "", cacheLabel: "", providerCacheLabel: "", firstTokenMs: null });
     try {
-      const result = await resumeAdvisorApi.startSession({ resumeId: selectedResumeId, jdText });
-      setSnapshot({ session: result.session, run: result.run, messages: [], suggestions: [], facts: [] });
+      const availableProjectIds = projectKnowledgeDocuments.map((document) => document.id);
+      const projectIds = selectedProjectKnowledgeIds.filter((id) => availableProjectIds.includes(id));
+      const projectKnowledgeScope: ProjectKnowledgeScope = projectIds.length === 0
+        ? "none"
+        : projectIds.length === availableProjectIds.length
+          ? "all"
+          : "selected";
+      const result = await resumeAdvisorApi.startSession({
+        resumeId: selectedResumeId,
+        jdText,
+        projectKnowledgeScope,
+        projectKnowledgeDocumentIds: projectIds,
+      });
+      setSnapshot({ session: result.session, run: result.run, messages: [], suggestions: [], facts: [], events: [] });
       setLiveState({ runId: result.run.id, active: true, title: "任务已进入专用 Advisor 队列", detail: "正在等待模型流连接", liveText: "", cacheLabel: "", providerCacheLabel: "", firstTokenMs: null });
       setSelectedSessionId(result.session.id);
       setJdText("");
@@ -297,6 +359,109 @@ export function ResumeAdvisorPage() {
       setError(reason instanceof Error ? reason.message : "删除简历失败。");
     } finally {
       setDeletingResumeId(null);
+    }
+  }
+
+  async function uploadProjectKnowledge(files: File[]) {
+    if (!files.length) return;
+    const existingNames = new Set(
+      projectKnowledgeDocuments.map((document) => normalizedProjectFileName(document.file_name || document.title)),
+    );
+    const queuedNames = new Set<string>();
+    const skippedFiles: File[] = [];
+    const filesToUpload = files.filter((file) => {
+      const normalizedName = normalizedProjectFileName(file.name);
+      if (existingNames.has(normalizedName) || queuedNames.has(normalizedName)) {
+        skippedFiles.push(file);
+        return false;
+      }
+      queuedNames.add(normalizedName);
+      return true;
+    });
+    if (!filesToUpload.length) {
+      setProjectKnowledgeError(`已跳过 ${skippedFiles.length} 份同名项目资料。`);
+      return;
+    }
+    setProjectKnowledgeLoading(true);
+    setProjectKnowledgeError(null);
+    setFailedProjectKnowledgeUploads([]);
+    setProjectKnowledgeUploadProgress({ completed: 0, total: filesToUpload.length });
+    try {
+      const uploaded: ProjectKnowledgeDocument[] = [];
+      const failures: Array<{ file: File; message: string }> = [];
+      for (const [index, file] of filesToUpload.entries()) {
+        try {
+          uploaded.push(await uploadProjectKnowledgeDocument(file));
+        } catch (reason) {
+          failures.push({
+            file,
+            message: reason instanceof Error ? reason.message : "上传失败",
+          });
+        } finally {
+          setProjectKnowledgeUploadProgress({ completed: index + 1, total: filesToUpload.length });
+        }
+      }
+
+      if (uploaded.length) {
+        setProjectKnowledgeDocuments((current) => {
+          const byId = new Map(current.map((document) => [document.id, document]));
+          uploaded.forEach((document) => byId.set(document.id, document));
+          return [...byId.values()];
+        });
+        setSelectedProjectKnowledgeIds((current) => [...new Set([...current, ...uploaded.map((document) => document.id)])]);
+        projectKnowledgeInitializedRef.current = true;
+      }
+      if (failures.length) {
+        setFailedProjectKnowledgeUploads(failures);
+      }
+      if (failures.length || skippedFiles.length) {
+        const summary = [
+          uploaded.length ? `${uploaded.length} 份资料已上传` : "",
+          failures.length ? `${failures.length} 份失败` : "",
+          skippedFiles.length ? `${skippedFiles.length} 份同名文件已跳过` : "",
+        ].filter(Boolean).join("，");
+        setProjectKnowledgeError(`${summary}。`);
+      }
+    } catch (reason) {
+      setProjectKnowledgeError(reason instanceof Error ? reason.message : "项目资料上传失败。");
+    } finally {
+      setProjectKnowledgeLoading(false);
+      setProjectKnowledgeUploadProgress(null);
+    }
+  }
+
+  function retryFailedProjectKnowledgeUploads() {
+    void uploadProjectKnowledge(failedProjectKnowledgeUploads.map((failure) => failure.file));
+  }
+
+  async function deleteProjectKnowledge(documentIds: number[]) {
+    const availableIds = new Set(projectKnowledgeDocuments.map((document) => document.id));
+    const ids = [...new Set(documentIds)].filter((documentId) => availableIds.has(documentId));
+    if (!ids.length) return;
+    if (!window.confirm(`确定删除选中的 ${ids.length} 份项目资料吗？删除后将不能用于后续检索。`)) return;
+    setProjectKnowledgeLoading(true);
+    setProjectKnowledgeError(null);
+    try {
+      const deletedIds: number[] = [];
+      const failures: string[] = [];
+      for (const documentId of ids) {
+        try {
+          await deleteProjectKnowledgeDocument(documentId);
+          deletedIds.push(documentId);
+        } catch (reason) {
+          failures.push(reason instanceof Error ? reason.message : "删除失败");
+        }
+      }
+      if (deletedIds.length) {
+        const deletedIdSet = new Set(deletedIds);
+        setProjectKnowledgeDocuments((current) => current.filter((document) => !deletedIdSet.has(document.id)));
+        setSelectedProjectKnowledgeIds((current) => current.filter((id) => !deletedIdSet.has(id)));
+      }
+      if (failures.length) {
+        setProjectKnowledgeError(`${deletedIds.length} 份资料已删除，${failures.length} 份删除失败。`);
+      }
+    } finally {
+      setProjectKnowledgeLoading(false);
     }
   }
 
@@ -381,10 +546,29 @@ export function ResumeAdvisorPage() {
           <p className="eyebrow">RESUME ADVISOR</p>
           <h1>简历定向优化</h1>
           <p>逐段讨论、核验证据、复制后由你手动修改原简历。</p>
+          {!projectKnowledgeLoading && projectKnowledgeDocuments.length === 0 && (
+            <p className="resume-advisor-knowledge-callout" role="status">
+              <strong>第一步：先上传项目资料库</strong>
+              点击右侧“项目资料库”批量上传项目经历，再填写 JD 开始优化；系统会用这些资料检索可用的项目证据。
+            </p>
+          )}
         </div>
         <div className="resume-advisor-header-meta">
           {selectedSession && <div className="resume-advisor-session-state">会话状态：{selectedSession.sessionStatus}</div>}
           <AdvisorSloPanel dashboard={sloDashboard} />
+          <ProjectKnowledgePanel
+            documents={projectKnowledgeDocuments}
+            selectedIds={selectedProjectKnowledgeIds}
+            onSelectionChange={setSelectedProjectKnowledgeIds}
+            isLoading={projectKnowledgeLoading}
+            error={projectKnowledgeError}
+            uploadProgress={projectKnowledgeUploadProgress}
+            failedUploads={failedProjectKnowledgeUploads.map((failure) => ({ fileName: failure.file.name, message: failure.message }))}
+            onUpload={(files) => void uploadProjectKnowledge(files)}
+            onRetryFailedUploads={retryFailedProjectKnowledgeUploads}
+            onDeleteSelected={(documentIds) => void deleteProjectKnowledge(documentIds)}
+            disabled={starting || isWaitingForAgent}
+          />
         </div>
       </header>
       {error && <p className="resume-advisor-error" role="alert">{error}</p>}
@@ -408,12 +592,9 @@ export function ResumeAdvisorPage() {
           deletingSessionId={deletingSessionId}
         />
         <section className="resume-advisor-main">
+          <AgentTimeline events={snapshot?.events || []} />
           <ConversationThread
             messages={snapshot?.messages || []}
-            suggestions={suggestions}
-            onSuggestionAction={actOnSuggestion}
-            onFocusSuggestion={focusSuggestion}
-            onQuestionAnswer={(answer, remember) => sendMessage(answer, "fact", remember)}
             streamingContent={liveState?.runId === activeRunId ? liveState.liveText : ""}
             facts={snapshot?.facts || []}
           />
@@ -429,6 +610,12 @@ export function ResumeAdvisorPage() {
           {readyToFinish && <div className="resume-advisor-finish"><strong>已完成当前可验证的检查。</strong><button type="button" className="primary" onClick={() => void finishSession()}>我满意了，结束本次优化</button></div>}
           <MessageComposer onSend={sendMessage} disabled={!selectedSessionId || isClosed} />
         </section>
+        <SuggestionWorkspace
+          suggestions={suggestions}
+          onSuggestionAction={actOnSuggestion}
+          onFocusSuggestion={focusSuggestion}
+          facts={snapshot?.facts || []}
+        />
         <OriginalResumeViewer
           blocks={blocks}
           activeBlockId={activeBlockId}

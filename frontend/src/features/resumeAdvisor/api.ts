@@ -1,4 +1,5 @@
 import type { AdvisorMessage, AdvisorRun, AdvisorSession, AdvisorSloDashboard, AdvisorSnapshot, ResumeBlock, ResumePreview, ResumeSuggestion, ResumeSummary } from "./types";
+import type { ProjectKnowledgeScope } from "../../types/projectKnowledge";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -32,9 +33,15 @@ export const resumeAdvisorApi = {
   getSloDashboard: (): Promise<AdvisorSloDashboard> => request("/api/agent/resume/operations/slo"),
   getSnapshot: (sessionId: string): Promise<AdvisorSnapshot> => request(`/api/agent/resume/sessions/${encodeURIComponent(sessionId)}`),
   getResumeView: (sessionId: string): Promise<{ blocks: ResumeBlock[]; preview: ResumePreview }> => request(`/api/agent/resume/sessions/${encodeURIComponent(sessionId)}/resume-view`),
-  startSession: (data: { resumeId: string; jdText: string; title?: string }) => request<{ session: AdvisorSession; run: AdvisorRun }>("/api/agent/resume/sessions", {
+  startSession: (data: { resumeId: string; jdText: string; title?: string; projectKnowledgeScope?: ProjectKnowledgeScope; projectKnowledgeDocumentIds?: number[] }) => request<{ session: AdvisorSession; run: AdvisorRun }>("/api/agent/resume/sessions", {
     method: "POST",
-    body: JSON.stringify({ resume_id: data.resumeId, jd_text: data.jdText, title: data.title || "" }),
+    body: JSON.stringify({
+      resume_id: data.resumeId,
+      jd_text: data.jdText,
+      title: data.title || "",
+      project_knowledge_scope: data.projectKnowledgeScope || "none",
+      project_knowledge_document_ids: data.projectKnowledgeDocumentIds || [],
+    }),
   }),
   postMessage: (sessionId: string, content: string, clientMessageId: string, messageKind: "text" | "fact" = "text", remember = false) => request<{ duplicate: boolean; message: AdvisorMessage; run?: AdvisorRun; runId?: string }>(`/api/agent/resume/sessions/${encodeURIComponent(sessionId)}/messages`, {
     method: "POST",

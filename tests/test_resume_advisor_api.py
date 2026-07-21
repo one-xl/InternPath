@@ -100,6 +100,36 @@ def test_resume_advisor_slo_dashboard_is_scoped_to_current_user():
     assert response.json()["alerts"][0]["severity"] == "warning"
 
 
+def test_resume_advisor_session_forwards_selected_project_knowledge():
+    captured: dict[str, object] = {}
+
+    class SessionModule:
+        def start_session(self, **kwargs):
+            captured.update(kwargs)
+            return {
+                "session": {"id": "session-project-rag"},
+                "run": {"id": "run-project-rag"},
+            }
+
+    app = FastAPI()
+    app.include_router(build_resume_advisor_router(SessionModule(), lambda: "u-project-rag"))
+
+    response = TestClient(app).post(
+        "/api/agent/resume/sessions",
+        json={
+            "resume_id": "resume-1",
+            "jd_text": "需要 FastAPI 与 Redis 项目经验",
+            "project_knowledge_scope": "selected",
+            "project_knowledge_document_ids": [12, 35],
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["user_id"] == "u-project-rag"
+    assert captured["project_knowledge_scope"] == "selected"
+    assert captured["project_knowledge_document_ids"] == [12, 35]
+
+
 def test_resume_advisor_session_message_idempotency_and_explicit_finish(tmp_path, monkeypatch):
     monkeypatch.setattr(Config, "EMAIL_VERIFICATION_REQUIRED", False)
     queued: list[dict] = []
@@ -192,9 +222,9 @@ def test_resume_advisor_session_message_idempotency_and_explicit_finish(tmp_path
             "target": {"blockId": "block-1", "sectionId": "project_experience", "sectionName": "项目经历", "sourceFormat": "docx", "locationLabel": "项目经历 > 第 1 条", "locatorConfidence": "approximate"},
             "originalTextHash": "b" * 64,
             "originalText": "- 负责 FastAPI 接口开发",
-            "proposedText": "• 负责 FastAPI 接口开发",
-            "copyText": "• 负责 FastAPI 接口开发",
-            "issue": "统一项目符号",
+                "proposedText": "岗位相关经历：负责 FastAPI 接口开发",
+                "copyText": "岗位相关经历：负责 FastAPI 接口开发",
+                "issue": "突出岗位相关经历",
             "rationale": "不引入新事实",
             "expectedImpact": "便于扫描",
             "priority": "high",
@@ -400,6 +430,58 @@ def test_resume_advisor_view_hides_duplicate_blocks_but_keeps_their_legacy_targe
     assert view["blocks"][0]["legacyBlockIds"] == ["block-duplicate"]
 
 
+def test_resume_advisor_retrieval_view_keeps_vectors_internal_to_the_advisor(tmp_path):
+    db = Database(str(tmp_path / "retrieval-view.db"))
+    user_id = db.create_user("retrieval-view@example.com", "password123")
+    parsed_resume = {
+        "file": {"id": "resume-rag", "name": "resume.txt", "contentHash": "r" * 64},
+        "contentHash": "r" * 64,
+        "structureVersion": "resume-structure-v2",
+        "chunks": [
+            {
+                "id": "chunk-1",
+                "documentId": "resume-rag",
+                "content": "Built Python FastAPI APIs.",
+                "sectionType": "project_experience",
+                "embedding": [0.1, 0.2],
+                "sourceBlockIds": ["block-1"],
+                "metadata": {"embedding": [0.1, 0.2], "sourceBlockIds": ["block-1"]},
+            }
+        ],
+        "blocks": [
+            {
+                "id": "block-1", "kind": "bullet", "sectionId": "project_experience",
+                "sectionName": "Project", "text": "Built Python FastAPI APIs.",
+                "textHash": "chunk-hash", "locationLabel": "Project > item 1",
+                "locatorConfidence": "high", "locator": {"sourceFormat": "txt"},
+            }
+        ],
+    }
+    db.save_user_resume(
+        user_id,
+        "resume-rag",
+        "resume.txt",
+        1,
+        "text/plain",
+        parsed_resume,
+        content_hash="r" * 64,
+    )
+    repository = ResumeAdvisorRepository(db)
+    session = repository.create_session(
+        user_id=user_id,
+        resume_id="resume-rag",
+        resume_content_hash="r" * 64,
+        jd_text="Need Python FastAPI experience.",
+    )
+
+    public_view = repository.get_resume_view(user_id, session["id"])
+    retrieval_view = repository.get_resume_retrieval_view(user_id, session["id"])
+
+    assert "chunks" not in public_view
+    assert retrieval_view["chunks"][0]["embedding"] == [0.1, 0.2]
+    assert retrieval_view["chunks"][0]["metadata"]["sourceBlockIds"] == ["block-1"]
+
+
 def test_resume_advisor_view_lazily_reparses_and_persists_old_docx_textbox_snapshots(tmp_path):
     data = _docx_bytes(
         """<?xml version="1.0" encoding="UTF-8"?>
@@ -461,7 +543,7 @@ def test_resume_advisor_view_lazily_reparses_and_persists_old_docx_textbox_snaps
     persisted = db.get_user_resume(user_id, "resume-old-parser")
 
     assert [block["text"] for block in view["blocks"]] == ["教育背景", "暨南大学 软件工程"]
-    assert persisted["parser"]["version"] == "v2"
+    assert persisted["parser"]["version"] == "v5"
     assert persisted["file"]["id"] == "resume-old-parser"
 
 

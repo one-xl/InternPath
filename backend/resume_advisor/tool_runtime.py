@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -42,6 +42,19 @@ class _JdParseOutput(BaseModel):
     requirements: list[str]
 
 
+class _ResumeRetrievalInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    jdText: str
+
+
+class _ResumeRetrievalOutput(BaseModel):
+    evidenceCount: int
+    chunkIds: list[str]
+    retrievalMode: Literal["ai_service_hybrid", "local_lexical_fallback"]
+    semanticMode: Literal["embedding", "unavailable"] | None = None
+
+
 class _BlockOperationInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -63,6 +76,7 @@ class _QualityReviewOutput(BaseModel):
 _TOOL_MODELS: dict[str, tuple[type[BaseModel], type[BaseModel]]] = {
     "extract_jd_requirements": (_JdParseInput, _JdParseOutput),
     "parse_jd_requirements": (_JdParseInput, _JdParseOutput),
+    "retrieve_resume_evidence": (_ResumeRetrievalInput, _ResumeRetrievalOutput),
     "verify_suggestion_facts": (_BlockOperationInput, _VerificationOutput),
     "hr_quality_review": (_BlockOperationInput, _QualityReviewOutput),
 }

@@ -8261,6 +8261,8 @@ blockquote,
 .resume-advisor-header h1 { margin: 2px 0 6px; font-size: 28px; }
 .resume-advisor-header p { margin: 0; color: var(--muted); }
 .resume-advisor-header .eyebrow { color: var(--accent); font-size: 11px; font-weight: 800; letter-spacing: .14em; }
+.resume-advisor-knowledge-callout { display: grid; gap: 3px; max-width: 620px; margin-top: 12px !important; border: 1px solid color-mix(in srgb, var(--accent) 52%, var(--line)); border-radius: var(--radius-md); padding: 10px 12px; background: color-mix(in srgb, var(--accent) 10%, var(--surface)); color: var(--text) !important; font-size: 12px; line-height: 1.55; }
+.resume-advisor-knowledge-callout strong { color: var(--accent); font-size: 13px; }
 .resume-advisor-header-meta { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .resume-advisor-session-state { border: 1px solid var(--line); border-radius: 999px; padding: 7px 10px; font-size: 12px; white-space: nowrap; }
 .resume-advisor-slo { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: 520px; color: var(--muted); font-size: 11px; }
@@ -8269,8 +8271,8 @@ blockquote,
 .resume-advisor-slo.warning > span { border-color: color-mix(in srgb, var(--danger) 42%, var(--line)); }
 .resume-advisor-slo-alert { color: var(--danger); font-weight: 700; }
 .resume-advisor-error { margin: 0; border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); border-radius: var(--radius-md); padding: 10px 12px; }
-.resume-advisor-grid { display: grid; grid-template-columns: minmax(210px, .8fr) minmax(330px, 1.45fr) minmax(270px, 1fr); gap: 14px; min-width: 0; min-height: 0; align-items: stretch; }
-.resume-advisor-sidebar, .resume-advisor-main, .resume-advisor-viewer { min-width: 0; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--panel); }
+.resume-advisor-grid { display: grid; grid-template-columns: minmax(210px, .72fr) minmax(310px, 1.14fr) minmax(310px, 1.14fr) minmax(270px, .9fr); gap: 14px; min-width: 0; min-height: 0; align-items: stretch; }
+.resume-advisor-sidebar, .resume-advisor-main, .resume-advisor-workspace, .resume-advisor-viewer { min-width: 0; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--panel); }
 .resume-advisor-sidebar { display: grid; grid-template-rows: auto auto auto auto auto auto minmax(0, 1fr); gap: 12px; min-height: 0; overflow: hidden; padding: 14px; }
 .resume-advisor-sidebar h2, .resume-advisor-viewer h2 { margin: 0; font-size: 14px; }
 .resume-advisor-sidebar label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 700; }
@@ -8291,8 +8293,19 @@ blockquote,
 .resume-advisor-session-button.selected { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
 .resume-advisor-delete-session { min-width: 52px; }
 .resume-advisor-session-list span, .muted { color: var(--muted); font-size: 12px; }
-.resume-advisor-main { display: grid; grid-template-rows: minmax(0, 1fr) auto; height: 100%; min-height: 0; overflow: hidden; }
-.resume-advisor-conversation { display: grid; align-content: start; gap: 11px; min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 16px; }
+.resume-advisor-main { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden; }
+.resume-advisor-agent-timeline { display: grid; flex: 0 0 auto; gap: 8px; max-height: 166px; overflow: auto; border-bottom: 1px solid var(--line); padding: 11px 12px; background: color-mix(in srgb, var(--surface) 72%, var(--panel)); }
+.resume-advisor-agent-timeline-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.resume-advisor-agent-timeline h2, .resume-advisor-workspace h2 { margin: 0; color: var(--text); font-size: 13px; }
+.resume-advisor-agent-timeline-head span { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.resume-advisor-agent-timeline ol { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.resume-advisor-agent-timeline li { display: grid; grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto; align-items: center; gap: 7px; border-left: 3px solid var(--muted); border-radius: 5px; padding: 5px 7px; background: var(--panel); font-size: 11px; }
+.resume-advisor-agent-timeline li.running { border-left-color: var(--accent); }
+.resume-advisor-agent-timeline li.done { border-left-color: color-mix(in srgb, var(--accent) 60%, var(--line)); }
+.resume-advisor-agent-timeline li strong { color: var(--text); white-space: nowrap; }
+.resume-advisor-agent-timeline li span { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+.resume-advisor-agent-timeline li small { color: var(--accent); white-space: nowrap; }
+.resume-advisor-conversation { display: grid; flex: 1 1 auto; align-content: start; gap: 11px; min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 16px; }
 .resume-advisor-message { max-width: 88%; border-radius: var(--radius-md); padding: 10px 12px; line-height: 1.55; white-space: pre-wrap; }
 .resume-advisor-message.assistant { background: var(--surface); border: 1px solid var(--line); justify-self: start; }
 .resume-advisor-message.user { background: color-mix(in srgb, var(--accent) 16%, var(--panel)); justify-self: end; }
@@ -8345,10 +8358,15 @@ blockquote,
 .resume-advisor-actions button, .link-button { border: 1px solid var(--line); background: var(--surface); color: var(--text); border-radius: 7px; padding: 6px 8px; cursor: pointer; font: inherit; font-size: 12px; }
 .link-button { color: var(--accent); }
 .resume-advisor-status { color: var(--muted); font-size: 12px; }
-.resume-advisor-composer { display: grid; grid-template-columns: 1fr auto; gap: 9px; align-items: end; border-top: 1px solid var(--line); padding: 10px 12px; }
+.resume-advisor-composer { display: grid; flex: 0 0 auto; grid-template-columns: minmax(0, 1fr) auto; gap: 9px; align-items: end; border-top: 1px solid var(--line); padding: 10px 12px; background: var(--panel); }
 .resume-advisor-composer textarea { min-height: 64px; max-height: 120px; }
+.resume-advisor-composer-error { grid-column: 1 / -1; margin: 0; color: var(--danger); font-size: 12px; }
 .resume-advisor-finish { display: flex; gap: 9px; align-items: center; justify-content: space-between; padding: 12px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--accent) 7%, var(--panel)); }
 .resume-advisor-viewer { max-height: calc(70vh + 80px); overflow: auto; padding: 14px; }
+.resume-advisor-workspace { display: flex; flex-direction: column; min-height: 0; max-height: calc(70vh + 80px); overflow: hidden; }
+.resume-advisor-workspace-head { display: grid; gap: 5px; flex: 0 0 auto; border-bottom: 1px solid var(--line); padding: 14px; }
+.resume-advisor-workspace-head p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.resume-advisor-workspace-list { display: grid; align-content: start; gap: 10px; min-height: 0; overflow: auto; padding: 12px; }
 .resume-advisor-location { margin: 10px 0; color: var(--danger); font-size: 12px; font-weight: 700; }
 .resume-advisor-original-file { display: inline-block; margin: 8px 0; color: var(--accent); font-size: 12px; font-weight: 700; }
 .resume-advisor-pdf-preview { width: 100%; min-height: 360px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fff; }
@@ -8356,6 +8374,8 @@ blockquote,
 .resume-advisor-docx-preview .docx-wrapper { background: #eef0f3; padding: 8px; }
 .resume-advisor-docx-preview .docx { margin: 0 auto 8px; }
 .resume-advisor-locator-heading { margin: 14px 0 6px; font-size: 13px; }
+.resume-advisor-locator-section { display: grid; gap: 2px; margin: 10px 0 14px; }
+.resume-advisor-locator-section > h3 { margin: 0 0 3px; padding-bottom: 6px; border-bottom: 1px solid var(--line); color: var(--text); font-size: 13px; }
 .resume-advisor-block { position: relative; border-left: 3px solid transparent; border-radius: 6px; margin: 5px 0; padding: 7px 8px; }
 .resume-advisor-block p { margin: 0; white-space: pre-wrap; line-height: 1.55; }
 .resume-advisor-block p.heading { font-weight: 800; }
@@ -8363,9 +8383,48 @@ blockquote,
 .resume-advisor-replace-label { display: inline-block; margin-bottom: 5px; border-radius: 999px; padding: 2px 6px; background: var(--danger); color: #fff; font-size: 10px; font-weight: 800; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 
+/* Project knowledge-base selection and evidence-backed recommendations */
+.project-knowledge-panel { position: relative; z-index: 20; }
+.project-knowledge-panel__trigger { display: inline-flex; align-items: center; gap: 8px; border: 1px solid color-mix(in srgb, var(--accent) 68%, var(--line)); border-radius: var(--radius-md); padding: 8px 11px; background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 92%, #1f4eaa), var(--accent)); color: #fff; box-shadow: 0 8px 18px color-mix(in srgb, var(--accent) 26%, transparent); font: inherit; font-size: 12px; font-weight: 800; cursor: pointer; white-space: nowrap; }
+.project-knowledge-panel__trigger:hover { filter: brightness(1.06); transform: translateY(-1px); }
+.project-knowledge-panel__trigger:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 42%, transparent); outline-offset: 2px; }
+.project-knowledge-panel__trigger strong { display: grid; min-width: 20px; height: 20px; place-items: center; border-radius: 999px; background: rgba(255, 255, 255, .22); color: #fff; font-size: 11px; }
+.project-knowledge-panel__trigger-action { border-left: 1px solid rgba(255, 255, 255, .34); padding-left: 8px; font-size: 11px; font-weight: 700; }
+.project-knowledge-panel__drawer { position: absolute; top: calc(100% + 8px); right: 0; display: grid; gap: 12px; width: min(540px, calc(100vw - 48px)); max-height: min(640px, calc(100vh - 144px)); overflow: auto; border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 14px; background: var(--panel); box-shadow: 0 18px 42px color-mix(in srgb, #000 20%, transparent); }
+.project-knowledge-panel__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.project-knowledge-panel h3, .project-knowledge-panel p { margin: 0; }
+.project-knowledge-panel h3 { font-size: 14px; }
+.project-knowledge-panel__head p, .project-knowledge-empty, .project-knowledge-error { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.project-knowledge-panel__head .project-knowledge-hint { margin-top: 7px; color: var(--text); }
+.project-knowledge-error { color: var(--danger); }
+.project-knowledge-upload { position: relative; flex: 0 0 auto; overflow: hidden; }
+.project-knowledge-upload input { position: absolute; inset: 0; width: 100%; opacity: 0; cursor: pointer; }
+.project-knowledge-progress { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+.project-knowledge-progress__track { height: 7px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--accent) 14%, var(--surface)); }
+.project-knowledge-progress__track span { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width .18s ease; }
+.project-knowledge-failures { display: grid; gap: 8px; padding: 10px; border: 1px solid color-mix(in srgb, var(--danger) 38%, var(--line)); border-radius: var(--radius-md); background: color-mix(in srgb, var(--danger) 7%, var(--surface)); }
+.project-knowledge-failures details { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.project-knowledge-failures ul { display: grid; gap: 4px; margin: 7px 0 0; padding-left: 18px; }
+.project-knowledge-selector { display: grid; gap: 7px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.project-knowledge-list { display: grid; gap: 6px; }
+.project-knowledge-toggle { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; min-width: 0; padding: 8px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); cursor: pointer; }
+.project-knowledge-toggle--all { border-color: color-mix(in srgb, var(--accent) 48%, var(--line)); }
+.project-knowledge-toggle span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 700; }
+.project-knowledge-toggle small { color: var(--muted); font-size: 11px; }
+.project-knowledge-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.project-knowledge-delete-selected { border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--line)); border-radius: var(--radius-sm); padding: 6px 9px; background: color-mix(in srgb, var(--danger) 8%, var(--surface)); color: var(--danger); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
+.project-recommendations { display: grid; gap: 10px; }
+.project-recommendation { display: grid; gap: 8px; border: 1px solid var(--line); border-radius: var(--radius-md); padding: 11px; background: var(--surface); }
+.project-recommendation__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.project-recommendation p, .project-recommendation details p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.project-recommendation summary { color: var(--accent); font-size: 12px; font-weight: 700; cursor: pointer; }
+.project-recommendation__fact { display: grid; gap: 4px; border-left: 3px solid var(--accent); padding-left: 8px; }
+.project-recommendation__fact span { color: var(--muted); font-size: 11px; }
+.project-recommendation__fact strong { font-size: 12px; line-height: 1.5; }
+
 @media (max-width: 980px) {
   .resume-advisor-grid { grid-template-columns: minmax(210px, .8fr) minmax(0, 1.4fr); }
-  .resume-advisor-viewer { grid-column: 1 / -1; max-height: 280px; }
+  .resume-advisor-workspace, .resume-advisor-viewer { grid-column: 1 / -1; max-height: 360px; }
 }
 
 @media (max-width: 700px) {
@@ -8373,12 +8432,16 @@ blockquote,
   .app-shell--immersive .resume-advisor-grid { grid-row: auto; }
   .resume-advisor-header { display: grid; }
   .resume-advisor-header-meta, .resume-advisor-slo { justify-content: flex-start; }
+  .project-knowledge-panel__drawer { position: fixed; top: 78px; right: 16px; left: 16px; width: auto; max-height: calc(100vh - 96px); }
   .resume-advisor-grid { grid-template-columns: minmax(0, 1fr); }
-  .resume-advisor-sidebar, .resume-advisor-viewer { max-height: none; }
+  .resume-advisor-sidebar, .resume-advisor-workspace, .resume-advisor-viewer { max-height: none; }
   .resume-advisor-sidebar { grid-template-rows: none; overflow: visible; }
   .resume-advisor-session-list { max-height: 280px; }
   .resume-advisor-main { height: min(68vh, 600px); min-height: 360px; }
   .resume-advisor-composer { grid-template-columns: 1fr; }
   .resume-advisor-finish { align-items: stretch; flex-direction: column; }
   .resume-advisor-activity-meta { display: none; }
+  .resume-advisor-agent-timeline-head { align-items: flex-start; flex-direction: column; }
+  .resume-advisor-agent-timeline li { grid-template-columns: minmax(0, 1fr) auto; }
+  .resume-advisor-agent-timeline li span { grid-column: 1 / -1; }
 }

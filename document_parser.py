@@ -20,6 +20,13 @@ _MC_CHOICE = f"{{{_MC_NS}}}Choice"
 _MC_FALLBACK = f"{{{_MC_NS}}}Fallback"
 _WORD_TEXTBOX_CONTENT = f"{{{_WORD_NS}}}txbxContent"
 _WORD_PARAGRAPH = f"{{{_WORD_NS}}}p"
+_WORDPROCESSING_DRAWING_NS = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+_WORDPROCESSING_DRAWING_ANCHOR = f"{{{_WORDPROCESSING_DRAWING_NS}}}anchor"
+_WORDPROCESSING_DRAWING_POSITION_H = f"{{{_WORDPROCESSING_DRAWING_NS}}}positionH"
+_WORDPROCESSING_DRAWING_POSITION_V = f"{{{_WORDPROCESSING_DRAWING_NS}}}positionV"
+_WORDPROCESSING_DRAWING_POS_OFFSET = f"{{{_WORDPROCESSING_DRAWING_NS}}}posOffset"
+_VML_NS = "urn:schemas-microsoft-com:vml"
+_VML_SHAPE = f"{{{_VML_NS}}}shape"
 _WORD_IGNORED_TEXT_CONTAINERS = {
     f"{{{_WORD_NS}}}del",
     f"{{{_WORD_NS}}}moveFrom",
@@ -475,8 +482,8 @@ def extract_docx_structure(data: bytes) -> list[dict[str, Any]]:
                         },
                     }
                 )
-            for textbox_paragraphs in _docx_textboxes(element):
-                for textbox_paragraph_index, textbox_paragraph in enumerate(textbox_paragraphs):
+            for textbox in _docx_textboxes(element):
+                for textbox_paragraph_index, textbox_paragraph in enumerate(textbox["paragraphs"]):
                     textbox_text = _docx_paragraph_text(textbox_paragraph)
                     if not textbox_text:
                         continue
@@ -496,6 +503,7 @@ def extract_docx_structure(data: bytes) -> list[dict[str, Any]]:
                                 "bodyIndex": body_index,
                                 "textboxIndex": textbox_index,
                                 "textboxParagraphIndex": textbox_paragraph_index,
+                                **textbox["layout"],
                                 "sourceId": source_id,
                             },
                         }
@@ -516,8 +524,8 @@ def extract_docx_structure(data: bytes) -> list[dict[str, Any]]:
                 if cell_text:
                     cells.append(cell_text)
                 for cell_paragraph in cell_paragraphs:
-                    for textbox_paragraphs in _docx_textboxes(cell_paragraph):
-                        for textbox_paragraph_index, textbox_paragraph in enumerate(textbox_paragraphs):
+                    for textbox in _docx_textboxes(cell_paragraph):
+                        for textbox_paragraph_index, textbox_paragraph in enumerate(textbox["paragraphs"]):
                             textbox_text = _docx_paragraph_text(textbox_paragraph)
                             if not textbox_text:
                                 continue
@@ -542,6 +550,7 @@ def extract_docx_structure(data: bytes) -> list[dict[str, Any]]:
                                         "bodyIndex": body_index,
                                         "textboxIndex": textbox_index,
                                         "textboxParagraphIndex": textbox_paragraph_index,
+                                        **textbox["layout"],
                                         "sourceId": source_id,
                                     },
                                 }
@@ -568,7 +577,7 @@ def extract_docx_structure(data: bytes) -> list[dict[str, Any]]:
                 textbox_record["order"] = len(records)
                 records.append(textbox_record)
         table_index += 1
-    return _ensure_structure(records, "DOCX")
+    return _ensure_structure(_sort_docx_records_by_visual_layout(records), "DOCX")
 
 
 def _docx_paragraph_text(paragraph: ElementTree.Element) -> str:
@@ -621,9 +630,14 @@ def _docx_effective_children(element: ElementTree.Element) -> list[ElementTree.E
     return list(selected) if selected is not None else []
 
 
-def _docx_textboxes(element: ElementTree.Element) -> list[list[ElementTree.Element]]:
-    """Collect textbox paragraphs without traversing both Choice and Fallback."""
-    textboxes: list[list[ElementTree.Element]] = []
+def _docx_textboxes(element: ElementTree.Element) -> list[dict[str, Any]]:
+    """Collect textbox paragraphs together with honest, sortable layout metadata.
+
+    Word stores floating textbox XML in anchor creation order, which can differ from
+    the visual reading order.  When the OOXML anchor provides a vertical position we
+    preserve it here instead of pretending that XML order represents the page.
+    """
+    textboxes: list[dict[str, Any]] = []
 
     def container_paragraphs(container: ElementTree.Element) -> list[ElementTree.Element]:
         paragraphs: list[ElementTree.Element] = []
@@ -643,19 +657,126 @@ def _docx_textboxes(element: ElementTree.Element) -> list[list[ElementTree.Eleme
         collect(container)
         return paragraphs
 
-    def walk(node: ElementTree.Element) -> None:
+    def walk(node: ElementTree.Element, layout: dict[str, Any] | None = None) -> None:
+        current_layout = _docx_textbox_layout(node) or layout
         for child in _docx_effective_children(node):
             if child.tag in _WORD_IGNORED_TEXT_CONTAINERS:
                 continue
             if child.tag == _WORD_TEXTBOX_CONTENT:
                 paragraphs = container_paragraphs(child)
                 if paragraphs:
-                    textboxes.append(paragraphs)
+                    textboxes.append({"paragraphs": paragraphs, "layout": dict(current_layout or {})})
                 continue
-            walk(child)
+            walk(child, current_layout)
 
     walk(element)
     return textboxes
+
+
+def _docx_textbox_layout(element: ElementTree.Element) -> dict[str, Any] | None:
+    """Read one floating textbox's layout coordinate without inventing a page number."""
+    if element.tag == _WORDPROCESSING_DRAWING_ANCHOR:
+        horizontal = element.find(_WORDPROCESSING_DRAWING_POSITION_H)
+        vertical = element.find(_WORDPROCESSING_DRAWING_POSITION_V)
+        x_offset = _docx_layout_offset(horizontal)
+        y_offset = _docx_layout_offset(vertical)
+        if y_offset is None:
+            return None
+        return {
+            "layoutY": y_offset,
+            "layoutX": x_offset,
+            "layoutCoordinateSpace": "docx_anchor",
+            "layoutYRelativeTo": str(vertical.get("relativeFrom") or "") if vertical is not None else "",
+            "layoutXRelativeTo": str(horizontal.get("relativeFrom") or "") if horizontal is not None else "",
+            "layoutEngine": "docx-anchor",
+        }
+    if element.tag == _VML_SHAPE:
+        offsets = _docx_vml_shape_offsets(str(element.get("style") or ""))
+        if offsets[1] is None:
+            return None
+        return {
+            "layoutY": offsets[1],
+            "layoutX": offsets[0],
+            "layoutCoordinateSpace": "docx_vml_shape",
+            "layoutEngine": "docx-vml",
+        }
+    return None
+
+
+def _docx_layout_offset(position: ElementTree.Element | None) -> int | None:
+    if position is None:
+        return None
+    raw = str(position.findtext(_WORDPROCESSING_DRAWING_POS_OFFSET) or "").strip()
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _docx_vml_shape_offsets(style: str) -> tuple[float | None, float | None]:
+    """Parse VML ``left/top`` or margin offsets when a legacy textbox has no anchor."""
+    values: dict[str, float] = {}
+    for key, raw_value, unit in re.findall(r"(?:^|;)(left|top|margin-left|margin-top)\s*:\s*(-?\d+(?:\.\d+)?)(pt)?", style, flags=re.IGNORECASE):
+        value = float(raw_value)
+        # Plain VML values are shape coordinates; points are converted only to make
+        # the two VML axes comparable. They are never mixed with EMU anchor values.
+        values[key.casefold()] = value * 12700 if unit else value
+    return values.get("left", values.get("margin-left")), values.get("top", values.get("margin-top"))
+
+
+def _sort_docx_records_by_visual_layout(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Sort a fully-positioned textbox group by its visual y/x coordinate.
+
+    We only reorder a body element when *every* emitted record is a positioned
+    textbox.  A mixed text/table body has no complete page geometry, so retaining its
+    XML order is safer than fabricating a visual reading order.
+    """
+    grouped: dict[int, list[tuple[int, dict[str, Any]]]] = {}
+    for source_index, record in enumerate(records):
+        locator = record.get("locator") if isinstance(record.get("locator"), dict) else {}
+        body_index = locator.get("bodyIndex")
+        if isinstance(body_index, int):
+            grouped.setdefault(body_index, []).append((source_index, record))
+
+    sorted_groups: dict[int, list[dict[str, Any]]] = {}
+    for body_index, group in grouped.items():
+        positioned = all(
+            isinstance((record.get("locator") or {}).get("layoutY"), (int, float))
+            and (record.get("locator") or {}).get("textboxIndex") is not None
+            for _, record in group
+        )
+        if not positioned:
+            sorted_groups[body_index] = [record for _, record in group]
+            continue
+        sorted_groups[body_index] = [
+            record
+            for _, record in sorted(
+                group,
+                key=lambda item: (
+                    float((item[1].get("locator") or {}).get("layoutY")),
+                    float((item[1].get("locator") or {}).get("layoutX") or 0),
+                    int((item[1].get("locator") or {}).get("textboxIndex") or 0),
+                    int((item[1].get("locator") or {}).get("textboxParagraphIndex") or 0),
+                    item[0],
+                ),
+            )
+        ]
+
+    output: list[dict[str, Any]] = []
+    emitted_groups: set[int] = set()
+    for record in records:
+        locator = record.get("locator") if isinstance(record.get("locator"), dict) else {}
+        body_index = locator.get("bodyIndex")
+        if not isinstance(body_index, int):
+            output.append(record)
+            continue
+        if body_index in emitted_groups:
+            continue
+        output.extend(sorted_groups[body_index])
+        emitted_groups.add(body_index)
+    for order, record in enumerate(output):
+        record["order"] = order
+    return output
 
 
 def _docx_paragraph_kind(paragraph: ElementTree.Element) -> str:

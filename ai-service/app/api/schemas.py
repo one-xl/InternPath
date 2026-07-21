@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_validator
 
@@ -31,6 +31,7 @@ class RagSearchRequest(_ApiModel):
     query: str
     documents: list[DocumentInput] = Field(default_factory=list)
     topK: StrictInt = Field(default=5, ge=1, le=20)
+    strategy: Literal["bm25", "hybrid"] = "hybrid"
 
     @field_validator("query")
     @classmethod

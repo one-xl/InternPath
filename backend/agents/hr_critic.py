@@ -1,9 +1,55 @@
-import os
-import re
 import json
-from typing import Any, Dict, Optional
+import os
+from typing import Any, Dict, Literal, Optional
+
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
+
 from backend.agents.base import BaseAgent
 from backend.agents.schemas import HRCriticOutput, parse_json_model
+
+
+class HRCriticOutputError(ValueError):
+    """The provider responded, but its review cannot be trusted as a gate decision."""
+
+
+class HRCriticDimension(BaseModel):
+    """One independently assessed review dimension returned by the model."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    verdict: Literal["pass", "fail"]
+    rationale: str = Field(min_length=1, max_length=2000)
+    evidence_basis: list[str] = Field(default_factory=list, max_length=8)
+
+
+class HRCriticEvaluation(BaseModel):
+    """Strict, model-produced contract required before a suggestion can be released."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    score: StrictInt = Field(ge=0, le=100)
+    is_passed: StrictBool
+    factual_fidelity: HRCriticDimension
+    role_jd_relevance: HRCriticDimension
+    clarity_scannability: HRCriticDimension
+    recruiting_usefulness: HRCriticDimension
+    critique: str = Field(min_length=1, max_length=3000)
+    suggestions: str = Field(min_length=1, max_length=3000)
+
+    @model_validator(mode="after")
+    def require_consistent_gate_decision(self) -> "HRCriticEvaluation":
+        all_dimensions_pass = all(
+            dimension.verdict == "pass"
+            for dimension in (
+                self.factual_fidelity,
+                self.role_jd_relevance,
+                self.clarity_scannability,
+                self.recruiting_usefulness,
+            )
+        )
+        if self.is_passed != all_dimensions_pass:
+            raise ValueError("is_passed must match the verdict of every HRCritic review dimension")
+        return self
 
 class HRCritic(BaseAgent):
     """
@@ -37,11 +83,11 @@ class HRCritic(BaseAgent):
             prompt_path = os.path.join(current_dir, "prompts", "hr_critic.md")
             with open(prompt_path, "r", encoding="utf-8") as f:
                 self.system_prompt = f.read()
-        except Exception as e:
-            # 异常发生时，提供简易的默认 Prompt 兜底
+        except Exception:
             self.system_prompt = (
-                "你是一个大厂技术面试官和简历专家。请以 JSON 格式输出评分与建议。\n"
-                "必须包含 score (0-100), is_passed (bool, >=85), critique (str), suggestions (str)。"
+                "你是独立的简历招聘审核门。JD 只能用于判断岗位相关性，不能证明候选人事实。"
+                "仅输出严格 JSON，且必须包含 score、is_passed、factual_fidelity、role_jd_relevance、"
+                "clarity_scannability、recruiting_usefulness、critique、suggestions。"
             )
 
     async def evaluate(
@@ -50,27 +96,70 @@ class HRCritic(BaseAgent):
         original_content: str,
         optimized_content: str,
         jd_text: str,
-        user_id: str = "default"
+        user_id: str = "default",
+        resume_evidence_texts: Optional[list[str]] = None,
+        confirmed_facts: Optional[list[str]] = None,
     ) -> Dict[str, Any]:
-        """
-        评估优化后的简历段落。
+        """Legacy-compatible HR evaluation for existing orchestration callers."""
+        response = await self._request_evaluation(
+            section_name=section_name,
+            original_content=original_content,
+            optimized_content=optimized_content,
+            jd_text=jd_text,
+            user_id=user_id,
+            resume_evidence_texts=resume_evidence_texts,
+            confirmed_facts=confirmed_facts,
+        )
+        return self._parse_evaluation_result(response)
 
-        Args:
-            section_name (str): 简历模块名称（例如：项目经历）。
-            original_content (str): 原始简历中对应的段落内容。
-            optimized_content (str): 优化后的段落内容。
-            jd_text (str): 目标岗位 JD 文本。
-            user_id (str): 用户 ID。
+    async def evaluate_advisor_suggestion(
+        self,
+        *,
+        section_name: str,
+        original_content: str,
+        optimized_content: str,
+        jd_text: str,
+        resume_evidence_texts: Optional[list[str]] = None,
+        confirmed_facts: Optional[list[str]] = None,
+        user_id: str = "default",
+    ) -> Dict[str, Any]:
+        """Strict independent gate used only before an Advisor suggestion is released."""
+        response = await self._request_evaluation(
+            section_name=section_name,
+            original_content=original_content,
+            optimized_content=optimized_content,
+            jd_text=jd_text,
+            user_id=user_id,
+            resume_evidence_texts=resume_evidence_texts,
+            confirmed_facts=confirmed_facts,
+        )
+        return self._parse_advisor_evaluation_result(response)
 
-        Returns:
-            dict: 包含 score, is_passed, critique, suggestions 的评估结果。
-        """
-        # 重置上下文（加载 System Prompt 并支持 Few-shot 规则）
+    async def _request_evaluation(
+        self,
+        *,
+        section_name: str,
+        original_content: str,
+        optimized_content: str,
+        jd_text: str,
+        user_id: str,
+        resume_evidence_texts: Optional[list[str]],
+        confirmed_facts: Optional[list[str]],
+    ) -> str:
         self.reset_context(user_id=user_id, query="")
+        evidence_text = "\n".join(
+            f"- {str(item).strip()}"
+            for item in (resume_evidence_texts or [])
+            if str(item).strip()
+        ) or "无"
+        confirmed_fact_text = "\n".join(
+            f"- {str(item).strip()}"
+            for item in (confirmed_facts or [])
+            if str(item).strip()
+        ) or "无"
 
-        # 构造待评审的用户提示词
         user_prompt = f"""
-请评估以下优化后的简历段落质量：
+请作为独立招聘审核门评估以下候选人可见的简历建议。不要改写简历，也不要生成候选人可见文本。
 
 [目标模块名称]
 {section_name}
@@ -81,31 +170,58 @@ class HRCritic(BaseAgent):
 [优化后的简历段落]
 {optimized_content}
 
+[同份简历的补充证据]
+{evidence_text}
+
+[用户已确认事实]
+{confirmed_fact_text}
+
 [目标岗位描述 (JD)]
 {jd_text}
 
+原始段落、补充证据和已确认事实可以用于判断事实保真；JD 绝不能用作候选人事实证据。
 请严格按照系统提示词定义的 JSON 格式输出结果。
 """
 
-        # 调用父类的通用 LLM 方法，temperature 设为较稳定的 0.2
         llm_response = await self._call_llm(
             system_prompt=self.context[0]["content"],
             user_prompt=user_prompt,
             temperature=0.2
         )
 
-        return self._parse_evaluation_result(llm_response)
+        return str(llm_response or "")
 
     def _parse_evaluation_result(self, raw_text: str) -> Dict[str, Any]:
-        """
-        安全地从大模型的响应中解析 JSON 评估数据。
-
-        Args:
-            raw_text (str): 大模型返回的原始字符串。
-
-        Returns:
-            dict: 解析后的字典。
-        """
+        """Keep the historic four-field contract while accepting new strict reviews."""
         clean_text = raw_text.strip()
+        try:
+            strict = parse_json_model(clean_text, HRCriticEvaluation, "HR 审计结果")
+        except ValueError:
+            try:
+                return parse_json_model(clean_text, HRCriticOutput, "HR 审计结果").model_dump()
+            except ValueError as exc:
+                raise HRCriticOutputError(str(exc)) from exc
+        return {
+            "score": strict.score,
+            "is_passed": strict.is_passed,
+            "critique": strict.critique,
+            "suggestions": strict.suggestions,
+        }
 
-        return parse_json_model(clean_text, HRCriticOutput, "HR 审计结果").model_dump()
+    def _parse_advisor_evaluation_result(self, raw_text: str) -> Dict[str, Any]:
+        """Reject any Advisor review that does not include every independent dimension."""
+        if not isinstance(raw_text, str):
+            raise HRCriticOutputError("Advisor HR 审计结果必须是一个原始 JSON 对象。")
+        clean_text = raw_text.strip()
+        if not clean_text:
+            raise HRCriticOutputError("Advisor HR 审计结果不能为空。")
+        try:
+            payload = json.loads(clean_text)
+        except json.JSONDecodeError as exc:
+            raise HRCriticOutputError("Advisor HR 审计结果必须是一个完整的原始 JSON 对象。") from exc
+        if not isinstance(payload, dict):
+            raise HRCriticOutputError("Advisor HR 审计结果必须是一个 JSON 对象。")
+        try:
+            return HRCriticEvaluation.model_validate(payload).model_dump()
+        except Exception as exc:
+            raise HRCriticOutputError(str(exc)) from exc

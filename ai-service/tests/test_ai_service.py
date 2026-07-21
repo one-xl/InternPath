@@ -12,7 +12,11 @@ def test_health():
     assert response.json() == {"status": "ok", "service": "internpath-ai-service"}
 
 
-def test_rag_search_returns_relevant_chunk():
+def test_rag_search_runs_hybrid_retrieval_and_preserves_resume_provenance(monkeypatch):
+    monkeypatch.setattr(
+        "app.rag.hybrid_retriever.get_embedding",
+        lambda _query, _config=None: [1.0, 0.0],
+    )
     response = client.post(
         "/ai/rag/search",
         json={
@@ -20,13 +24,20 @@ def test_rag_search_returns_relevant_chunk():
             "documents": [
                 {
                     "documentId": "doc-1",
+                    "chunkId": "resume-1",
                     "content": "This role needs Python and FastAPI backend development.",
-                    "metadata": {"sourceType": "JD"},
+                    "sectionType": "project_experience",
+                    "semanticType": "experience",
+                    "importance": 0.9,
+                    "embedding": [1.0, 0.0],
+                    "metadata": {"sourceType": "RESUME", "sourceBlockIds": ["block-1"]},
                 },
                 {
                     "documentId": "doc-2",
+                    "chunkId": "resume-2",
                     "content": "Marketing copy and unrelated operations text.",
-                    "metadata": {"sourceType": "KNOWLEDGE_BASE"},
+                    "embedding": [0.0, 1.0],
+                    "metadata": {"sourceType": "RESUME", "sourceBlockIds": ["block-2"]},
                 },
             ],
             "topK": 2,
@@ -35,7 +46,39 @@ def test_rag_search_returns_relevant_chunk():
     assert response.status_code == 200
     body = response.json()
     assert body["results"]
+    assert body["strategy"] == "hybrid"
+    assert body["semanticMode"] == "embedding"
+    assert body["semanticChunkCount"] == 2
     assert body["results"][0]["documentId"] == "doc-1"
+    assert body["results"][0]["sectionType"] == "project_experience"
+    assert body["results"][0]["metadata"]["sourceBlockIds"] == ["block-1"]
+
+
+def test_rag_search_marks_missing_vectors_as_lexical_fallback(monkeypatch):
+    monkeypatch.setattr(
+        "app.rag.hybrid_retriever.get_embedding",
+        lambda _query, _config=None: [],
+    )
+    response = client.post(
+        "/ai/rag/search",
+        json={
+            "query": "Python FastAPI",
+            "documents": [
+                {
+                    "documentId": "doc-1",
+                    "chunkId": "resume-1",
+                    "content": "Built Python FastAPI backend APIs.",
+                    "metadata": {"sourceBlockIds": ["block-1"]},
+                }
+            ],
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["strategy"] == "hybrid"
+    assert body["semanticMode"] == "lexical_fallback"
+    assert body["semanticChunkCount"] == 0
+    assert body["results"][0]["metadata"]["sourceBlockIds"] == ["block-1"]
 
 
 def test_verify_report_finds_unsupported_claim():

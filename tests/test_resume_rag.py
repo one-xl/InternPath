@@ -3,6 +3,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 from backend.resume_rag import (
     build_resume_blocks,
+    build_resume_blocks_from_source_records,
     clean_resume_text,
     chunk_resume,
     parse_resume,
@@ -49,6 +50,7 @@ InternPath 实习助手
 def test_section_for_line_accepts_inline_and_decorated_headings():
     assert section_for_line("## 项目经历") == "项目经历"
     assert section_for_line("专业技能：Python / TypeScript / RAG") == "技能"
+    assert section_for_line("自我评价家") == "自我评价"
     assert section_for_line("Work Experience - Backend Intern") == "实习 / 工作经历"
     assert section_for_line("项目经历包括接口开发和性能优化") is None
 
@@ -255,6 +257,9 @@ def test_parse_resume_supports_plain_text_uploads():
 
     assert parsed["parser"]["sourceFormat"] == "txt"
     assert parsed["rawText"] == "项目经历\n负责 FastAPI 接口开发\n技能\nPython / Redis"
+    assert parsed["cleaningReport"]["schemaVersion"] == "resume-cleaning-v1"
+    assert parsed["cleaningReport"]["blockCount"] == len(parsed["blocks"])
+    assert parsed["cleaningReport"]["editableBlockCount"] >= 2
     assert "## 项目经历" in parsed["structuredMarkdown"]
     assert any(block["text"] == "Python / Redis" for block in parsed["blocks"])
 
@@ -351,6 +356,64 @@ def test_docx_alternate_content_reads_one_branch_and_emits_textbox_paragraphs_in
     assert parsed["structuredMarkdown"].count("项目经历") == 1
 
 
+def test_docx_floating_textboxes_follow_anchor_vertical_order_before_sections_are_built():
+    data = _docx_bytes(
+        """<?xml version="1.0" encoding="UTF-8"?>
+        <w:document
+          xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+          xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">
+          <w:body><w:p>
+            <w:drawing><wp:anchor>
+              <wp:positionH relativeFrom="paragraph"><wp:posOffset>0</wp:posOffset></wp:positionH>
+              <wp:positionV relativeFrom="paragraph"><wp:posOffset>900</wp:posOffset></wp:positionV>
+              <w:txbxContent><w:p><w:r><w:t>旧项目描述</w:t></w:r></w:p></w:txbxContent>
+            </wp:anchor></w:drawing>
+            <w:drawing><wp:anchor>
+              <wp:positionH relativeFrom="paragraph"><wp:posOffset>0</wp:posOffset></wp:positionH>
+              <wp:positionV relativeFrom="paragraph"><wp:posOffset>200</wp:posOffset></wp:positionV>
+              <w:txbxContent><w:p><w:r><w:t>项目经历</w:t></w:r></w:p></w:txbxContent>
+            </wp:anchor></w:drawing>
+            <w:drawing><wp:anchor>
+              <wp:positionH relativeFrom="paragraph"><wp:posOffset>0</wp:posOffset></wp:positionH>
+              <wp:positionV relativeFrom="paragraph"><wp:posOffset>300</wp:posOffset></wp:positionV>
+              <w:txbxContent><w:p><w:r><w:t>InternPath 负责接口开发</w:t></w:r></w:p></w:txbxContent>
+            </wp:anchor></w:drawing>
+          </w:p></w:body>
+        </w:document>""",
+    )
+
+    records = extract_docx_structure(data)
+    parsed = parse_resume("resume.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", data)
+
+    assert [record["text"] for record in records] == ["项目经历", "InternPath 负责接口开发", "旧项目描述"]
+    assert [record["locator"]["layoutY"] for record in records] == [200, 300, 900]
+    assert [block["sectionName"] for block in parsed["blocks"]] == ["项目经历", "项目经历", "项目经历"]
+
+
+def test_docx_detached_date_bearing_project_subtree_is_placed_under_its_later_project_heading():
+    records = [
+        {"sourceId": "education", "order": 0, "kind": "heading", "text": "教育背景", "locator": {"sourceFormat": "docx", "bodyIndex": 0}},
+        {"sourceId": "degree", "order": 1, "kind": "paragraph", "text": "暨南大学 软件工程", "locator": {"sourceFormat": "docx", "bodyIndex": 0}},
+        {"sourceId": "project-title", "order": 2, "kind": "paragraph", "text": "2026.03-06 QuickDrop 文件分发工具 创立者", "locator": {"sourceFormat": "docx", "bodyIndex": 1}},
+        {"sourceId": "project-detail", "order": 3, "kind": "bullet", "text": "核心技术：使用 Tauri 和 Axum 实现局域网文件分发。", "locator": {"sourceFormat": "docx", "bodyIndex": 1}},
+        {"sourceId": "projects", "order": 4, "kind": "heading", "text": "项目经历", "locator": {"sourceFormat": "docx", "bodyIndex": 1}},
+        {"sourceId": "internpath", "order": 5, "kind": "bullet", "text": "InternPath 负责 FastAPI 接口开发", "locator": {"sourceFormat": "docx", "bodyIndex": 1}},
+        {"sourceId": "skills", "order": 6, "kind": "heading", "text": "技能证书", "locator": {"sourceFormat": "docx", "bodyIndex": 1}},
+    ]
+
+    blocks = build_resume_blocks_from_source_records(records, "resume-1", "resume.docx", content_hash="hash")
+
+    assert [(block["sectionName"], block["text"]) for block in blocks] == [
+        ("教育经历", "教育背景"),
+        ("教育经历", "暨南大学 软件工程"),
+        ("项目经历", "项目经历"),
+        ("项目经历", "InternPath 负责 FastAPI 接口开发"),
+        ("项目经历", "2026.03-06 QuickDrop 文件分发工具 创立者"),
+        ("项目经历", "核心技术：使用 Tauri 和 Axum 实现局域网文件分发。"),
+        ("技能", "技能证书"),
+    ]
+
+
 def test_legacy_resume_with_original_docx_is_reparsed_by_the_current_structured_parser():
     data = _docx_bytes(
         """<?xml version="1.0" encoding="UTF-8"?>
@@ -391,7 +454,7 @@ def test_legacy_resume_with_original_docx_is_reparsed_by_the_current_structured_
 
     assert changed is True
     assert repaired["file"]["id"] == "resume-existing"
-    assert repaired["parser"]["version"] == "v2"
+    assert repaired["parser"]["version"] == "v5"
     assert [block["text"] for block in repaired["blocks"]] == ["教育背景", "暨南大学 软件工程"]
 
 

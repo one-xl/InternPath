@@ -109,6 +109,40 @@ function AdviceEvidenceCard({ result }: { result: AnalysisResult }) {
   );
 }
 
+function ProjectRecommendationsCard({ result }: { result: AnalysisResult }) {
+  const recommendations = result.projectRecommendations ?? result.projectRerank?.recommendations ?? [];
+  if (!recommendations.length) return null;
+  const rerank = result.projectRerank;
+
+  return (
+    <Card
+      title="项目知识库推荐"
+      description={rerank?.rerankMode === "fallback" ? "模型重排不可用，已显示可追溯的确定性排序。" : "结合 JD、当前简历和项目证据重排。"}
+    >
+      <div className="project-recommendations">
+        {recommendations.map((recommendation) => (
+          <article key={recommendation.documentId} className="project-recommendation">
+            <div className="project-recommendation__head">
+              <strong>{recommendation.documentId}</strong>
+              <Badge tone="success">{Math.round(recommendation.score)} 分</Badge>
+            </div>
+            <p>{recommendation.matchReason}</p>
+            <div className="project-recommendation__fact">
+              <span>建议写入简历</span>
+              <strong>{recommendation.resumeSuggestion}</strong>
+            </div>
+            <details>
+              <summary>查看知识库证据（{recommendation.chunkIds.length} 个片段）</summary>
+              {recommendation.evidence.map((evidence, index) => <p key={`${recommendation.chunkIds[index]}-${index}`}>{evidence}</p>)}
+            </details>
+          </article>
+        ))}
+      </div>
+      {rerank?.fallbackReason && <p className="muted-line">降级原因：{rerank.fallbackReason}</p>}
+    </Card>
+  );
+}
+
 function CitationsAndEvidenceCheckPanel({ result }: { result: AnalysisResult }) {
   const claimsMapping: any[] = [];
   const res = result as any;
@@ -551,6 +585,7 @@ export function ResultPage({
         <>
           <DecisionCard result={result} />
           <MatchScorePanel result={result} />
+          <ProjectRecommendationsCard result={result} />
           <ResumeEvidenceCard result={result} />
           <ResumeChunkPreview
             chunks={result.retrievedResumeChunks ?? []}

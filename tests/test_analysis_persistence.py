@@ -265,6 +265,9 @@ def test_service_upload_knowledge_document_and_passes_chunks_to_ai_service(local
 
     assert doc["status"] == "READY"
     assert doc["chunk_count"] >= 1
+    duplicate = service.upload_knowledge_document(1, _UploadedTextFile(), "resume", title="My Resume")
+    assert duplicate["id"] == doc["id"]
+    assert len(service.list_knowledge_documents(1, "resume")) == 1
 
     service.analyze_jd_with_guardrails(
         user_id=1,

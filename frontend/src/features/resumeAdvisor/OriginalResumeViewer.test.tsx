@@ -104,4 +104,47 @@ describe("OriginalResumeViewer", () => {
     expect(screen.getAllByText("负责简历分析页面开发")).toHaveLength(1);
     expect(screen.getByText("替换这里")).toBeInTheDocument();
   });
+
+  it("orders locator text by persisted resume order and keeps each source heading with its section", () => {
+    const { container } = render(
+      <OriginalResumeViewer
+        fileUrl=""
+        activeBlockId={null}
+        preview={{
+          sourceFormat: "docx",
+          hasOriginalFile: false,
+          inlinePreviewAvailable: false,
+          locationNotice: "原始文件不可用，展示定位文本。",
+        }}
+        blocks={[
+          {
+            id: "project-content", order: 3, kind: "bullet", sectionId: "project_experience", sectionUid: "projects", sectionName: "项目经历",
+            text: "InternPath 负责接口开发", textHash: "hash-project-content", locationLabel: "项目经历 · 第 1 条",
+            locatorConfidence: "high", locator: { sourceFormat: "docx", layoutY: 300 },
+          },
+          {
+            id: "education-content", order: 1, kind: "paragraph", sectionId: "education", sectionUid: "education", sectionName: "教育经历",
+            text: "暨南大学 软件工程", textHash: "hash-education-content", locationLabel: "教育经历 · 第 1 条",
+            locatorConfidence: "high", locator: { sourceFormat: "docx", layoutY: 100 },
+          },
+          {
+            id: "project-heading", order: 2, kind: "heading", sectionId: "project_experience", sectionUid: "projects", sectionName: "项目经历",
+            text: "项目经历", textHash: "hash-project-heading", locationLabel: "项目经历 · 标题",
+            locatorConfidence: "high", locator: { sourceFormat: "docx", layoutY: 200 },
+          },
+          {
+            id: "education-heading", order: 0, kind: "heading", sectionId: "education", sectionUid: "education", sectionName: "教育经历",
+            text: "教育背景", textHash: "hash-education-heading", locationLabel: "教育经历 · 标题",
+            locatorConfidence: "high", locator: { sourceFormat: "docx", layoutY: 0 },
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByLabelText("教育经历定位文本")).toHaveTextContent("教育背景暨南大学 软件工程");
+    expect(screen.getByLabelText("项目经历定位文本")).toHaveTextContent("项目经历InternPath 负责接口开发");
+    const content = container.textContent || "";
+    expect(content.indexOf("教育背景")).toBeLessThan(content.indexOf("项目经历"));
+    expect(content.indexOf("项目经历")).toBeLessThan(content.indexOf("InternPath 负责接口开发"));
+  });
 });

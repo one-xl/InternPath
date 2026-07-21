@@ -1,15 +1,55 @@
 from __future__ import annotations
 
+import difflib
 import re
+import unicodedata
 from typing import Any, Callable, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from backend.agents.cache import build_cache_key, get_agent_cache, set_agent_cache
 
 
 FactStatus = Literal["supported", "needs_user", "unsupported"]
-_ADVISOR_CACHE_SCHEMA_VERSION = "resume-advisor-v1"
+_ADVISOR_CACHE_SCHEMA_VERSION = "resume-advisor-v2"
+
+
+class HRCriticReviewError(RuntimeError):
+    """Base error for a required independent HR review that cannot be trusted."""
+
+    model_status: Literal["unavailable", "failed", "invalid_output"] = "failed"
+
+
+class HRCriticUnavailableError(HRCriticReviewError):
+    """Raised when no configured model can perform the required HR review."""
+
+    model_status = "unavailable"
+
+
+class HRCriticProviderError(HRCriticReviewError):
+    """Raised when the HRCritic provider invocation does not complete."""
+
+    model_status = "failed"
+
+
+class HRCriticInvalidOutputError(HRCriticReviewError):
+    """Raised when HRCritic output cannot satisfy the required review contract."""
+
+    model_status = "invalid_output"
+
+
+class RagEvidenceReviewError(RuntimeError):
+    """A required model review of retrieved evidence could not be trusted."""
+
+    model_status: Literal["unavailable", "failed", "invalid_output"] = "failed"
+
+
+class RagEvidenceReviewUnavailableError(RagEvidenceReviewError):
+    model_status = "unavailable"
+
+
+class RagEvidenceReviewInvalidOutputError(RagEvidenceReviewError):
+    model_status = "invalid_output"
 
 _QUANTITATIVE_PATTERN = (
     r"(?<![A-Za-z0-9])(?:\d+(?:\.\d+)?\s*(?:%|％|倍|x|X|ms|毫秒|秒|分钟|小时|天|周|月|年|"
@@ -20,6 +60,40 @@ _ORG_PATTERN = r"[\u4e00-\u9fa5A-Za-z0-9·&（）()]{2,32}(?:大学|学院|公�
 _TECH_PATTERN = r"\b[A-Za-z][A-Za-z0-9+#./_-]{1,}\b"
 _ROLE_TERMS = ("主导", "牵头", "负责人", "架构师", "技术负责人", "owner", "lead", "owned")
 _RESULT_TERMS = ("提升", "降低", "增长", "缩短", "节省", "减少", "达成", "带来", "实现")
+_ASSERTION_PUNCTUATION = r"[，,。；;：:！!？?\n]"
+_ASSERTION_CONNECTOR = r"(?:并且|以及|同时|并|且|及|和)"
+_ASSERTION_BOUNDARY = rf"(?:^|{_ASSERTION_PUNCTUATION}|{_ASSERTION_CONNECTOR})"
+_ASSERTION_SUBJECT = r"(?:(?:候选人|该候选人|申请人|本人|你)\s*)?"
+_ASSERTION_QUALIFIERS = r"(?:(?:能够|能|可|会|已|曾|将|主要|独立)\s*)*"
+_ACTION_VERBS = (
+    r"(?:承担|负责|协助|主导|推动|协调|管理|统筹|组织|对接|维护|实施|执行|制定|"
+    r"搭建|开发|测试|分析|处理|跟进|参与|完成)"
+)
+_CAPABILITY_VERBS = r"(?:具备|掌握|熟悉|擅长|精通|拥有|具有)"
+_NON_ASSERTIVE_PREFIXES = (
+    "不表示", "并非", "不是", "不", "未", "没有", "无", "无法", "不能",
+    "JD", "岗位要求", "职位要求", "招聘要求", "假设", "如果", "是否",
+)
+_ACTION_ASSERTION_RE = re.compile(
+    rf"{_ASSERTION_BOUNDARY}\s*[•·*-]?\s*{_ASSERTION_SUBJECT}{_ASSERTION_QUALIFIERS}"
+    rf"(?P<claim>{_ACTION_VERBS}(?![的地得])[^\n，,。；;！!？?]{{2,48}}?)"
+    rf"(?=$|{_ASSERTION_PUNCTUATION}|{_ASSERTION_CONNECTOR}(?={_ACTION_VERBS}))"
+)
+_ACTION_SUBJECT_ASSERTION_RE = re.compile(
+    rf"(?:候选人|该候选人|申请人|本人)\s*{_ASSERTION_QUALIFIERS}"
+    rf"(?P<claim>{_ACTION_VERBS}(?![的地得])[^\n，,。；;！!？?]{{2,48}}?)"
+    rf"(?=$|{_ASSERTION_PUNCTUATION}|{_ASSERTION_CONNECTOR}(?={_ACTION_VERBS}))"
+)
+_CAPABILITY_ASSERTION_RE = re.compile(
+    rf"{_ASSERTION_BOUNDARY}\s*[•·*-]?\s*{_ASSERTION_SUBJECT}{_ASSERTION_QUALIFIERS}"
+    rf"(?P<claim>{_CAPABILITY_VERBS}(?![的地得])[^\n，,。；;！!？?]{{2,48}}?)"
+    rf"(?=$|{_ASSERTION_PUNCTUATION}|{_ASSERTION_CONNECTOR}(?={_CAPABILITY_VERBS}))"
+)
+_CAPABILITY_SUBJECT_ASSERTION_RE = re.compile(
+    rf"(?:候选人|该候选人|申请人|本人)\s*{_ASSERTION_QUALIFIERS}"
+    rf"(?P<claim>{_CAPABILITY_VERBS}(?![的地得])[^\n，,。；;！!？?]{{2,48}}?)"
+    rf"(?=$|{_ASSERTION_PUNCTUATION}|{_ASSERTION_CONNECTOR}(?={_CAPABILITY_VERBS}))"
+)
 _TECH_STOP_WORDS = {
     "and", "api", "app", "css", "for", "from", "http", "json", "or", "the", "to", "ui",
     "web", "with", "开发", "接口", "项目", "负责", "参与", "优化", "系统",
@@ -53,22 +127,57 @@ class QualityReviewResult(BaseModel):
     score: int = Field(ge=0, le=100)
     issues: list[str] = Field(default_factory=list)
     reviewer: Literal["local_gate", "hr_critic"] = "local_gate"
+    hr_review: dict[str, Any] = Field(default_factory=dict)
 
 
 class SuggestionDraft(BaseModel):
-    proposed_text: str = Field(min_length=1, max_length=12000)
+    outcome: Literal["revision", "affirmation"] = "revision"
+    proposed_text: str = Field(default="", max_length=12000)
     issue: str = Field(min_length=1, max_length=1000)
     rationale: str = Field(min_length=1, max_length=3000)
     expected_impact: str = Field(min_length=1, max_length=1000)
     priority: Literal["high", "medium", "low"] = "medium"
+    affirmation: str = Field(default="", max_length=3000)
+    highlight_locations: list[str] = Field(default_factory=list, max_length=4)
+
+    @model_validator(mode="after")
+    def require_content_for_the_selected_outcome(self) -> "SuggestionDraft":
+        if self.outcome == "revision" and not self.proposed_text.strip():
+            raise ValueError("revision output requires proposed_text")
+        if self.outcome == "affirmation" and not self.affirmation.strip():
+            raise ValueError("affirmation output requires affirmation")
+        if self.outcome == "affirmation" and not self.highlight_locations:
+            raise ValueError("affirmation output requires highlight_locations")
+        return self
 
 
 def _matches(pattern: str, text: str) -> list[str]:
     return list(dict.fromkeys(match.group(0).strip() for match in re.finditer(pattern, text, flags=re.IGNORECASE)))
 
 
+def _has_non_assertive_prefix(text: str, claim_start: int) -> bool:
+    clause_start = max(text.rfind(marker, 0, claim_start) for marker in "，,。；;：:！!？?\n") + 1
+    prefix = text[clause_start:claim_start]
+    return any(marker in prefix for marker in _NON_ASSERTIVE_PREFIXES)
+
+
+def _assertion_claims(patterns: tuple[re.Pattern[str], ...], text: str) -> list[str]:
+    """Return explicit candidate assertions, not explanatory references to resume text."""
+    return list(dict.fromkeys(
+        re.sub(r"\s+", " ", match.group("claim")).strip()
+        for pattern in patterns
+        for match in pattern.finditer(text)
+        if match.group("claim").strip()
+        and not _has_non_assertive_prefix(text, match.start("claim"))
+    ))
+
+
 def _contains(value: str, text: str) -> bool:
-    return value.casefold() in text.casefold()
+    def normalise_numbers(item: str) -> str:
+        translated = item.translate(str.maketrans("零一二三四五六七八九两", "01234567892"))
+        return re.sub(r"\s+", "", translated)
+
+    return normalise_numbers(value).casefold() in normalise_numbers(text).casefold()
 
 
 def _claim_status(claim: str, evidence: str, denied: str) -> FactStatus:
@@ -86,7 +195,7 @@ def _issue_message(category: str, claim: str, status: FactStatus) -> str:
         "date": "日期或年限",
         "organization": "机构名称",
         "skill": "技能或技术栈",
-        "role": "角色升级表述",
+        "role": "职责或角色声明",
         "result": "结果声明",
     }
     return f"{prefix}：{labels[category]}「{claim}」。"
@@ -170,14 +279,26 @@ def verify_suggestion_facts(
     _append_new_claims(
         issues,
         category="skill",
-        proposed_claims=tech_claims,
+        proposed_claims=[
+            *tech_claims,
+            *_assertion_claims(
+                (_CAPABILITY_ASSERTION_RE, _CAPABILITY_SUBJECT_ASSERTION_RE),
+                proposed_text,
+            ),
+        ],
         original_and_evidence=evidence,
         denied=denied,
     )
     _append_new_claims(
         issues,
         category="role",
-        proposed_claims=[term for term in _ROLE_TERMS if _contains(term, proposed_text)],
+        proposed_claims=[
+            *(term for term in _ROLE_TERMS if _contains(term, proposed_text)),
+            *_assertion_claims(
+                (_ACTION_ASSERTION_RE, _ACTION_SUBJECT_ASSERTION_RE),
+                proposed_text,
+            ),
+        ],
         original_and_evidence=evidence,
         denied=denied,
     )
@@ -198,6 +319,42 @@ def verify_suggestion_facts(
     return FactVerificationResult(status=status, fact_issues=issues)
 
 
+def is_presentation_only_rewrite(*, original_text: str, proposed_text: str) -> bool:
+    """Detect edits that only shuffle formatting or nearly identical wording.
+
+    An Advisor suggestion exists to improve JD-relevant evidence expression, not to
+    spend a turn replacing punctuation or breaking one sentence into several.  This
+    intentionally catches the latter while leaving genuine, evidence-backed rewrites
+    to the independent HR review.
+    """
+    def normalized(value: str) -> str:
+        return "".join(
+            character
+            for character in unicodedata.normalize("NFKC", value).casefold()
+            if not character.isspace()
+            and not unicodedata.category(character).startswith(("P", "Z"))
+        )
+
+    original = normalized(original_text)
+    proposed = normalized(proposed_text)
+    if not original or not proposed:
+        return False
+    if original == proposed:
+        return True
+    if min(len(original), len(proposed)) < 48:
+        return False
+
+    sequence_similarity = difflib.SequenceMatcher(None, original, proposed).ratio()
+    original_counts = {character: original.count(character) for character in set(original)}
+    proposed_counts = {character: proposed.count(character) for character in set(proposed)}
+    shared_characters = sum(
+        min(original_counts.get(character, 0), proposed_counts.get(character, 0))
+        for character in set(original_counts) | set(proposed_counts)
+    )
+    content_overlap = shared_characters / max(len(original), len(proposed))
+    return sequence_similarity >= 0.90 and content_overlap >= 0.93
+
+
 def review_suggestion_quality(
     *,
     original_text: str,
@@ -210,6 +367,8 @@ def review_suggestion_quality(
     clean_proposed = proposed_text.strip()
     if not clean_proposed:
         issues.append("建议文本不能为空")
+    elif is_presentation_only_rewrite(original_text=original_text, proposed_text=clean_proposed):
+        issues.append("建议仅调整标点、断句或近似措辞，未形成与 JD 相关的实质优化")
     if not evidence_block_ids:
         issues.append("建议缺少简历证据引用")
     if fact_status != "supported":
@@ -232,18 +391,10 @@ def draft_resume_suggestion(
     on_cache_event: Callable[[str, bool], None] | None = None,
     on_provider_usage: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> SuggestionDraft:
-    """Create one conservative structured draft, optionally using the existing copywriter model."""
+    """Ask ResumeCopywriter for one structured draft; this harness never invents copy fields."""
     text = original_text.strip()
     if model_client is None or not model_id:
-        compact = re.sub(r"\s+", " ", text)
-        compact = re.sub(r"^[-•·*]\s*", "", compact)
-        return SuggestionDraft(
-            proposed_text=f"• {compact}" if compact else compact,
-            issue="将已有事实整理为一条可快速扫描的简历要点。",
-            rationale="本地保守草拟：只调整项目符号和空白，后续仍需通过事实与质量门。",
-            expected_impact="让招聘者更容易定位已有事实。",
-            priority="high" if section_name in {"project_experience", "work_experience"} else "medium",
-        )
+        raise ValueError("ResumeCopywriter requires a configured model")
 
     try:
         from backend.memory.preference_db import PreferenceDB
@@ -257,7 +408,7 @@ def draft_resume_suggestion(
         preference_rules = []
 
     cache_key = build_cache_key(
-        "resume_advisor_draft_v1",
+        "resume_advisor_draft_v2",
         model_id,
         original_text,
         section_name,
@@ -266,35 +417,31 @@ def draft_resume_suggestion(
         context_snapshot,
         preference_rules,
         schema_version=_ADVISOR_CACHE_SCHEMA_VERSION,
-        tool_version="resume-copywriter-v1",
+        tool_version="resume-copywriter-structured-v1",
     )
-    cached = get_agent_cache("resume_advisor_draft_v1", cache_key)
+    cached = get_agent_cache("resume_advisor_draft_v2", cache_key)
     if isinstance(cached, dict):
         try:
             draft = SuggestionDraft.model_validate(cached)
             if on_cache_event:
-                on_cache_event("resume_advisor_draft_v1", True)
+                on_cache_event("resume_advisor_draft_v2", True)
             return draft
         except Exception:
             pass
     if on_cache_event:
-        on_cache_event("resume_advisor_draft_v1", False)
+        on_cache_event("resume_advisor_draft_v2", False)
 
     from backend.agents.resume_copywriter import ResumeCopywriter
 
     copywriter = ResumeCopywriter(model=model_id, openai_client=model_client)
-    decoded_job = {"requirements": jd_requirements}
     try:
-        proposed_text = _run_async(
-            copywriter.rewrite_section(
+        generated = _run_async(
+            copywriter.generate_advisor_suggestion(
                 section_name=section_name,
                 original_content=text,
-                decoded_job=decoded_job,
-                goal=(
-                    "只优化已有事实的清晰度和可扫描性；不得新增任何技能、角色、数字或结果。"
-                    f" 用户本轮修订要求：{revision_feedback.strip()}"
-                    f"\n\n[受限会话上下文]\n{context_snapshot.strip()}"
-                ),
+                jd_requirements=jd_requirements,
+                revision_feedback=revision_feedback,
+                context_snapshot=context_snapshot,
                 user_id=str(user_id),
                 on_delta=on_delta,
                 preference_rules=preference_rules,
@@ -308,14 +455,8 @@ def draft_resume_suggestion(
                 on_provider_usage("resume_copywriter", BaseAgent.pop_provider_cache_usage(model_client))
             except Exception:
                 on_provider_usage("resume_copywriter", {})
-    draft = SuggestionDraft(
-        proposed_text=proposed_text,
-        issue="根据岗位要求提升已有事实的可扫描性。",
-        rationale="由 ResumeCopywriter 生成，并要求后续经过独立事实与质量门。",
-        expected_impact="更清晰地呈现与岗位相关的既有职责。",
-        priority="high" if section_name in {"project_experience", "work_experience"} else "medium",
-    )
-    set_agent_cache("resume_advisor_draft_v1", cache_key, draft.model_dump())
+    draft = SuggestionDraft.model_validate(generated)
+    set_agent_cache("resume_advisor_draft_v2", cache_key, draft.model_dump())
     return draft
 
 
@@ -326,6 +467,7 @@ def decode_jd_requirements(
     model_client: Any | None = None,
     model_id: str = "",
     allow_model_call: bool = True,
+    require_model: bool = False,
     on_cache_event: Callable[[str, bool], None] | None = None,
 ) -> list[str]:
     """Use the existing JobDecoder when possible; JD remains a requirement source only."""
@@ -346,6 +488,8 @@ def decode_jd_requirements(
     if on_cache_event:
         on_cache_event("resume_advisor_jd_decode_v1", False)
     if not allow_model_call or model_client is None or not model_id:
+        if require_model:
+            raise ValueError("JobDecoder requires a configured model")
         set_agent_cache("resume_advisor_jd_decode_v1", cache_key, fallback)
         return fallback
     try:
@@ -353,6 +497,8 @@ def decode_jd_requirements(
 
         decoded = _run_async(JobDecoder(model=model_id, openai_client=model_client).decode_job(jd_text))
     except Exception:
+        if require_model:
+            raise
         return fallback
     values: list[str] = []
     hard = decoded.get("hard_requirements") if isinstance(decoded, dict) else {}
@@ -369,26 +515,135 @@ def decode_jd_requirements(
     return requirements
 
 
+def review_rag_evidence(
+    *,
+    jd_text: str,
+    jd_requirements: list[str],
+    candidates: list[dict[str, Any]],
+    model_client: Any | None = None,
+    model_id: str = "",
+    user_id: Any = "default",
+    on_cache_event: Callable[[str, bool], None] | None = None,
+    on_provider_usage: Callable[[str, dict[str, Any]], None] | None = None,
+) -> Any:
+    """Require an LLM to select attributable evidence from RAG candidates."""
+    if model_client is None or not model_id:
+        raise RagEvidenceReviewUnavailableError("RAG evidence review requires a configured model")
+    normalized_candidates = [
+        candidate for candidate in candidates
+        if isinstance(candidate, dict)
+        and str(candidate.get("id") or candidate.get("chunkId") or "").strip()
+        and str(candidate.get("content") or "").strip()
+    ]
+    if not normalized_candidates:
+        raise RagEvidenceReviewInvalidOutputError("RAG returned no usable evidence candidates")
+    allowed_ids = {
+        str(candidate.get("id") or candidate.get("chunkId") or "")
+        for candidate in normalized_candidates
+    }
+    cache_key = build_cache_key(
+        "resume_advisor_rag_evidence_v1",
+        model_id,
+        jd_text,
+        jd_requirements,
+        [
+            {
+                "id": str(candidate.get("id") or candidate.get("chunkId") or ""),
+                "content": str(candidate.get("content") or ""),
+                "sourceBlockIds": candidate.get("sourceBlockIds") or (candidate.get("metadata") or {}).get("sourceBlockIds") or [],
+            }
+            for candidate in normalized_candidates
+        ],
+        schema_version=_ADVISOR_CACHE_SCHEMA_VERSION,
+        tool_version="resume-rag-evidence-reviewer-v1",
+    )
+    cached = get_agent_cache("resume_advisor_rag_evidence_v1", cache_key)
+    if isinstance(cached, dict):
+        try:
+            from backend.agents.rag_evidence_reviewer import RagEvidenceReview
+
+            result = RagEvidenceReview.model_validate(cached)
+            unknown_ids = set(result.selected_chunk_ids) - allowed_ids
+            if unknown_ids:
+                raise RagEvidenceReviewInvalidOutputError(
+                    f"Cached RAG evidence review selected unknown chunks: {', '.join(sorted(unknown_ids))}"
+                )
+            if on_cache_event:
+                on_cache_event("resume_advisor_rag_evidence_v1", True)
+            return result
+        except Exception:
+            pass
+    if on_cache_event:
+        on_cache_event("resume_advisor_rag_evidence_v1", False)
+    try:
+        from backend.agents.rag_evidence_reviewer import RagEvidenceReviewer
+
+        result = _run_async(
+            RagEvidenceReviewer(model=model_id, openai_client=model_client).review(
+                jd_text=jd_text,
+                jd_requirements=jd_requirements,
+                candidates=normalized_candidates,
+                user_id=str(user_id),
+            )
+        )
+    except ValueError as exc:
+        raise RagEvidenceReviewInvalidOutputError("RAG evidence reviewer returned an invalid contract") from exc
+    except Exception as exc:
+        raise RagEvidenceReviewError("RAG evidence reviewer invocation failed") from exc
+    finally:
+        if on_provider_usage:
+            try:
+                from backend.agents.base import BaseAgent
+
+                on_provider_usage("resume_rag_reviewer", BaseAgent.pop_provider_cache_usage(model_client))
+            except Exception:
+                on_provider_usage("resume_rag_reviewer", {})
+    unknown_ids = set(result.selected_chunk_ids) - allowed_ids
+    if unknown_ids:
+        raise RagEvidenceReviewInvalidOutputError(
+            f"RAG evidence reviewer selected unknown chunks: {', '.join(sorted(unknown_ids))}"
+        )
+    set_agent_cache("resume_advisor_rag_evidence_v1", cache_key, result.model_dump())
+    return result
+
+
 def review_with_hr_critic(
     *,
     original_text: str,
     proposed_text: str,
     section_name: str,
     jd_text: str,
+    resume_evidence_texts: list[str] | None = None,
+    confirmed_facts: list[dict[str, Any]] | None = None,
     model_client: Any | None = None,
     model_id: str = "",
     on_cache_event: Callable[[str, bool], None] | None = None,
     on_provider_usage: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> QualityReviewResult:
-    """Use HRCritic when a configured model is available; otherwise retain deterministic local gating."""
+    """Require an independent HRCritic decision after deterministic preflight checks."""
     local = review_suggestion_quality(
         original_text=original_text,
         proposed_text=proposed_text,
         evidence_block_ids=["quality-gate"],
         fact_status="supported",
     )
-    if not local.is_passed or model_client is None or not model_id:
+    if not local.is_passed:
         return local
+    if model_client is None or not str(model_id).strip():
+        raise HRCriticUnavailableError("HRCritic requires a configured model")
+
+    review_evidence = [
+        str(item).strip()
+        for item in (resume_evidence_texts or [])
+        if str(item).strip()
+    ]
+    review_confirmed_facts = [
+        str(fact.get("claimValue") or "")
+        for fact in (confirmed_facts or [])
+        if str(fact.get("status") or "") == "confirmed"
+        and str(fact.get("claimValue") or "").strip()
+    ]
+
     cache_key = build_cache_key(
         "resume_advisor_quality_v1",
         model_id,
@@ -396,33 +651,39 @@ def review_with_hr_critic(
         proposed_text,
         section_name,
         jd_text,
+        review_evidence,
+        review_confirmed_facts,
         schema_version=_ADVISOR_CACHE_SCHEMA_VERSION,
-        tool_version="hr-critic-v1",
+        tool_version="hr-critic-v2",
     )
     cached = get_agent_cache("resume_advisor_quality_v1", cache_key)
     if isinstance(cached, dict):
         try:
-            result = QualityReviewResult.model_validate(cached)
+            result = _quality_result_from_hr_evaluation(cached.get("hr_review"))
             if on_cache_event:
                 on_cache_event("resume_advisor_quality_v1", True)
             return result
-        except Exception:
-            pass
+        except HRCriticInvalidOutputError:
+            raise
     if on_cache_event:
         on_cache_event("resume_advisor_quality_v1", False)
     try:
-        from backend.agents.hr_critic import HRCritic
+        from backend.agents.hr_critic import HRCritic, HRCriticOutputError
 
         evaluation = _run_async(
-            HRCritic(model=model_id, openai_client=model_client).evaluate(
+            HRCritic(model=model_id, openai_client=model_client).evaluate_advisor_suggestion(
                 section_name=section_name,
                 original_content=original_text,
                 optimized_content=proposed_text,
                 jd_text=jd_text,
+                resume_evidence_texts=review_evidence,
+                confirmed_facts=review_confirmed_facts,
             )
         )
-    except Exception:
-        return local
+    except HRCriticOutputError as exc:
+        raise HRCriticInvalidOutputError("HRCritic returned invalid structured output") from exc
+    except Exception as exc:
+        raise HRCriticProviderError("HRCritic review invocation failed") from exc
     finally:
         if on_provider_usage:
             try:
@@ -431,15 +692,27 @@ def review_with_hr_critic(
                 on_provider_usage("hr_critic", BaseAgent.pop_provider_cache_usage(model_client))
             except Exception:
                 on_provider_usage("hr_critic", {})
-    critique = str(evaluation.get("critique") or "")
-    result = QualityReviewResult(
-        is_passed=bool(evaluation.get("is_passed")),
-        score=int(evaluation.get("score") or 0),
-        issues=[] if evaluation.get("is_passed") else [critique or "HR 质量审查未通过。"],
-        reviewer="hr_critic",
-    )
+    result = _quality_result_from_hr_evaluation(evaluation)
     set_agent_cache("resume_advisor_quality_v1", cache_key, result.model_dump())
     return result
+
+
+def _quality_result_from_hr_evaluation(evaluation: Any) -> QualityReviewResult:
+    """Validate and retain the model-produced HR decision without adding user prose."""
+    try:
+        from backend.agents.hr_critic import HRCriticEvaluation
+
+        structured = HRCriticEvaluation.model_validate(evaluation)
+    except Exception as exc:
+        raise HRCriticInvalidOutputError("HRCritic review did not match the required schema") from exc
+
+    return QualityReviewResult(
+        is_passed=structured.is_passed,
+        score=structured.score,
+        issues=[] if structured.is_passed else [structured.critique],
+        reviewer="hr_critic",
+        hr_review=structured.model_dump(mode="json"),
+    )
 
 
 def _run_async(coroutine: Any) -> Any:

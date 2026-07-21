@@ -22,6 +22,8 @@ class ResumeAdvisorSessionCreate(BaseModel):
     jd_text: str = Field(min_length=1, max_length=50000)
     analysis_record_id: str | None = Field(default=None, max_length=255)
     title: str | None = Field(default=None, max_length=255)
+    project_knowledge_scope: Literal["all", "selected", "none"] = "none"
+    project_knowledge_document_ids: list[int] = Field(default_factory=list)
 
     @field_validator("jd_text")
     @classmethod

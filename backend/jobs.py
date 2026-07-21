@@ -155,10 +155,21 @@ def run_async_analysis_job(
         jd_text = str(payload.get("jd_text") or "")
         resume_text = str(payload.get("resume_text") or "")
         knowledge_document_ids = list(payload.get("knowledge_document_ids") or [])
+        project_knowledge_scope = str(payload.get("project_knowledge_scope") or "none")
+        project_knowledge_document_ids = list(payload.get("project_knowledge_document_ids") or [])
         expert_options = dict(payload.get("expert_options") or {})
         draft_id = payload.get("draft_id")
 
-        chunks = service.get_knowledge_chunks_for_analysis(user_id, knowledge_document_ids)
+        if project_knowledge_scope in {"all", "selected"}:
+            chunks = service.get_project_knowledge_chunks_for_analysis(
+                user_id,
+                project_knowledge_document_ids,
+                scope=project_knowledge_scope,
+            )
+            selected_document_ids = project_knowledge_document_ids
+        else:
+            chunks = service.get_knowledge_chunks_for_analysis(user_id, knowledge_document_ids)
+            selected_document_ids = knowledge_document_ids
         knowledge_texts = [chunk.get("content", "") for chunk in chunks if chunk.get("content")]
         analysis = service.extract_skills(jd_text, user_id=user_id)
         decision = service.build_personal_decision(
@@ -175,7 +186,8 @@ def run_async_analysis_job(
             jd_text=jd_text,
             resume_text=resume_text,
             knowledge_texts=knowledge_texts,
-            selected_document_ids=knowledge_document_ids,
+            selected_document_ids=selected_document_ids,
+            project_knowledge_scope=project_knowledge_scope if project_knowledge_scope in {"all", "selected"} else "none",
             options=expert_options,
             original_analysis=analysis,
             task_id=task_id,
@@ -259,6 +271,8 @@ def run_background_resume_analysis_job(
     resume_file_id: str,
     embedding_config_id: str | None = None,
     chat_config_id: str | None = None,
+    project_knowledge_scope: str = "none",
+    project_knowledge_document_ids: list[int] | None = None,
     enable_agent_resume: bool = False,
     legacy_artifact_mode: bool = False,
 ) -> None:
@@ -271,6 +285,8 @@ def run_background_resume_analysis_job(
         resume_file_id=resume_file_id,
         embedding_config_id=embedding_config_id,
         chat_config_id=chat_config_id,
+        project_knowledge_scope=project_knowledge_scope,
+        project_knowledge_document_ids=project_knowledge_document_ids or [],
         enable_agent_resume=enable_agent_resume,
         legacy_artifact_mode=legacy_artifact_mode,
     )

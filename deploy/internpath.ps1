@@ -70,10 +70,17 @@ function Get-ListeningProcessIds {
     param([int]$Port)
 
     try {
-        $pids = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
-            Select-Object -ExpandProperty OwningProcess -Unique
-        # 鏄惧紡鎺掗櫎 $null 鍏冪礌锛岄槻姝㈠寘瑁呮垚 [null] 瀵艰嚧 Count 涓?1
-        @($pids) | Where-Object { $_ -ne $null }
+        # Get-NetTCPConnection has intermittently blocked for 20+ seconds on this
+        # host. netstat is sufficient for the narrow port-to-PID lookup needed by
+        # start, stop and status, and keeps service management responsive.
+        $pattern = "^\s*TCP\s+.*(?:\]:|:)$Port\s+.*(?:LISTENING|侦听)\s+(\d+)\s*$"
+        @(
+            & "$env:SystemRoot\System32\netstat.exe" -ano -p tcp 2>$null |
+                ForEach-Object {
+                    if ($_ -match $pattern) { [int]$Matches[1] }
+                } |
+                Select-Object -Unique
+        )
     } catch {
         @()
     }
@@ -167,11 +174,11 @@ function Stop-ProcessTree {
         [int]$ProcessId
     )
 
-    $children = Get-CimInstance Win32_Process -Filter "ParentProcessId = $ProcessId" -ErrorAction SilentlyContinue
-    foreach ($child in $children) {
-        Stop-ProcessTree -ProcessId ([int]$child.ProcessId)
-    }
-    Stop-Process -Id $ProcessId -Force -ErrorAction Stop
+    # Recursive WMI enumeration and taskkill /T can both hang on this Windows host.
+    # PID files only track the direct Python service processes, so terminate that
+    # process promptly and let the port-specific cleanup handle any listener left
+    # behind. This keeps restart bounded instead of stalling before startup.
+    Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
 }
 
 function Start-BackgroundPythonModule {

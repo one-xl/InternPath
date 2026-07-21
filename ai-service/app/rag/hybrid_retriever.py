@@ -23,14 +23,35 @@ def char_bigram_similarity(s1: str, s2: str) -> float:
 
 def cosine_similarity(v1: List[float], v2: List[float]) -> float:
     """Compute cosine similarity between two float vectors."""
-    if not v1 or not v2 or len(v1) != len(v2):
+    if not _is_usable_embedding(v1) or not _is_usable_embedding(v2) or len(v1) != len(v2):
         return 0.0
-    dot = sum(a * b for a, b in zip(v1, v2))
-    norm1 = math.sqrt(sum(a * a for a in v1))
-    norm2 = math.sqrt(sum(b * b for b in v2))
+    dot = math.fsum(float(a) * float(b) for a, b in zip(v1, v2))
+    norm1 = math.sqrt(math.fsum(float(a) * float(a) for a in v1))
+    norm2 = math.sqrt(math.fsum(float(b) * float(b) for b in v2))
     if norm1 == 0 or norm2 == 0:
         return 0.0
     return dot / (norm1 * norm2)
+
+
+def _is_usable_embedding(value: Any) -> bool:
+    """Treat only non-zero finite numeric vectors as real semantic evidence."""
+    if not isinstance(value, list) or not value:
+        return False
+    if any(isinstance(component, bool) or not isinstance(component, (int, float)) for component in value):
+        return False
+    if not all(math.isfinite(float(component)) for component in value):
+        return False
+    return any(float(component) != 0.0 for component in value)
+
+
+def _chunk_embedding(chunk: Dict[str, Any]) -> List[float]:
+    """Prefer the canonical chunk vector, then its legacy metadata vector."""
+    embedding = chunk.get("embedding")
+    if _is_usable_embedding(embedding):
+        return embedding
+    metadata = chunk.get("metadata")
+    metadata_embedding = metadata.get("embedding") if isinstance(metadata, dict) else None
+    return metadata_embedding if _is_usable_embedding(metadata_embedding) else []
 
 
 def get_embedding(text: str, config: Dict[str, Any] | None = None) -> List[float]:
@@ -90,14 +111,17 @@ def retrieve_hybrid(
     chunks: List[Dict[str, Any]], 
     query: str, 
     top_k: int = 15,
-    embedding_config: Dict[str, Any] | None = None
-) -> List[Dict[str, Any]]:
+    embedding_config: Dict[str, Any] | None = None,
+    *,
+    return_metadata: bool = False,
+) -> List[Dict[str, Any]] | tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
     Perform hybrid retrieval combining BM25, Keyword matching, Section Boosts, and Semantic alignments.
     Uses real cosine similarity if query and chunk embeddings are present, otherwise falls back to character bigram Jaccard.
     """
     if not chunks or not query.strip() or top_k <= 0:
-        return []
+        empty_metadata = {"semanticMode": "lexical_fallback", "semanticChunkCount": 0}
+        return ([], empty_metadata) if return_metadata else []
         
     # Step 1: Run BM25 search
     bm25_results = search_chunks_bm25(chunks, query, len(chunks))
@@ -109,6 +133,18 @@ def retrieve_hybrid(
     
     # Try fetching query embedding for real semantic search
     query_embedding = get_embedding(query, embedding_config)
+    query_embedding = query_embedding if _is_usable_embedding(query_embedding) else []
+
+    def has_compatible_embedding(chunk: Dict[str, Any]) -> bool:
+        candidate = _chunk_embedding(chunk)
+        return bool(query_embedding) and bool(candidate) and len(candidate) == len(query_embedding)
+
+    semantic_chunk_count = sum(
+        1
+        for chunk in chunks
+        if has_compatible_embedding(chunk)
+    )
+    semantic_mode = "embedding" if query_embedding and semantic_chunk_count else "lexical_fallback"
     
     scored_results = []
     
@@ -139,12 +175,14 @@ def retrieve_hybrid(
         # 3. Section Importance (Section Boost)
         importance = float(chunk.get("importance", chunk.get("section_importance", 0.60)))
         
-        # 4. Semantic Similarity component (real embedding similarity vs character Jaccard fallback)
-        chunk_embedding = chunk.get("metadata", {}).get("embedding") or chunk.get("embedding")
-        if query_embedding and chunk_embedding:
+        # 4. Semantic component: cosine only when both query and chunk have vectors.
+        # Lexical fallback is intentionally kept separate from the semantic weight.
+        chunk_embedding = _chunk_embedding(chunk)
+        uses_embedding = has_compatible_embedding(chunk)
+        if uses_embedding:
             semantic_score = cosine_similarity(query_embedding, chunk_embedding)
         else:
-            semantic_score = char_bigram_similarity(query, embedding_text)
+            semantic_score = 0.0
         
         # Combined Score
         final_score = (
@@ -163,7 +201,7 @@ def retrieve_hybrid(
         if importance >= 0.80:
             reasons.append("high_importance_section")
         if semantic_score > 0.15:
-            reasons.append("semantic_match")
+            reasons.append("semantic_match" if uses_embedding else "lexical_similarity")
             
         if not reasons:
             reasons.append("generic_match")
@@ -188,4 +226,9 @@ def retrieve_hybrid(
         
     # Sort and rank
     scored_results.sort(key=lambda c: (-c["score"], c["documentId"], c["chunkId"]))
-    return scored_results[:top_k]
+    results = scored_results[:top_k]
+    metadata = {
+        "semanticMode": semantic_mode,
+        "semanticChunkCount": semantic_chunk_count,
+    }
+    return (results, metadata) if return_metadata else results

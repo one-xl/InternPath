@@ -308,6 +308,8 @@ def run_background_resume_analysis(
     resume_file_id: str,
     embedding_config_id: Optional[str] = None,
     chat_config_id: Optional[str] = None,
+    project_knowledge_scope: str = "none",
+    project_knowledge_document_ids: Optional[list[int]] = None,
     enable_agent_resume: bool = False,
     legacy_artifact_mode: bool = False,
 ) -> None:
@@ -335,7 +337,44 @@ def run_background_resume_analysis(
         chat_client, resolved_chat_config_id, chat_provider, chat_model = analyzer._client(user_id, chat_config_id)
 
         # Resolve Embedding configuration
-        emb_provider, emb_model, _, _ = service._resolve_embedding_config(user_id, embedding_config_id)
+        emb_provider, emb_model, emb_api_key, emb_base_url = service._resolve_embedding_config(user_id, embedding_config_id)
+
+        project_rerank = {
+            "recommendations": [],
+            "rerankMode": "fallback",
+            "fallbackReason": "本次分析未选择项目知识库。",
+        }
+        if project_knowledge_scope in {"all", "selected"}:
+            project_documents = service.get_project_knowledge_chunks_for_analysis(
+                user_id,
+                project_knowledge_document_ids or [],
+                scope=project_knowledge_scope,
+            )
+            if project_documents:
+                try:
+                    project_response = service.ai_service_client.analyze_jd(
+                        task_id=f"{record_id}-project-rag",
+                        user_id=str(user_id),
+                        jd_text=jd_text,
+                        resume_text=parsed_resume.get("cleanedText") or "",
+                        documents=project_documents,
+                        options={
+                            "enableRag": True,
+                            "enableVerification": True,
+                            "enableHallucinationCheck": True,
+                            "enableRewrite": True,
+                        },
+                        embedding_model_id=emb_model,
+                        embedding_provider=emb_provider,
+                        embedding_api_key=emb_api_key,
+                        embedding_base_url=emb_base_url,
+                    )
+                    data = project_response.get("data", {}) if isinstance(project_response, dict) else {}
+                    project_rerank = data.get("projectRerank") or project_rerank
+                except Exception as exc:  # noqa: BLE001
+                    project_rerank["fallbackReason"] = f"项目知识库重排不可用：{exc}"
+            else:
+                project_rerank["fallbackReason"] = "所选项目资料没有可检索片段。"
 
         # Validate complete success
         update_background_progress(user_id, record_id, "validate", "success")
@@ -844,7 +883,10 @@ def run_background_resume_analysis(
                 "chunks": [{**c, "embedding": None} for c in chunks]
             },
             "retrievedResumeChunks": retrieved_chunks,
-            "retrievalSummary": f"使用 {emb_provider} / {emb_model} 召回 {len(retrieved_chunks)} 个简历片段。",
+            "retrievalSummary": (
+                f"使用 {emb_provider} / {emb_model} 召回 {len(retrieved_chunks)} 个简历片段；"
+                f"项目知识库推荐 {len(project_rerank.get('recommendations') or [])} 个项目。"
+            ),
             "retrievalScore": average_score,
             "modelUsage": {
                 "embeddingProvider": emb_provider,
@@ -877,7 +919,9 @@ def run_background_resume_analysis(
             "parsedJD": parsed_jd,
             "requirementMatches": { "requirement_matches": requirement_matches },
             "hardConstraintsResult": hard_constraints_res,
-            "requirementAssessments": parsed_analysis.get("requirement_assessments") or []
+            "requirementAssessments": parsed_analysis.get("requirement_assessments") or [],
+            "projectRerank": project_rerank,
+            "projectRecommendations": project_rerank.get("recommendations") or [],
         }
 
         # Complete last step

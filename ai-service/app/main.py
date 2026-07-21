@@ -20,6 +20,8 @@ from fastapi.exceptions import RequestValidationError
 from app.api.schemas import AnalyzeJdRequest, RagSearchRequest, VerifyReportRequest
 from app.rag.bm25_retriever import search_chunks_bm25
 from app.rag.chunker import chunk_text
+from app.rag.hybrid_retriever import retrieve_hybrid
+from app.rag.semantic_ranker import rerank_chunks
 from app.verification.evidence_checker import check_answer_faithfulness, split_claims
 from app.workflow.engine import WorkflowExecutionError
 from app.workflow.nodes import build_analyze_jd_workflow, workflow_response
@@ -110,8 +112,29 @@ def health() -> dict[str, str]:
 @app.post("/ai/rag/search")
 def rag_search(request: RagSearchRequest) -> dict[str, Any]:
     chunks = build_chunks(request.documents)
-    results = search_chunks_bm25(chunks, request.query, request.topK)
-    return {"query": request.query.strip(), "results": results}
+    if request.strategy == "bm25":
+        results = search_chunks_bm25(chunks, request.query, request.topK)
+        return {
+            "query": request.query.strip(),
+            "strategy": "bm25",
+            "semanticMode": "not_requested",
+            "results": results,
+        }
+
+    hybrid_results, retrieval_metadata = retrieve_hybrid(
+        chunks,
+        request.query,
+        max(request.topK * 2, request.topK),
+        return_metadata=True,
+    )
+    results = rerank_chunks(hybrid_results, request.query, request.topK)
+    return {
+        "query": request.query.strip(),
+        "strategy": "hybrid",
+        "semanticMode": retrieval_metadata["semanticMode"],
+        "semanticChunkCount": retrieval_metadata["semanticChunkCount"],
+        "results": results,
+    }
 
 
 @app.post("/ai/verify-report")
@@ -198,24 +221,33 @@ def build_chunks(documents: list[Any]) -> list[dict[str, Any]]:
             continue
         for idx, text in enumerate(chunk_text(content, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP)):
             chunk_id = str(raw.get("chunkId") or f"{document_id}#chunk-{idx}")
+            source_block_ids = raw.get("sourceBlockIds") or metadata.get("sourceBlockIds") or []
+            chunk_metadata = {
+                **metadata,
+                "chunkIndex": metadata.get("chunkIndex", idx),
+                "sourceBlockIds": list(dict.fromkeys(str(value) for value in source_block_ids if str(value))),
+            }
+            structured = {
+                "documentId": document_id,
+                "chunkId": chunk_id,
+                "text": content if raw.get("chunkId") else text,
+                "sectionId": raw.get("sectionId") or metadata.get("sectionId"),
+                "sectionType": raw.get("sectionType") or metadata.get("sectionType"),
+                "sectionTitle": raw.get("sectionTitle") or metadata.get("sectionTitle"),
+                "hierarchy": raw.get("hierarchy") or metadata.get("hierarchy") or [],
+                "semanticType": raw.get("semanticType") or metadata.get("semanticType"),
+                "importance": raw.get("importance") if raw.get("importance") is not None else metadata.get("importance", 0.60),
+                "keywords": raw.get("keywords") or metadata.get("keywords") or [],
+                "embeddingText": raw.get("embeddingText") or metadata.get("embeddingText") or (content if raw.get("chunkId") else text),
+                "embedding": raw.get("embedding") or metadata.get("embedding"),
+                "metadata": chunk_metadata,
+            }
             if raw.get("chunkId"):
-                out.append(
-                    {
-                        "documentId": document_id,
-                        "chunkId": chunk_id,
-                        "text": content,
-                        "metadata": {**metadata, "chunkIndex": metadata.get("chunkIndex", idx)},
-                    }
-                )
+                out.append(structured)
                 break
-            out.append(
-                {
-                    "documentId": document_id,
-                    "chunkId": chunk_id,
-                    "text": text,
-                    "metadata": {**metadata, "chunkIndex": idx},
-                }
-            )
+            # One document-level vector cannot safely represent every derived chunk.
+            structured["embedding"] = None
+            out.append(structured)
     return out
 
 

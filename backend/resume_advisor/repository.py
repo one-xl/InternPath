@@ -1118,6 +1118,23 @@ class ResumeAdvisorRepository:
         return fact_id
 
     def get_resume_view(self, user_id: Any, session_id: str) -> dict[str, Any]:
+        return self._get_resume_view(user_id, session_id, include_retrieval_chunks=False)
+
+    def get_resume_retrieval_view(self, user_id: Any, session_id: str) -> dict[str, Any]:
+        """Return canonical chunks for internal Advisor retrieval only.
+
+        Embedding vectors are intentionally absent from the browser-facing resume-view
+        endpoint, but the Advisor needs them to run semantic hybrid retrieval.
+        """
+        return self._get_resume_view(user_id, session_id, include_retrieval_chunks=True)
+
+    def _get_resume_view(
+        self,
+        user_id: Any,
+        session_id: str,
+        *,
+        include_retrieval_chunks: bool,
+    ) -> dict[str, Any]:
         session = self.get_session(user_id, session_id)
         if not session:
             raise LookupError("未找到简历优化会话。")
@@ -1130,13 +1147,21 @@ class ResumeAdvisorRepository:
         # separate paragraphs or independent suggestion candidates.
         from backend.resume_rag import deduplicate_resume_blocks
 
-        return {
+        view = {
             "resumeId": session["resumeId"],
             "contentHash": session["resumeContentHash"],
             "file": resume.get("file") or {},
             "blocks": deduplicate_resume_blocks(resume.get("blocks") or []),
+            "cleaning": resume.get("cleaningReport") if isinstance(resume.get("cleaningReport"), dict) else {},
             "preview": preview_metadata(resume),
         }
+        if include_retrieval_chunks:
+            view["chunks"] = [
+                dict(chunk)
+                for chunk in resume.get("chunks") or []
+                if isinstance(chunk, dict) and str(chunk.get("content") or chunk.get("text") or "").strip()
+            ]
+        return view
 
     def _repair_resume_sections(self, user_id: Any, resume_id: str, resume: dict[str, Any]) -> dict[str, Any]:
         from backend.resume_rag import repair_resume_chunk_sections

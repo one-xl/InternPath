@@ -23,7 +23,7 @@ SUPPORTED_TYPES = {
 }
 SUPPORTED_EXTENSIONS = {".pdf", ".doc", ".docx", ".txt"}
 MAX_FILE_SIZE = 10 * 1024 * 1024
-STRUCTURED_RESUME_PARSER_VERSION = "v2"
+STRUCTURED_RESUME_PARSER_VERSION = "v5"
 SKILL_KEYWORDS = [
     "React",
     "TypeScript",
@@ -206,6 +206,12 @@ SECTION_TYPES = {
     "简历内容": "generic_section",
 }
 
+# Kept deliberately narrow: this is a common source-document typo observed in
+# floating-textbox resumes, not a fuzzy heading classifier.
+_EXACT_HEADING_CORRECTIONS = {
+    "自我评价家": "自我评价",
+}
+
 SECTION_IMPORTANCE = {
     "contact": 0.60,
     "education": 0.80,
@@ -280,6 +286,7 @@ def parse_resume(file_name: str, content_type: str, data: bytes) -> dict[str, An
     else:
         raise DocumentParseError("仅支持 PDF、DOC、DOCX、TXT 格式")
 
+    extracted_record_count = len(source_records)
     source_records = normalize_resume_source_records(source_records)
     raw_text = "\n".join(str(record.get("text") or "") for record in source_records).strip()
     cleaned_text = clean_resume_text(raw_text)
@@ -314,6 +321,16 @@ def parse_resume(file_name: str, content_type: str, data: bytes) -> dict[str, An
         from backend.resume_advisor.preview import enrich_blocks_with_original_locations
 
         blocks = enrich_blocks_with_original_locations(blocks, file_name=file_name, file_bytes=data)
+    cleaning_report = build_resume_cleaning_report(
+        source_records=source_records,
+        blocks=blocks,
+        content_hash=content_hash,
+        parser_version=STRUCTURED_RESUME_PARSER_VERSION,
+        source_format=suffix.lstrip("."),
+        extracted_record_count=extracted_record_count,
+        cleaned_text=cleaned_text,
+        warnings=_parse_warnings_for_source_records(source_records),
+    )
     return {
         "structureVersion": "resume-structure-v2",
         "parser": {
@@ -335,7 +352,59 @@ def parse_resume(file_name: str, content_type: str, data: bytes) -> dict[str, An
         "sourceBlocks": source_records,
         "chunks": chunks,
         "blocks": blocks,
+        "cleaningReport": cleaning_report,
         "extractedProfile": extract_profile(cleaned_text),
+    }
+
+
+def build_resume_cleaning_report(
+    *,
+    source_records: list[dict[str, Any]],
+    blocks: list[dict[str, Any]],
+    content_hash: str,
+    parser_version: str,
+    source_format: str,
+    extracted_record_count: int,
+    cleaned_text: str,
+    warnings: list[str],
+) -> dict[str, Any]:
+    """Return a compact, PII-free summary of the upload-time canonicalisation."""
+    section_ids = {
+        str(block.get("sectionId") or "generic_section")
+        for block in blocks
+        if isinstance(block, dict)
+    }
+    duplicate_source_count = sum(
+        len(record.get("duplicateSourceIds") or [])
+        for record in source_records
+        if isinstance(record, dict)
+    )
+    editable_block_count = sum(
+        1
+        for block in blocks
+        if isinstance(block, dict)
+        and str(block.get("kind") or "") in {"bullet", "paragraph", "table_cell"}
+        and bool(str(block.get("text") or "").strip())
+    )
+    low_confidence_location_count = sum(
+        1
+        for block in blocks
+        if isinstance(block, dict) and block.get("locatorConfidence") == "approximate"
+    )
+    return {
+        "schemaVersion": "resume-cleaning-v1",
+        "contentHash": content_hash,
+        "parserVersion": parser_version,
+        "sourceFormat": source_format,
+        "extractedRecordCount": max(0, extracted_record_count),
+        "canonicalRecordCount": len(source_records),
+        "duplicateSourceCount": duplicate_source_count,
+        "blockCount": len(blocks),
+        "editableBlockCount": editable_block_count,
+        "sectionCount": len(section_ids),
+        "lowConfidenceLocationCount": low_confidence_location_count,
+        "cleanedCharacterCount": len(cleaned_text),
+        "warnings": list(dict.fromkeys(str(item) for item in warnings if str(item).strip())),
     }
 
 
@@ -388,6 +457,9 @@ def _match_heading_prefix(line: str) -> tuple[str, int] | None:
         return None
 
     normalized_candidate = _normalized_heading_key(candidate)
+    corrected_section = _EXACT_HEADING_CORRECTIONS.get(normalized_candidate)
+    if corrected_section:
+        return corrected_section, len(stripped)
     for section, alias in _section_aliases_by_length():
         alias_key = _normalized_heading_key(alias)
         if normalized_candidate == alias_key:
@@ -691,7 +763,11 @@ def _locator_confidence_for_record(locator: dict[str, Any], source_format: str) 
         return "exact"
     if source_format == "pdf":
         return "high" if isinstance(locator.get("bbox"), list) and len(locator["bbox"]) == 4 else "approximate"
-    # DOCX keeps an exact logical body/table locator, but not a fabricated page number.
+    # DOCX body order is reliable for ordinary paragraphs. Floating textboxes are a
+    # different layout model: only an extracted anchor/VML vertical coordinate merits
+    # a precise visual-position claim.  Missing coordinates must remain explicit.
+    if locator.get("textboxIndex") is not None:
+        return "high" if isinstance(locator.get("layoutY"), (int, float)) else "approximate"
     return "high" if locator.get("paragraphIndex") is not None or locator.get("tableIndex") is not None else "approximate"
 
 
@@ -706,6 +782,8 @@ def build_resume_blocks_from_source_records(
     del file_id  # Kept in the public signature for callers that also use legacy blocks.
     records = normalize_resume_source_records(source_records)
     source_format = Path(file_name).suffix.lower().lstrip(".") or "txt"
+    if source_format == "docx":
+        records = _move_detached_docx_project_records(records)
     stable_content_hash = content_hash or _source_records_content_hash(records)
     current_section = "其他"
     section_counts: dict[str, int] = {}
@@ -755,6 +833,80 @@ def build_resume_blocks_from_source_records(
         )
 
     return deduplicate_resume_blocks(blocks)
+
+
+_PROJECT_TITLE_DATE_RE = re.compile(r"(?:19|20)\d{2}\s*[./年]\s*(?:0?[1-9]|1[0-2])\s*(?:[-~—–至]|至今)")
+_PROJECT_TITLE_MARKERS = ("项目", "系统", "工具", "平台", "应用", "软件", "pro", "toolkit", "app")
+
+
+def _move_detached_docx_project_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Place an unmistakable floating project subtree below its DOCX project title.
+
+    Floating DOCX textboxes can carry a project title before the visible section
+    heading in XML. Coordinates repair the common case; this conservative second pass
+    only handles a date-bearing project title plus its following child records when it
+    shares the same body host as a later ``项目经历`` heading. Ordinary paragraphs are
+    never moved by this rule.
+    """
+    project_heading_index = next(
+        (
+            index
+            for index, record in enumerate(records)
+            if section_for_line(str(record.get("text") or "")) == "项目经历"
+        ),
+        None,
+    )
+    if project_heading_index is None:
+        return records
+
+    project_heading = records[project_heading_index]
+    project_body_index = (project_heading.get("locator") or {}).get("bodyIndex")
+    ranges: list[tuple[int, int]] = []
+    index = 0
+    while index < project_heading_index:
+        record = records[index]
+        text = str(record.get("text") or "").strip()
+        locator = record.get("locator") if isinstance(record.get("locator"), dict) else {}
+        marker_match = any(marker in text.casefold() for marker in _PROJECT_TITLE_MARKERS)
+        same_body_host = project_body_index is not None and locator.get("bodyIndex") == project_body_index
+        if not (_PROJECT_TITLE_DATE_RE.search(text) and marker_match and same_body_host):
+            index += 1
+            continue
+
+        end = index + 1
+        while end < project_heading_index:
+            candidate = records[end]
+            candidate_text = str(candidate.get("text") or "")
+            if candidate.get("kind") == "heading" or section_for_line(candidate_text):
+                break
+            end += 1
+        ranges.append((index, end))
+        index = end
+
+    if not ranges:
+        return records
+
+    moved_indexes = {index for start, end in ranges for index in range(start, end)}
+    moved = [record for index, record in enumerate(records) if index in moved_indexes]
+    remaining = [record for index, record in enumerate(records) if index not in moved_indexes]
+    project_heading_index = next(
+        index
+        for index, record in enumerate(remaining)
+        if section_for_line(str(record.get("text") or "")) == "项目经历"
+    )
+    insertion_index = next(
+        (
+            index
+            for index in range(project_heading_index + 1, len(remaining))
+            if remaining[index].get("kind") == "heading"
+            or section_for_line(str(remaining[index].get("text") or ""))
+        ),
+        len(remaining),
+    )
+    output = [*remaining[:insertion_index], *moved, *remaining[insertion_index:]]
+    for order, record in enumerate(output):
+        record["order"] = order
+    return output
 
 
 def deduplicate_resume_blocks(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:

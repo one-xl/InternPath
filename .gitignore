@@ -31,6 +31,7 @@ ENV/
 env.bak/
 venv.bak/
 .vscode/
+.codex/
 
 *.db
 *.sqlite
@@ -60,6 +61,7 @@ scratch/
 
 # User data folder containing local user databases and migration indicators
 user_data/
+knowledge_materials/
 
 # Local tool state and non-source deliverables
 .codegraph/

@@ -2457,6 +2457,36 @@ class Database:
         conn.close()
         return row_id
 
+    def get_knowledge_document_by_file_name(
+        self,
+        user_id: int,
+        file_name: str,
+        source_type: str,
+    ) -> Optional[dict]:
+        """Find a user's material by normalized filename within its source scope."""
+        normalized_name = str(file_name or "").strip()
+        normalized_source_type = str(source_type or "").strip().lower()
+        if not normalized_name or not normalized_source_type:
+            return None
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, user_id, title, file_name, file_type, source_type, raw_text, summary,
+                   chunk_count, status, error_message, created_at, updated_at
+            FROM knowledge_document
+            WHERE user_id = ?
+              AND source_type = ?
+              AND LOWER(TRIM(file_name)) = LOWER(TRIM(?))
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (user_id, normalized_source_type, normalized_name),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return self._build_knowledge_document_dict(row) if row else None
+
     def update_knowledge_document_status(
         self,
         user_id: int,

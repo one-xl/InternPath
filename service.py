@@ -117,7 +117,21 @@ class CareerPathAIService:
         self.ai_service_client = AiServiceClient()
 
     def user_db(self, user_id: int) -> Database:
-        return Database.for_user(user_id)
+        # PostgreSQL stores every user's data in the same configured schema. Reusing
+        # the service-level connection factory avoids rerunning schema migrations for
+        # every document in a batch upload, which can otherwise contend on migration
+        # updates under concurrent requests.
+        db = getattr(self, "db", None)
+        if db is None:
+            # Some focused tests construct this service without __init__. Keep that
+            # supported while caching the lazily created database for the instance.
+            db = getattr(self, "_lazy_user_db", None)
+            if db is None:
+                db = Database.for_user(user_id)
+                self._lazy_user_db = db
+                return db
+        db._ensure_user_id(user_id)
+        return db
 
     def _resolve_embedding_config(self, user_id: int, config_id: Optional[str] = None) -> Tuple[str, str, str, str]:
         """Resolves (provider, model_id, api_key, base_url) for active embedding model."""
@@ -353,6 +367,7 @@ class CareerPathAIService:
         original_analysis: Optional[JobAnalysis] = None,
         jd_id: Optional[int] = None,
         selected_document_ids: Optional[List[int]] = None,
+        project_knowledge_scope: Literal["all", "selected", "none"] = "none",
         task_id: Optional[str] = None,
     ) -> dict[str, Any]:
         task_id = task_id or f"internpath-{uuid4().hex}"
@@ -393,7 +408,14 @@ class CareerPathAIService:
 
         try:
             emb_provider, emb_model_id, emb_api_key, emb_base_url = self._resolve_embedding_config(user_id)
-            documents = self.get_knowledge_chunks_for_analysis(user_id, selected_document_ids or [])
+            if project_knowledge_scope == "none":
+                documents = self.get_knowledge_chunks_for_analysis(user_id, selected_document_ids or [])
+            else:
+                documents = self.get_project_knowledge_chunks_for_analysis(
+                    user_id,
+                    selected_document_ids or [],
+                    scope=project_knowledge_scope,
+                )
             response = self.ai_service_client.analyze_jd(
                 task_id=task_id,
                 user_id=str(user_id),
@@ -449,7 +471,12 @@ class CareerPathAIService:
             response["reportId"] = report_id
             response["saved"] = True
             response["originalAnalysis"] = analysis.model_dump(mode="json")
-            response["selectedDocumentIds"] = selected_document_ids or []
+            response["selectedDocumentIds"] = [
+                int(item["documentId"])
+                for item in documents
+                if str(item.get("documentId") or "").isdigit()
+            ]
+            response["projectKnowledgeScope"] = project_knowledge_scope
             return response
         except Exception as exc:  # noqa: BLE001
             db.update_analysis_task_status(user_id, task_id, "FAILED", str(exc))
@@ -515,10 +542,22 @@ class CareerPathAIService:
         source_type: str,
         title: Optional[str] = None,
     ) -> dict:
-        file_name = getattr(uploaded_file, "name", "") or "upload"
+        file_name = (getattr(uploaded_file, "name", "") or "upload").strip()
+        normalized_source_type = source_type.strip().lower()
         db = self.user_db(user_id)
         document_id: Optional[int] = None
         try:
+            existing = db.get_knowledge_document_by_file_name(
+                user_id,
+                file_name,
+                normalized_source_type,
+            )
+            if existing and existing.get("status") != "FAILED":
+                return existing
+            if existing:
+                # A retry replaces a failed record instead of making a second
+                # document with the same visible filename.
+                db.delete_knowledge_document(user_id, int(existing["id"]))
             raw_text, file_type = extract_text_from_uploaded_file(uploaded_file)
             doc_title = (title or "").strip() or file_name
             document_id = db.create_knowledge_document(
@@ -526,7 +565,7 @@ class CareerPathAIService:
                 title=doc_title,
                 file_name=file_name,
                 file_type=file_type,
-                source_type=source_type,
+                source_type=normalized_source_type,
                 raw_text=raw_text,
                 summary=raw_text[:240],
                 status="PENDING",
@@ -534,7 +573,7 @@ class CareerPathAIService:
             chunks = build_knowledge_chunks(
                 raw_text,
                 document_id=document_id,
-                source_type=source_type,
+                source_type=normalized_source_type,
                 file_name=file_name,
             )
             for chunk in chunks:
@@ -571,8 +610,18 @@ class CareerPathAIService:
         self,
         user_id: int,
         document_ids: List[int],
+        *,
+        source_type: Optional[str] = None,
     ) -> List[dict]:
         chunks = self.user_db(user_id).get_knowledge_chunks(user_id, document_ids)
+        if source_type:
+            expected_source_type = source_type.strip().lower()
+            chunks = [
+                chunk
+                for chunk in chunks
+                if str(chunk.get("source_type") or chunk.get("metadata", {}).get("sourceType") or "").lower()
+                == expected_source_type
+            ]
         out: List[dict] = []
         for chunk in chunks:
             metadata = dict(chunk.get("metadata") or {})
@@ -633,6 +682,26 @@ class CareerPathAIService:
                 list(executor.map(fetch_and_set_embedding, out))
 
         return out
+
+    def get_project_knowledge_chunks_for_analysis(
+        self,
+        user_id: int,
+        document_ids: List[int],
+        *,
+        scope: Literal["all", "selected"],
+    ) -> List[dict]:
+        """Return only the current user's project materials for a RAG run."""
+        if scope == "all":
+            document_ids = [
+                int(document["id"])
+                for document in self.list_knowledge_documents(user_id, source_type="project")
+                if document.get("id") is not None and document.get("status") == "READY"
+            ]
+        return self.get_knowledge_chunks_for_analysis(
+            user_id,
+            list(dict.fromkeys(int(document_id) for document_id in document_ids)),
+            source_type="project",
+        )
 
     def delete_knowledge_document(self, user_id: int, document_id: int) -> bool:
         return self.user_db(user_id).delete_knowledge_document(user_id, document_id)

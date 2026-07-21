@@ -31,6 +31,30 @@ export interface AdvisorMessage {
   payload: Record<string, unknown>;
 }
 
+export interface ResumeScanPayload {
+  scanKey: string;
+  status: "completed" | "failed" | string;
+  contentHash: string;
+  cleaning: {
+    schemaVersion: string;
+    sourceFormat: string;
+    extractedRecordCount: number;
+    canonicalRecordCount: number;
+    duplicateSourceCount: number;
+    blockCount: number;
+    editableBlockCount: number;
+    sectionCount: number;
+    lowConfidenceLocationCount: number;
+    warnings: string[];
+  };
+  sections: Array<{ name: string; blockCount: number }>;
+  jdCoverage: {
+    requirementCount: number;
+    matchedRequirements: string[];
+    missingRequirements: string[];
+  };
+}
+
 export interface AdvisorFact {
   id: string;
   claimKey: string;
@@ -67,6 +91,7 @@ export interface ResumeBlock {
   order: number;
   kind: "heading" | "paragraph" | "bullet" | "table_cell" | "textbox";
   sectionId: string;
+  sectionUid?: string;
   sectionName: string;
   itemLabel?: string;
   text: string;
@@ -78,7 +103,7 @@ export interface ResumeBlock {
   legacyBlockIds?: string[];
   locationLabel: string;
   locatorConfidence: "exact" | "high" | "approximate";
-  locator: { sourceFormat: "pdf" | "docx" | "txt"; pageNumber?: number; bbox?: [number, number, number, number]; paragraphIndex?: number; textboxIndex?: number; textboxParagraphIndex?: number; tableIndex?: number; rowIndex?: number; lineStart?: number; lineEnd?: number };
+  locator: { sourceFormat: "pdf" | "docx" | "txt"; pageNumber?: number; bbox?: [number, number, number, number]; paragraphIndex?: number; textboxIndex?: number; textboxParagraphIndex?: number; tableIndex?: number; rowIndex?: number; lineStart?: number; lineEnd?: number; layoutY?: number; layoutX?: number; layoutCoordinateSpace?: string };
 }
 
 export interface ResumePreview {
@@ -91,6 +116,9 @@ export interface ResumePreview {
 export interface ResumeSuggestion {
   id: string;
   version: number;
+  parentSuggestionId?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
   target: {
     blockId: string;
     sectionId: string;
@@ -122,6 +150,7 @@ export interface AdvisorSnapshot {
   messages: AdvisorMessage[];
   suggestions: ResumeSuggestion[];
   facts: AdvisorFact[];
+  events: AdvisorEvent[];
 }
 
 export interface AdvisorSloMetric {

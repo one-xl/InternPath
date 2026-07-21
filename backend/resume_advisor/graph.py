@@ -1170,7 +1170,10 @@ class ResumeAdvisorGraph:
                         model_client=model_client,
                         model_id=model_id,
                         allow_model_call=True,
-                        require_model=True,
+                        # JD terms are deterministic routing input, not a
+                        # user-facing generation. Keep the run moving with
+                        # the local parser when the decoder provider fails.
+                        require_model=False,
                         on_cache_event=record_cache_event,
                     )
                 },

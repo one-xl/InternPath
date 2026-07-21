@@ -361,6 +361,29 @@ def test_jd_decoding_reports_miss_then_hit(monkeypatch):
     ]
 
 
+def test_jd_decoding_uses_deterministic_requirements_when_provider_fails(monkeypatch):
+    class FailingJobDecoder:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def decode_job(self, _jd_text):
+            raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr("backend.agents.job_decoder.JobDecoder", FailingJobDecoder)
+    monkeypatch.setattr(verification, "get_agent_cache", lambda *_args: None)
+    monkeypatch.setattr(verification, "set_agent_cache", lambda *_args: None)
+
+    requirements = decode_jd_requirements(
+        jd_text="岗位要求熟悉 FastAPI",
+        fallback_requirements=["FastAPI"],
+        model_client=object(),
+        model_id="gpt-test",
+        require_model=False,
+    )
+
+    assert requirements == ["FastAPI"]
+
+
 def test_resume_draft_reuses_the_same_model_result_from_cache(monkeypatch):
     calls = 0
     cache: dict[str, object] = {}

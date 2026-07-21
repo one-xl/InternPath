@@ -117,3 +117,15 @@ class ResumeOptimizationService:
         self.db.add_agent_resume_turn(task_id=session_id, user_id=user_id, role="assistant", content=answer, answer_type="chat")
         self.db.update_agent_resume_task_status(session_id, user_id, "COMPLETED", optimized_resume_md=json.dumps(session, ensure_ascii=False, default=str))
         return {"message": answer, "snapshot": self.snapshot(user_id, session_id)}
+
+    def rename_session(self, user_id: Any, session_id: str, title: str) -> dict[str, Any]:
+        session = self._load(user_id, session_id)
+        title = title.strip()[:60]
+        session["title"] = title
+        self.db.update_agent_resume_task_status(session_id, user_id, "COMPLETED", optimized_resume_md=json.dumps(session, ensure_ascii=False, default=str))
+        return {"title": title}
+    def delete_session(self, user_id: Any, session_id: str) -> bool:
+        self._load(user_id, session_id)
+        self.sessions.pop(session_id, None)
+        self.db.delete_agent_resume_task(user_id, session_id)
+        return True

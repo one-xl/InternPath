@@ -1637,6 +1637,15 @@ class Database:
         conn.commit()
         conn.close()
 
+    def delete_agent_resume_task(self, user_id: Any, task_id: str) -> bool:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM agent_resume_tasks WHERE task_id = ? AND user_id = ?", (task_id, str(user_id)))
+        deleted = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+        return deleted
+
     def get_agent_resume_task(self, user_id: Any, task_id: str) -> Optional[dict]:
         conn = self.get_connection()
         cursor = DatabaseCursorWrapper(conn.cursor(), self.is_postgres)

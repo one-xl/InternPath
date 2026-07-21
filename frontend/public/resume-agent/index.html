@@ -66,6 +66,13 @@
         <div class="modal-actions"><button class="btn-secondary" id="cancelSetupBtn">取消</button><button class="btn-primary" id="startAnalysisBtn">开始分析</button></div>
       </section>
     </div>
+    <div class="context-menu" id="tabContextMenu">
+      <button id="renameTabBtn">重命名</button>
+      <button class="danger" id="deleteTabBtn">删除会话</button>
+    </div>
+    <div class="inline-rename" id="inlineRename" style="display:none">
+      <input type="text" id="inlineRenameInput" maxlength="60" placeholder="新名称" />
+    </div>
     <div class="toast" id="toast" role="status"></div>
     <script src="app.js"></script>
   </body>

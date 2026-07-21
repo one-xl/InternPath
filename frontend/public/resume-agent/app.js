@@ -11,6 +11,7 @@ const state = {
   focusedBlockId: "",
   pollTimer: null,
   lastFocusedElement: null,
+  contextTargetSessionId: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -206,6 +207,44 @@ function focusBlock(blockId) {
   window.setTimeout(() => $("resume-block-" + blockId)?.scrollIntoView({ behavior: "smooth", block: "center" }), 0);
 }
 
+async function renameSession(sessionId, title) {
+  await api(`/api/resume-optimization/sessions/${encodeURIComponent(sessionId)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title }) });
+  const session = state.sessions.find((s) => s.id === sessionId);
+  if (session) { session.title = title; renderAll(); }
+  showToast("已重命名");
+}
+async function deleteSession(sessionId) {
+  if (!confirm("确定删除该优化会话？删除后无法恢复。")) return;
+  await api(`/api/resume-optimization/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+  state.sessions = state.sessions.filter((s) => s.id !== sessionId);
+  if (state.activeId === sessionId) { state.activeId = state.sessions[0]?.id || null; stopPolling(); }
+  renderAll();
+  showToast("已删除");
+}
+function showContextMenu(event, sessionId) {
+  event.preventDefault();
+  state.contextTargetSessionId = sessionId;
+  const menu = document.getElementById("tabContextMenu");
+  menu.style.left = event.clientX + "px";
+  menu.style.top = event.clientY + "px";
+  menu.classList.add("open");
+}
+function hideContextMenu() {
+  document.getElementById("tabContextMenu").classList.remove("open");
+  state.contextTargetSessionId = null;
+}
+function showInlineRename(button) {
+  const inline = document.getElementById("inlineRename");
+  const input = document.getElementById("inlineRenameInput");
+  const rect = button.getBoundingClientRect();
+  inline.style.left = rect.left + "px";
+  inline.style.top = (rect.top - innerHeight + rect.height + 8) + "px";
+  inline.style.display = "block";
+  input.value = "";
+  input.focus();
+  input.onkeydown = (e) => { if (e.key === "Enter") { renameSession(state.contextTargetSessionId, input.value.trim()); inline.style.display = "none"; hideContextMenu(); } if (e.key === "Escape") { inline.style.display = "none"; hideContextMenu(); } };
+  input.onblur = () => { setTimeout(() => { inline.style.display = "none"; hideContextMenu(); }, 150); };
+}
 function wireEvents() {
   $("openSetupBtn").addEventListener("click", openSetup); $("newSessionBtn").addEventListener("click", openSetup);
   $("closeSetupBtn").addEventListener("click", closeSetup); $("cancelSetupBtn").addEventListener("click", closeSetup); $("startAnalysisBtn").addEventListener("click", startAnalysis);
@@ -217,10 +256,14 @@ function wireEvents() {
   $("projectList").addEventListener("click", async (event) => { if (event.target.id === "toggleAllProjects") { const allSelected = state.projects.every((p) => state.selectedProjectIds.has(Number(p.id))); if (allSelected) { state.selectedProjectIds.clear(); } else { state.projects.forEach((p) => state.selectedProjectIds.add(Number(p.id))); } renderProjectList(); return; } const id = event.target.dataset.deleteProject; if (!id) return; await api(`/api/materials/${encodeURIComponent(id)}`, { method: "DELETE" }); state.selectedProjectIds.delete(Number(id)); await loadResources(); renderSetup(); });
   $("chatForm").addEventListener("submit", sendMessage);
   $("sessionTabs").addEventListener("click", (event) => { const id = event.target.dataset.sessionId; if (id) { state.activeId = id; renderAll(); if (["PENDING", "RUNNING"].includes(activeSession()?.snapshot?.status)) startPolling(); } });
+  $("sessionTabs").addEventListener("contextmenu", (event) => { const id = event.target.dataset.sessionId; if (id) showContextMenu(event, id); });
   $("diffList").addEventListener("click", async (event) => { const blockId = event.target.dataset.focusBlock; const copy = event.target.dataset.copy; if (blockId) focusBlock(blockId); if (copy !== undefined) { await navigator.clipboard.writeText(decodeURIComponent(copy)); showToast("修改结果已复制"); } });
   document.querySelectorAll(".drawer-tab").forEach((tab) => tab.addEventListener("click", () => { document.querySelectorAll(".drawer-tab, .drawer-panel").forEach((item) => item.classList.remove("active")); tab.classList.add("active"); $(tab.dataset.panel).classList.add("active"); }));
   $("toggleDrawerBtn").addEventListener("click", () => $("runtimeDrawer").classList.add("open")); $("closeDrawerBtn").addEventListener("click", () => $("runtimeDrawer").classList.remove("open"));
-  document.addEventListener("keydown", (event) => { if (event.key === "Escape") { closeSetup(); $("runtimeDrawer").classList.remove("open"); } });
+  $("renameTabBtn").addEventListener("click", (event) => { showInlineRename(event.target); });
+  $("deleteTabBtn").addEventListener("click", () => { const id = state.contextTargetSessionId; if (id) { hideContextMenu(); deleteSession(id); } });
+  document.addEventListener("click", (event) => { if (!event.target.closest(".context-menu") && !event.target.closest(".tab-btn")) hideContextMenu(); });
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape") { hideContextMenu(); document.getElementById("inlineRename").style.display = "none"; closeSetup(); $("runtimeDrawer").classList.remove("open"); } });
 }
 
 document.addEventListener("DOMContentLoaded", async () => { wireEvents(); try { await loadResources(); } catch (error) { showToast(error.message); } });

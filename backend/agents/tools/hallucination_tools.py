@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from backend.agents.base import BaseAgent
-from backend.resume_advisor.verification import verify_suggestion_facts
+from backend.resume_optimization.verification import verify_suggestion_facts
 
 
 def _call_text_llm(openai_client: Any, model_id: str, messages: list[dict[str, Any]], temperature: float) -> str:

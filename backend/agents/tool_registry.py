@@ -25,7 +25,7 @@ from backend.agents.tools.workspace_tools import (
     tool_read_file,
     tool_write_file,
 )
-from backend.resume_advisor.verification import (
+from backend.resume_optimization.verification import (
     FactVerificationResult,
     QualityReviewResult,
     review_suggestion_quality,

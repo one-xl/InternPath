@@ -38,8 +38,10 @@ from backend.jobs import (
     run_agent_resume_orchestration_job,
     run_async_analysis_job,
     run_background_resume_analysis_job,
+    run_resume_optimization_job,
 )
-from backend.reference_agent_router import build_reference_agent_router
+from backend.resume_optimization import ResumeOptimizationService
+from backend.resume_optimization.router import build_router as build_resume_optimization_router
 from backend.task_queue import cancel_job, enqueue_job
 from backend.docx_boundary_check import DocxBoundaryCheckConfig, check_docx_file_boundaries
 from service import CareerPathAIService
@@ -1521,7 +1523,21 @@ def create_app(
         return user_id
 
 
-    app.include_router(build_reference_agent_router(current_user_id))
+    resume_optimization_service = ResumeOptimizationService(
+        state.auth_db,
+        resume_provider=state.auth_db.get_user_resume,
+        project_provider=lambda user_id, document_ids, scope: state.service.get_project_knowledge_chunks_for_analysis(
+            user_id, document_ids, scope=scope
+        ),
+        enqueue_run=lambda session_id, user_id: enqueue_job(
+            run_resume_optimization_job,
+            session_id=session_id,
+            user_id=user_id,
+            job_id=session_id,
+            queue_name=Config.RQ_ADVISOR_QUEUE_NAME,
+        ),
+    )
+    app.include_router(build_resume_optimization_router(resume_optimization_service, current_user_id))
 
 
 

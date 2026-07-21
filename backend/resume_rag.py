@@ -21,7 +21,7 @@ SUPPORTED_TYPES = {
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
     "text/plain": ".txt",
 }
-SUPPORTED_EXTENSIONS = {".pdf", ".doc", ".docx", ".txt"}
+SUPPORTED_EXTENSIONS = {".pdf", ".doc", ".docx", ".txt", ".md"}
 MAX_FILE_SIZE = 10 * 1024 * 1024
 STRUCTURED_RESUME_PARSER_VERSION = "v5"
 SKILL_KEYWORDS = [
@@ -279,7 +279,7 @@ def parse_resume(file_name: str, content_type: str, data: bytes) -> dict[str, An
         source_records = extract_pdf_structure(data)
     elif suffix == ".docx":
         source_records = extract_docx_structure(data)
-    elif suffix == ".txt":
+    elif suffix in {".txt", ".md"}:
         source_records = _extract_txt_structure(data)
     elif suffix == ".doc":
         raise DocumentParseError("DOC 格式无法可靠解析，请转换为 DOCX 或 PDF 后上传")
@@ -317,10 +317,9 @@ def parse_resume(file_name: str, content_type: str, data: bytes) -> dict[str, An
         file_name,
         content_hash=content_hash,
     )
-    if suffix == ".pdf":
-        from backend.resume_advisor.preview import enrich_blocks_with_original_locations
-
-        blocks = enrich_blocks_with_original_locations(blocks, file_name=file_name, file_bytes=data)
+    # PDF block locations are produced by the structured parser.  The retired
+    # ResumeAdvisor preview enrichment is deliberately not part of the new
+    # optimization workflow.
     cleaning_report = build_resume_cleaning_report(
         source_records=source_records,
         blocks=blocks,

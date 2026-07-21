@@ -14,6 +14,21 @@ from backend.task_queue import get_redis_connection
 from service import CareerPathAIService
 
 
+def run_resume_optimization_job(session_id: str, user_id: Any) -> None:
+    """RQ entry point for one durable LangGraph resume-optimization run."""
+    from backend.resume_optimization import ResumeOptimizationService
+
+    service = CareerPathAIService()
+    optimizer = ResumeOptimizationService(
+        Database(),
+        resume_provider=Database().get_user_resume,
+        project_provider=lambda owner_id, document_ids, scope: service.get_project_knowledge_chunks_for_analysis(
+            owner_id, document_ids, scope=scope
+        ),
+    )
+    optimizer.run(user_id, session_id)
+
+
 def _agent_task_lock_key(task_id: str) -> str:
     return f"agent:task-lock:{task_id}"
 

@@ -77,7 +77,10 @@ function renderResumeList() {
 function renderProjectList() {
   const holder = $("projectList");
   if (!state.projects.length) { holder.innerHTML = '<p class="empty-state">项目资料会作为 Hybrid RAG 的候选证据。</p>'; return; }
-  holder.innerHTML = state.projects.map((project) => `<div class="file-row"><label><input type="checkbox" data-project-id="${project.id}" ${state.selectedProjectIds.has(Number(project.id)) ? "checked" : ""}> ${escapeHtml(project.file_name || project.title || "未命名资料")}</label><button class="delete-file" data-delete-project="${project.id}" aria-label="删除项目资料" title="删除项目资料">&times;</button></div>`).join("");
+  const allSelected = state.projects.every((p) => state.selectedProjectIds.has(Number(p.id)));
+  const btnLabel = allSelected ? "取消全选" : "全选";
+  holder.innerHTML = `<div class="file-row" style="margin-bottom:4px"><button class="small-btn" id="toggleAllProjects">${btnLabel}</button><span style="color:var(--muted);font-size:11px">已选 ${state.selectedProjectIds.size} / ${state.projects.length}</span></div>` +
+    state.projects.map((project) => `<div class="file-row"><label><input type="checkbox" data-project-id="${project.id}" ${state.selectedProjectIds.has(Number(project.id)) ? "checked" : ""}> ${escapeHtml(project.file_name || project.title || "未命名资料")}</label><button class="delete-file" data-delete-project="${project.id}" aria-label="删除项目资料" title="删除项目资料">&times;</button></div>`).join("");
 }
 
 function renderTabs() {
@@ -211,7 +214,7 @@ function wireEvents() {
   $("resumeList").addEventListener("change", (event) => { if (event.target.name === "resume") { state.selectedResumeId = event.target.value; renderSetup(); renderRuntime(); } });
   $("projectList").addEventListener("change", (event) => { if (event.target.dataset.projectId) { const id = Number(event.target.dataset.projectId); event.target.checked ? state.selectedProjectIds.add(id) : state.selectedProjectIds.delete(id); } });
   $("resumeList").addEventListener("click", async (event) => { const id = event.target.dataset.deleteResume; if (!id) return; await api(`/api/resumes/${encodeURIComponent(id)}`, { method: "DELETE" }); if (state.selectedResumeId === id) state.selectedResumeId = ""; await loadResources(); renderSetup(); });
-  $("projectList").addEventListener("click", async (event) => { const id = event.target.dataset.deleteProject; if (!id) return; await api(`/api/materials/${encodeURIComponent(id)}`, { method: "DELETE" }); state.selectedProjectIds.delete(Number(id)); await loadResources(); renderSetup(); });
+  $("projectList").addEventListener("click", async (event) => { if (event.target.id === "toggleAllProjects") { const allSelected = state.projects.every((p) => state.selectedProjectIds.has(Number(p.id))); if (allSelected) { state.selectedProjectIds.clear(); } else { state.projects.forEach((p) => state.selectedProjectIds.add(Number(p.id))); } renderProjectList(); return; } const id = event.target.dataset.deleteProject; if (!id) return; await api(`/api/materials/${encodeURIComponent(id)}`, { method: "DELETE" }); state.selectedProjectIds.delete(Number(id)); await loadResources(); renderSetup(); });
   $("chatForm").addEventListener("submit", sendMessage);
   $("sessionTabs").addEventListener("click", (event) => { const id = event.target.dataset.sessionId; if (id) { state.activeId = id; renderAll(); if (["PENDING", "RUNNING"].includes(activeSession()?.snapshot?.status)) startPolling(); } });
   $("diffList").addEventListener("click", async (event) => { const blockId = event.target.dataset.focusBlock; const copy = event.target.dataset.copy; if (blockId) focusBlock(blockId); if (copy !== undefined) { await navigator.clipboard.writeText(decodeURIComponent(copy)); showToast("修改结果已复制"); } });
